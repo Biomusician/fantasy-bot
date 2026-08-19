@@ -5,6 +5,7 @@ from sleeper_tool.waiver_engine import (
     MODERATE,
     MONITOR,
     MUST_ADD,
+    SEASON_STARTER,
     SPECULATIVE,
     STASH,
     STREAMER,
@@ -84,9 +85,19 @@ def test_horizon_stash_for_dynasty_relevant_non_need_depth():
     assert _horizon(v, years_exp=5, currency="dynasty", fills_need=False, pctl=45.0) == STASH
 
 
+def test_horizon_season_starter_for_a_need_filling_rosterable_add():
+    # A veteran, need-filling, rosterable-or-better add is a real hold,
+    # not a this-week-only churn play -- regression for a bug where this
+    # exact shape (fills_need + high percentile, not a young breakout)
+    # fell through to STREAMER in both currencies, contradicting a
+    # Must-Add/Strong-Add tier's own report row.
+    v = make_value(trend="no change")
+    assert _horizon(v, years_exp=8, currency="redraft", fills_need=True, pctl=60.0) == SEASON_STARTER
+
+
 def test_horizon_streamer_as_fallback():
     v = make_value(trend="no change")
-    assert _horizon(v, years_exp=8, currency="redraft", fills_need=True, pctl=60.0) == STREAMER
+    assert _horizon(v, years_exp=8, currency="redraft", fills_need=False, pctl=25.0) == STREAMER
 
 
 # -- _suggested_faab_pct -------------------------------------------------------
@@ -125,6 +136,47 @@ def test_find_drop_candidate_avoids_a_need_position_when_alternative_exists():
     assert drop.player_id == "wr-surplus"  # avoids cutting the TE (a declared need) even though it's weaker in raw value
 
 
+def test_find_drop_candidate_still_suggests_same_position_bench_even_when_that_position_is_a_declared_need():
+    # Regression: the need-avoidance guard previously excluded
+    # target_position from consideration whenever it was ITSELF a
+    # declared need -- exactly the common case (an add fills a need
+    # position by definition), causing the tool to recommend cutting an
+    # unrelated bench player instead of the obviously-weaker same-position
+    # one the add is upgrading past.
+    weak_same_pos = make_entry(player_id="rb-weak", position="RB", is_starter=False, value=make_value(position="RB", dynasty_value_percentile=15.0))
+    unrelated_bench = make_entry(player_id="wr-fine", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=55.0))
+    roster = make_roster(entries=[weak_same_pos, unrelated_bench])
+    drop = _find_drop_candidate(roster, target_position="RB", my_needs=["TE", "RB"], currency="dynasty")
+    assert drop.player_id == "rb-weak"
+
+
+def test_find_drop_candidate_respects_exclude_ids_for_cross_target_dedup():
+    # Regression: multiple simultaneous waiver "Add" rows previously all
+    # independently recommended cutting the SAME single weakest bench
+    # player, which isn't actionable if more than one is followed.
+    weakest = make_entry(player_id="wr-weakest", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=10.0))
+    second_weakest = make_entry(player_id="wr-second", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=25.0))
+    roster = make_roster(entries=[weakest, second_weakest])
+    first_drop = _find_drop_candidate(roster, target_position="WR", my_needs=[], currency="dynasty")
+    assert first_drop.player_id == "wr-weakest"
+    second_drop = _find_drop_candidate(
+        roster, target_position="WR", my_needs=[], currency="dynasty", exclude_ids={first_drop.player_id}
+    )
+    assert second_drop.player_id == "wr-second"
+
+
+def test_find_drop_candidate_ranks_unknown_valuation_after_a_known_low_one():
+    # A player with NO valuation data (pctl=None) isn't necessarily the
+    # single worst asset on the roster -- it's a data gap, and shouldn't
+    # be preferred as the cut ahead of a player with a real, if low,
+    # percentile.
+    unranked = make_entry(player_id="wr-unranked", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=None))
+    known_low = make_entry(player_id="wr-known-low", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=20.0))
+    roster = make_roster(entries=[unranked, known_low])
+    drop = _find_drop_candidate(roster, target_position="WR", my_needs=[], currency="dynasty")
+    assert drop.player_id == "wr-known-low"
+
+
 def test_find_drop_candidate_never_suggests_a_rising_player():
     rising = make_entry(player_id="hot", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=5.0, trend="rising"))
     roster = make_roster(entries=[rising])
@@ -161,8 +213,13 @@ def test_time_sensitive_notes_bye_week_starter_is_medium_severity():
 
 
 def test_get_waiver_targets_pairs_add_with_drop_and_tier():
+    # WR must land in my top-2 worst positions for fills_need to fire
+    # under the tightened (< 2) threshold -- give every position an entry
+    # so none default to "missing = need_rank 0" ahead of WR.
     my_entries = [
         make_entry(player_id="my-qb", position="QB", is_starter=True, value=make_value(position="QB", dynasty_value_percentile=80.0)),
+        make_entry(player_id="my-rb", position="RB", is_starter=True, value=make_value(position="RB", dynasty_value_percentile=75.0)),
+        make_entry(player_id="my-te", position="TE", is_starter=True, value=make_value(position="TE", dynasty_value_percentile=70.0)),
         make_entry(player_id="my-weak-wr", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=10.0)),
     ]
     league = make_league_info(kind="dynasty")

@@ -211,6 +211,13 @@ def classify_team_status(
     storage=None,
     engine=None,
 ) -> TeamStatusResult:
+    if target_roster_id not in rosters:
+        # Not reachable from any current call site (each passes a
+        # roster_id sourced from iterating this same `rosters` dict), but
+        # this function is now called from 5 places across two modules —
+        # fail with a clear message here rather than a bare KeyError
+        # several frames away from whatever mismatched the two.
+        raise ValueError(f"roster_id {target_roster_id!r} not found in the {len(rosters)}-roster dict passed to classify_team_status")
     target = rosters[target_roster_id]
 
     strengths = {rid: _roster_strength(r, currency) for rid, r in rosters.items()}

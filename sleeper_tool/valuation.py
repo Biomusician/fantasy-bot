@@ -83,7 +83,7 @@ class LeagueFormat:
     # SUPER_FLEX slots can be filled by RB/WR/TE (or QB for SUPER_FLEX) but
     # aren't attributed to any one position here, so this is a floor on
     # "how many you're guaranteed to need", not the true total demand.
-    starter_slots: dict[str, int] = field(default_factory=dict)
+    starter_slots: dict[str, float] = field(default_factory=dict)
 
     @property
     def is_superflex(self) -> bool:
@@ -111,7 +111,25 @@ def derive_league_format(league_data: dict) -> LeagueFormat:
     scoring = league_data.get("scoring_settings") or {}
     roster_positions = league_data.get("roster_positions") or []
     is_sf = "SUPER_FLEX" in roster_positions or roster_positions.count("QB") > 1
-    starter_slots = {pos: roster_positions.count(pos) for pos in CORE_SKILL_POSITIONS if roster_positions.count(pos)}
+    starter_slots: dict[str, float] = {
+        pos: float(roster_positions.count(pos)) for pos in CORE_SKILL_POSITIONS if roster_positions.count(pos)
+    }
+    # FLEX/SUPER_FLEX slots are real starter demand too — leaving them out
+    # entirely (as if they needed zero players) badly undercounts depth
+    # need in the median real league, which runs 2-3 FLEX spots. Distribute
+    # each FLEX slot's demand evenly across the positions eligible to fill
+    # it (RB/WR/TE for FLEX; every core position for SUPER_FLEX) rather
+    # than attributing it to none of them — still an approximation (real
+    # demand depends on which position actually gets started there most
+    # weeks), but a floor closer to reality than counting it as zero.
+    flex_count = roster_positions.count("FLEX")
+    if flex_count:
+        for pos in ("RB", "WR", "TE"):
+            starter_slots[pos] = starter_slots.get(pos, 0.0) + flex_count / 3
+    superflex_count = roster_positions.count("SUPER_FLEX")
+    if superflex_count:
+        for pos in CORE_SKILL_POSITIONS:
+            starter_slots[pos] = starter_slots.get(pos, 0.0) + superflex_count / len(CORE_SKILL_POSITIONS)
     return LeagueFormat(
         qb_format="SF" if is_sf else "1QB",
         ppr=float(scoring.get("rec", 0) or 0),

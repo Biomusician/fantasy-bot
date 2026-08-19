@@ -12,7 +12,7 @@ from html import escape as esc
 from sleeper_tool.formatting import age_str
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
-from sleeper_tool.trade_engine import TradeProposal, percentile_for_currency, value_label_for_currency
+from sleeper_tool.trade_engine import TradeProposal, _player_confidence, percentile_for_currency, value_label_for_currency
 from sleeper_tool.waiver_engine import TimeSensitiveNote, WaiverTarget
 
 TREND_META = {
@@ -56,19 +56,23 @@ def _ordsuffix(n: float) -> str:
 
 
 def _confidence_flag(v) -> str:
-    """A small marker for a shaky valuation — single-sourced, cross-source
-    disagreement, or thin crowd-vote depth — shown right on the roster
+    """A small marker for a shaky valuation, shown right on the roster
     table instead of only ever surfacing inside a generated trade's
     collapsed caveats (i.e. only when that player happens to be part of a
-    trade offer that week).
+    trade offer that week). Reuses trade_engine's own _player_confidence
+    rubric directly rather than re-deriving a partial copy of it — a
+    previous version checked only 2 of the 4 signals _player_confidence
+    considers, so a player who'd show "Confidence: Medium" the moment
+    they appeared in a trade card could carry no warning at all here.
     """
-    if not v.is_corroborated:
-        return f'<span class="confidence-flag" title="Only one ranking source has this player — treat the value as less reliable">&#9888;&#65039;</span>'
-    if v.cross_source_agreement == "high_disagreement":
-        return f'<span class="confidence-flag" title="KTC and FantasyPros disagree significantly on this player&#8217;s value">&#9888;&#65039;</span>'
-    if v.thin_market_caveat:
-        return f'<span class="confidence-flag" title="{esc(v.thin_market_caveat)}">&#9888;&#65039;</span>'
-    return ""
+    if _player_confidence(v) == "High":
+        return ""
+    title = v.thin_market_caveat or v.panel_disagreement_caveat or (
+        "Only one ranking source has this player — treat the value as less reliable"
+        if not v.is_corroborated
+        else "KTC and FantasyPros disagree on this player's value"
+    )
+    return f'<span class="confidence-flag" title="{esc(title)}">&#9888;&#65039;</span>'
 
 
 def _roster_rows(entries: list[RosterEntry], currency: str) -> str:
@@ -119,7 +123,6 @@ def _roster_section(roster: ValuedRoster, currency: str) -> str:
 
 _ACCEPTANCE_CHIP_KIND = {"High": "positive", "Good": "positive", "Moderate": "neutral", "Low": "caution", "Very Low": "negative"}
 _CONFIDENCE_CHIP_KIND = {"High": "positive", "Medium": "neutral", "Low": "caution"}
-_TRADE_TYPE_LABEL = {"buy_low": "Buy low", "sell_high": "Sell high", "pick_target": "Pick target"}
 
 
 def _asset_chip(name: str, *, is_pick: bool) -> str:
@@ -135,7 +138,7 @@ def _trade_card(p: TradeProposal, index: int) -> str:
         [*(_asset_chip(e.name, is_pick=False) for e in p.receive), *(_asset_chip(pk.name, is_pick=True) for pk in p.receive_picks)]
     )
     target = esc(p.target_team_name or p.target_username)
-    type_label = _TRADE_TYPE_LABEL.get(p.trade_type, p.trade_type)
+    type_label = p.trade_type_label
     value_label = value_label_for_currency(p.currency)
 
     mine = "".join(f"<li>{esc(r)}</li>" for r in p.rationale_for_me)
@@ -188,7 +191,13 @@ def _trade_card(p: TradeProposal, index: int) -> str:
 def _waiver_table(targets: list[WaiverTarget]) -> str:
     if not targets:
         return '<p class="empty-note">No standout waiver targets this week.</p>'
-    _TIER_CHIP_KIND = {"Must Add": "negative", "Strong Add": "accent", "Moderate": "neutral", "Speculative": "neutral", "Monitor": "neutral"}
+    # "positive" (green), not "negative" (red) -- Must Add is a GOOD thing
+    # to see, matching the green used for waiver actions in the "Best
+    # moves right now" section (_ACTION_KIND_META). "negative" is reserved
+    # for genuinely bad outcomes (a lopsided trade, a high-severity
+    # injury) elsewhere on the page; reusing it here read as if the
+    # tool's own top waiver pick were a warning.
+    _TIER_CHIP_KIND = {"Must Add": "positive", "Strong Add": "accent", "Moderate": "neutral", "Speculative": "neutral", "Monitor": "neutral"}
     rows = []
     for t in targets[:8]:
         tier_chip = _chip(t.priority_tier, _TIER_CHIP_KIND.get(t.priority_tier, "neutral"))

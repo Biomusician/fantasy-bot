@@ -63,12 +63,8 @@ def _render_roster_snapshot(roster: ValuedRoster, currency: str) -> list[str]:
     return lines
 
 
-_TRADE_TYPE_LABEL = {"buy_low": "Buy low", "sell_high": "Sell high", "pick_target": "Pick target"}
-
-
 def _render_trade_proposal(p: TradeProposal, index: int) -> list[str]:
-    type_label = _TRADE_TYPE_LABEL.get(p.trade_type, p.trade_type)
-    lines = [f"**Offer {index} ({type_label}): {p.summary_line()}**", ""]
+    lines = [f"**Offer {index} ({p.trade_type_label}): {p.summary_line()}**", ""]
     lines.append(
         f"*{value_label_for_currency(p.currency)}: {p.my_value_total:.0f} vs {p.their_value_total:.0f} "
         f"({p.balance_label.lower()}) · Acceptance: {p.acceptance_rating} · Confidence: {p.confidence}*"
@@ -102,7 +98,7 @@ _TIER_MARK = {"Must Add": "🔴", "Strong Add": "🟠", "Moderate": "🟡", "Spe
 def _render_waiver_targets(targets: list[WaiverTarget]) -> list[str]:
     if not targets:
         return ["No standout waiver targets this week."]
-    lines = ["| Priority | Player | Pos | Add | Drop | Horizon | FAAB | Why |", "|---|---|---|---|---|---|---|---|"]
+    lines = ["| Priority | Player | Pos | Team | Drop | Horizon | FAAB | Why |", "|---|---|---|---|---|---|---|---|"]
     for t in targets[:8]:
         mark = _TIER_MARK.get(t.priority_tier, "")
         drop = t.drop_candidate.name if t.drop_candidate else "—"

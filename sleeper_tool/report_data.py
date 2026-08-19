@@ -65,6 +65,7 @@ class PriorityAction:
     kind: str  # "alert" | "trade" | "waiver"
     headline: str
     detail: str
+    rank: int = 0  # lower = more important WITHIN this kind — quality tiebreak, not shown to the user
 
 
 @dataclass
@@ -80,15 +81,23 @@ class WeeklyReportData:
 _ACTION_KIND_ORDER = {"alert": 0, "trade": 1, "waiver": 2}
 
 
+_CONFIDENCE_RANK = {"High": 0, "Medium": 1, "Low": 2}
+
+
 def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int = 8) -> list[PriorityAction]:
     """Rank the user's highest-value actions across ALL leagues and
     transaction types: high-severity injury/bye alerts first (they're
     time-boxed to this week's lineup lock), then trades with a Good/High
     acceptance rating AND at least Medium valuation confidence (a
     favorable-looking trade built on shaky data isn't a top action), then
-    Must-Add waivers. An empty result is a legitimate "nothing urgent
-    right now" — this never manufactures activity to avoid an empty list,
-    since a synthetic action would be actively misleading.
+    Must-Add waivers. Within each kind, ranked by actual quality (trade
+    acceptance tier then confidence; waiver percentile) rather than
+    league-iteration order — otherwise truncating to max_actions could
+    silently drop an objectively better action from a later-processed
+    league in favor of a weaker one from an earlier league. An empty
+    result is a legitimate "nothing urgent right now" — this never
+    manufactures activity to avoid an empty list, since a synthetic
+    action would be actively misleading.
     """
     actions: list[PriorityAction] = []
     for ld in leagues:
@@ -103,21 +112,25 @@ def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int 
                 ))
         for p in ld.proposals:
             if p.acceptance_rating in ("High", "Good") and p.confidence in ("High", "Medium"):
+                tier_rank = 0 if p.acceptance_rating == "High" else 1
                 actions.append(PriorityAction(
                     league_name=ld.league.name, kind="trade",
                     headline=p.summary_line(),
                     detail=f"{ld.league.name} — {p.acceptance_rating.lower()} acceptance likelihood, "
                     f"{p.trade_type.replace('_', ' ')}.",
+                    rank=tier_rank * 10 + _CONFIDENCE_RANK.get(p.confidence, 2),
                 ))
         for t in ld.waiver_targets:
             if t.priority_tier == "Must Add":
                 drop_note = f", drop {t.drop_candidate.name}" if t.drop_candidate else ""
+                pctl = (t.value.dynasty_value_percentile or t.value.redraft_ecr_percentile) if t.value else None
                 actions.append(PriorityAction(
                     league_name=ld.league.name, kind="waiver",
                     headline=f"Add {t.name}{drop_note}",
                     detail=f"{ld.league.name} — {t.reason}",
+                    rank=-(pctl or 0),  # higher percentile ranks first (more negative sorts earlier)
                 ))
-    actions.sort(key=lambda a: _ACTION_KIND_ORDER.get(a.kind, 9))
+    actions.sort(key=lambda a: (_ACTION_KIND_ORDER.get(a.kind, 9), a.rank))
     return actions[:max_actions]
 
 

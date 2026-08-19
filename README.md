@@ -27,16 +27,34 @@ notes are hardcoded, not configurable via a UI.
   or a rebuild candidate, using starter *and* bench/taxi roster strength,
   owned future draft capital, the league's playoff format, and (once
   enough games are played) actual record.
-- **Trade engine**: finds buy-low/sell-high candidates, matches them
-  against your positional needs, and generates concrete trade offers with
-  reasoning tailored to the other owner's known trading tendencies. Owned
-  future draft picks are real trade chips here — offerable on the give
-  side, and rebuilding teams get pick-for-player proposals generated
-  directly, not just a value bias.
+- **Trade engine**: finds buy-low/sell-high candidates and matches them
+  against your positional needs — but a numerically balanced offer isn't
+  necessarily one the other manager would ever accept, so every proposal
+  is also checked against *their* side: does the receiving roster have an
+  actual hole at the position being sent, would it beat their existing
+  depth there, does it fit their contender/rebuild timeline, and how does
+  their historical trade activity factor in. That produces a bucketed
+  **acceptance rating** (Very Low → High, not a fake precise probability),
+  a separate **confidence** rating in the underlying valuations, and a
+  short, casual **message you can actually send** the other manager.
+  Proposals span three shapes: buy-low (their dip, your need), sell-high
+  (your rising asset, shopped to whoever actually needs it), and
+  pick-for-player asks for rebuilding teams. Owned future draft picks are
+  real trade chips throughout, and a roster's true cornerstone starters
+  (plus a scarce position's only real starter, e.g. a lone startable TE)
+  are never offered or targeted regardless of trend.
 - **Waiver engine**: cross-references trending adds against your roster
-  gaps, and flags injuries/starter byes.
+  gaps and pairs every add with a specific drop candidate, a priority tier
+  (Must Add → Monitor), a horizon (breakout/stash/streamer), and a FAAB
+  bid suggestion where the league tracks a budget — not just a bare name.
+  Also flags injuries and starter byes, both on your own roster and on
+  waiver targets themselves.
 - **Reports**: one consolidated Markdown file, or a dark-mode HTML
-  dashboard you can open locally or publish as a Claude Artifact.
+  dashboard you can open locally or publish as a Claude Artifact. Both
+  lead with a cross-league "best moves right now" summary — the tool's
+  answer to "what should I actually do today" across all your leagues at
+  once, not just a per-league data dump you have to click through to
+  assemble yourself.
 
 ## Setup
 
@@ -169,5 +187,17 @@ deterministic.
   leagues as an approximation.
 - **Multi-FLEX formats** (3-4 FLEX spots) aren't fully accounted for in
   positional-need detection, which weighs each position's single best
-  player rather than full flex-slot demand.
+  player rather than full flex-slot demand. The depth-need signal
+  (`identify_depth_needs`) has the same gap — it counts exact QB/RB/WR/TE
+  slots from `roster_positions` but doesn't attribute FLEX/SUPER_FLEX
+  slots to any position, so it's a floor on real demand, not the total.
+- **Acceptance ratings are a bucketed heuristic** (Very Low → High), not a
+  calibrated probability — they're built from real, if incomplete, signals
+  (does the offer fill an actual roster hole, does it match the other
+  team's contender/rebuild timeline, how active a trader they are) but
+  there's no feedback loop yet that checks predicted ratings against which
+  trades actually got accepted.
+- **FAAB suggestions require the league to expose a `waiver_budget`
+  setting** — most of this tool's leagues don't use FAAB, so
+  `suggested_faab_pct` is `None` for them by design, not a missing feature.
 - **Yahoo integration** is not yet live (see above).

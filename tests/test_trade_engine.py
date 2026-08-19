@@ -1,3 +1,4 @@
+import pytest
 from conftest import make_entry, make_format, make_league_info, make_roster, make_value
 
 from sleeper_tool.config import MY_USER_ID
@@ -357,14 +358,31 @@ def test_identify_depth_needs_clear_when_enough_rosterable_bodies_exist():
     assert "RB" not in needs
 
 
-def test_derive_league_format_reads_exact_starter_slot_counts():
+def test_derive_league_format_reads_exact_starter_slot_counts_with_no_flex():
     from sleeper_tool.valuation import derive_league_format
 
     fmt = derive_league_format({
         "scoring_settings": {},
-        "roster_positions": ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "SUPER_FLEX", "BN", "BN"],
+        "roster_positions": ["QB", "RB", "RB", "WR", "WR", "TE", "BN", "BN"],
     })
     assert fmt.starter_slots == {"QB": 1, "RB": 2, "WR": 2, "TE": 1}
+
+
+def test_derive_league_format_distributes_flex_and_superflex_demand():
+    # FLEX/SUPER_FLEX previously contributed zero demand to any position,
+    # badly undercounting depth need in the median real league (2-3 FLEX
+    # spots is typical). Each FLEX slot should add real, if approximate,
+    # demand to RB/WR/TE; each SUPER_FLEX slot to all four core positions.
+    from sleeper_tool.valuation import derive_league_format
+
+    fmt = derive_league_format({
+        "scoring_settings": {},
+        "roster_positions": ["QB", "RB", "WR", "TE", "FLEX", "SUPER_FLEX", "BN"],
+    })
+    assert fmt.starter_slots["QB"] == pytest.approx(1 + 1 / 4)
+    assert fmt.starter_slots["RB"] == pytest.approx(1 + 1 / 3 + 1 / 4)
+    assert fmt.starter_slots["WR"] == pytest.approx(1 + 1 / 3 + 1 / 4)
+    assert fmt.starter_slots["TE"] == pytest.approx(1 + 1 / 3 + 1 / 4)
 
 
 # -- _untouchable_ids: starters-only protection, scarce-position protection -
@@ -418,8 +436,9 @@ def test_recipient_need_fit_rejects_a_redundant_piece_into_a_glutted_position():
 
     glutted_roster = make_roster(entries=[_rosterable_wr(f"wr{i}", pctl) for i, pctl in enumerate([85, 80, 70, 65, 60])])
     weak_offer = [_rosterable_wr("give-wr", 30.0)]  # below every one of their rosterable WRs
-    fits, notes = _recipient_need_fit(glutted_roster, weak_offer, "dynasty")
-    assert fits is False
+    any_fit, all_fit, notes = _recipient_need_fit(glutted_roster, weak_offer, "dynasty")
+    assert any_fit is False
+    assert all_fit is False
     assert notes
 
 
@@ -428,8 +447,9 @@ def test_recipient_need_fit_accepts_a_piece_that_beats_their_weakest_starter():
 
     roster = make_roster(entries=[_rosterable_wr(f"wr{i}", pctl) for i, pctl in enumerate([85, 60])])
     strong_offer = [_rosterable_wr("give-wr", 75.0)]  # beats their weakest rosterable WR (60)
-    fits, notes = _recipient_need_fit(roster, strong_offer, "dynasty")
-    assert fits is True
+    any_fit, all_fit, notes = _recipient_need_fit(roster, strong_offer, "dynasty")
+    assert any_fit is True
+    assert all_fit is True
 
 
 def test_recipient_need_fit_accepts_a_piece_at_a_position_theyre_completely_empty_at():
@@ -437,18 +457,36 @@ def test_recipient_need_fit_accepts_a_piece_at_a_position_theyre_completely_empt
 
     roster = make_roster(entries=[_rosterable_wr("wr1", 85.0)])  # no TE at all
     te_offer = [make_entry(player_id="give-te", position="TE", value=make_value(position="TE", dynasty_value_percentile=20.0))]
-    fits, notes = _recipient_need_fit(roster, te_offer, "dynasty")
-    assert fits is True
+    any_fit, all_fit, notes = _recipient_need_fit(roster, te_offer, "dynasty")
+    assert any_fit is True
+    assert all_fit is True
 
 
 def test_recipient_need_fit_picks_only_always_fits():
-    from sleeper_tool.draft_picks import OwnedPick
     from sleeper_tool.trade_engine import _recipient_need_fit
 
     roster = make_roster(entries=[_rosterable_wr(f"wr{i}", pctl) for i, pctl in enumerate([85, 80, 70])])
-    fits, notes = _recipient_need_fit(roster, [], "dynasty")
-    assert fits is True
+    any_fit, all_fit, notes = _recipient_need_fit(roster, [], "dynasty")
+    assert any_fit is True
+    assert all_fit is True
     assert notes == []
+
+
+def test_recipient_need_fit_any_true_all_false_when_one_piece_is_clutter():
+    # Regression: a multi-piece offer where only SOME pieces fit must be
+    # distinguishable from one where ALL pieces fit -- any_fit alone
+    # (the old return shape) couldn't tell these apart, letting a clutter
+    # piece silently ride along a real upgrade with no visible flag.
+    from sleeper_tool.trade_engine import _recipient_need_fit
+
+    roster = make_roster(entries=[_rosterable_wr("wr1", 60.0), make_entry(
+        player_id="te1", position="TE", value=make_value(position="TE", dynasty_value_percentile=70.0))])
+    good_wr = _rosterable_wr("give-wr", 75.0)  # beats their weakest WR (60) -- real fit
+    clutter_te = make_entry(player_id="give-te", position="TE", value=make_value(position="TE", dynasty_value_percentile=20.0))  # below their TE (70)
+    any_fit, all_fit, notes = _recipient_need_fit(roster, [good_wr, clutter_te], "dynasty")
+    assert any_fit is True
+    assert all_fit is False
+    assert len(notes) == 1  # only the clutter TE piece gets flagged, not the fitting WR
 
 
 # -- rate_acceptance / proposal_confidence -----------------------------------
@@ -602,6 +640,78 @@ def test_generate_trade_proposals_empty_when_no_other_active_rosters():
     league, rosters = _need_fit_scenario()
     solo = {1: rosters[1]}
     assert generate_trade_proposals(league, solo, max_proposals=3) == []
+
+
+def test_generate_trade_proposals_never_gives_away_the_same_player_twice():
+    # Regression: nothing tracked which of MY assets were already
+    # committed once you looked across all three generation passes, so
+    # the same roster player could be proposed away in two different
+    # proposals within one report.
+    from sleeper_tool.trade_engine import generate_trade_proposals
+
+    league, rosters = _need_fit_scenario()
+    proposals = generate_trade_proposals(league, rosters, max_proposals=5)
+    given_ids = [e.player_id for p in proposals for e in p.give]
+    assert len(given_ids) == len(set(given_ids)), f"a player was offered away in more than one proposal: {given_ids}"
+
+
+def test_generate_trade_proposals_resolves_a_give_piece_collision_between_two_opponents():
+    # Regression: when two opponents' best-fit offer independently landed
+    # on the identical give-piece, the loser was silently dropped instead
+    # of being retried against the remaining pool — even though a
+    # different, still-valid combination existed for them.
+    from sleeper_tool.trade_engine import generate_trade_proposals
+
+    def pv(pos, dyn_pctl, pos_pctl=None, trend="no change", value=None):
+        return make_value(
+            position=pos, dynasty_value=value if value is not None else int(dyn_pctl * 100),
+            dynasty_value_percentile=dyn_pctl, dynasty_positional_percentile=pos_pctl if pos_pctl is not None else dyn_pctl,
+            redraft_ecr_percentile=dyn_pctl, trend=trend,
+        )
+
+    league = make_league_info(kind="dynasty")
+    my_entries = [
+        make_entry(player_id="my-rb1", position="RB", is_starter=True, value=pv("RB", 95, 95)),
+        # Two roughly-equal-value bench pieces, one of which two different
+        # opponents' offers could independently land on.
+        make_entry(player_id="my-filler-a", position="RB", is_starter=False, value=pv("RB", 55, 50)),
+        make_entry(player_id="my-filler-b", position="WR", is_starter=False, value=pv("WR", 55, 50)),
+        make_entry(player_id="my-te1", position="TE", is_starter=True, value=pv("TE", 30, 25)),
+    ]
+    my_roster = make_roster(roster_id=1, owner_id=MY_USER_ID, owner_username="me", team_name="My Team", league=league, entries=my_entries)
+
+    # Opponent A needs TE, has a buy-low TE valued near my-filler-a/b's
+    # value. No RB/WR on their roster at all, so whichever filler I offer
+    # (RB or WR) trivially fits an empty position for them -- isolating
+    # the test to the collision-retry behavior, not recipient-fit math.
+    # Two QB fillers give UNTOUCHABLE_COUNT=2 headroom so the TE target
+    # itself isn't vacuously swept up as untouchable.
+    opp_a_entries = [
+        make_entry(player_id="a-qb1", position="QB", is_starter=True, value=pv("QB", 99, 99)),
+        make_entry(player_id="a-qb2", position="QB", is_starter=True, value=pv("QB", 97, 97)),
+        make_entry(player_id="a-te1", position="TE", is_starter=True, value=make_value(
+            position="TE", dynasty_value=5500, dynasty_value_percentile=70, dynasty_positional_percentile=70,
+            redraft_ecr_percentile=40, trend="down")),
+    ]
+    opp_a = make_roster(roster_id=2, owner_id="oa", owner_username="OppA", team_name="Team A", league=league, entries=opp_a_entries)
+
+    # Opponent B also needs TE, has a DIFFERENT buy-low TE at a similar value.
+    opp_b_entries = [
+        make_entry(player_id="b-qb1", position="QB", is_starter=True, value=pv("QB", 99, 99)),
+        make_entry(player_id="b-qb2", position="QB", is_starter=True, value=pv("QB", 97, 97)),
+        make_entry(player_id="b-te1", position="TE", is_starter=True, value=make_value(
+            position="TE", dynasty_value=5600, dynasty_value_percentile=71, dynasty_positional_percentile=71,
+            redraft_ecr_percentile=41, trend="down")),
+    ]
+    opp_b = make_roster(roster_id=3, owner_id="ob", owner_username="OppB", team_name="Team B", league=league, entries=opp_b_entries)
+
+    proposals = generate_trade_proposals(league, {1: my_roster, 2: opp_a, 3: opp_b}, max_proposals=5)
+    targeted = {p.target_username for p in proposals}
+    # Both opponents should get a proposal -- neither should be silently
+    # dropped just because their best-fit give-piece collided with the
+    # other's.
+    assert "OppA" in targeted
+    assert "OppB" in targeted
 
 
 def test_generate_trade_proposals_handles_a_two_entry_roster_without_crashing():

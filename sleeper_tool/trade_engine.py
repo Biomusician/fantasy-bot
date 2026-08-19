@@ -78,6 +78,7 @@ DECLINE_CONFIRMATION_GAP = 10.0  # dynasty_pctl - redraft_pctl must clear this t
 POSITION_ORDER = ("QB", "RB", "WR", "TE")  # fixed order so need-ranking ties break deterministically
 MAX_CANDIDATES_PER_OPPONENT = 3  # how many buy-low candidates to try matching per opponent before giving up on them
 ACCEPTANCE_TIERS = ("Very Low", "Low", "Moderate", "Good", "High")
+_TRADE_TYPE_LABELS = {"buy_low": "Buy low", "sell_high": "Sell high", "pick_target": "Pick target"}
 
 DYNASTY_CURRENCY = "dynasty"
 REDRAFT_CURRENCY = "redraft"
@@ -155,6 +156,13 @@ class TradeProposal:
             return "Slight overpay"
         return "Overpay"
 
+    @property
+    def trade_type_label(self) -> str:
+        """Single source of truth for trade_type -> display text, so
+        report.py and html_report.py can't drift the way balance_kind's
+        docstring says they previously did for value-ratio wording."""
+        return _TRADE_TYPE_LABELS.get(self.trade_type, self.trade_type)
+
     def summary_line(self) -> str:
         give_names = ", ".join([*(e.name for e in self.give), *(p.name for p in self.give_picks)])
         receive_names = ", ".join([*(e.name for e in self.receive), *(p.name for p in self.receive_picks)])
@@ -194,27 +202,57 @@ def _untouchable_ids(roster: ValuedRoster, currency: str, exclude_top: int) -> s
     redundant, non-starting backup (e.g. a QB2 sitting behind a more
     valuable QB1) must never be "protected" purely by raw dollar value,
     since losing a bench piece costs a roster nothing competitively; only
-    an active starter is genuinely hard to pry loose. Also protects each
-    position's clear best corroborated asset when it's a scarcity outlier
-    (SCARCE_POSITION_PROTECTION_PERCENTILE) even outside the top-N overall
-    — a league's only real starting TE shouldn't be targetable just
-    because TE dollar values run low relative to RB/WR.
+    an active starter is genuinely hard to pry loose.
+
+    Ranked by PERCENTILE, not raw value — for REDRAFT_CURRENCY, raw value
+    is RotoBaller's un-normalized proj_points, which runs structurally
+    higher for QBs than RB/WR/TE (see identify_buy_low's sort for the same
+    fix). Ranking the "top-2 cornerstone" cut by raw value would let a
+    true elite starting WR/RB get out-ranked by a merely-good QB's
+    inflated point total and slip out of protection — confirmed to
+    reproduce in practice before this fix.
+
+    Also protects each position's clear best corroborated asset when it's
+    a scarcity outlier (SCARCE_POSITION_PROTECTION_PERCENTILE), using the
+    within-position percentile for dynasty (where it's available) or the
+    pool-wide percentile for redraft (the closest available proxy) — a
+    league's only real starting TE shouldn't be targetable just because TE
+    dollar values run low relative to RB/WR. And protects any starter
+    whose loss would drop the roster below the league's own required
+    starter count at that position (LeagueFormat.starter_slots) — losing a
+    lineup-critical starter (e.g. a Superflex league's only good QB2) is a
+    real cost even when that player isn't a raw top-2/percentile outlier.
     """
     corroborated = [e for e in roster.entries if _corroborated(e, currency)]
     starters = [e for e in corroborated if e.is_starter]
     rank_pool = starters if len(starters) >= exclude_top else corroborated
     ids = {
         e.player_id
-        for e in sorted(rank_pool, key=lambda e: -(value_for_currency(e.value, currency) or 0))[:exclude_top]
+        for e in sorted(rank_pool, key=lambda e: -(percentile_for_currency(e.value, currency) or 0))[:exclude_top]
     }
-    if currency == DYNASTY_CURRENCY:
-        for pos in POSITION_ORDER:
-            pos_entries = sorted(
-                (e for e in corroborated if e.position == pos),
-                key=lambda e: -(e.value.dynasty_positional_percentile or 0),
+    for pos in POSITION_ORDER:
+        pos_entries = [e for e in corroborated if e.position == pos]
+        if not pos_entries:
+            continue
+        if currency == DYNASTY_CURRENCY:
+            best = max(pos_entries, key=lambda e: e.value.dynasty_positional_percentile or 0)
+            best_pctl = best.value.dynasty_positional_percentile or 0
+        else:
+            best = max(pos_entries, key=lambda e: percentile_for_currency(e.value, currency) or 0)
+            best_pctl = percentile_for_currency(best.value, currency) or 0
+        if best_pctl >= SCARCE_POSITION_PROTECTION_PERCENTILE:
+            ids.add(best.player_id)
+
+        required = roster.fmt.starter_slots.get(pos)
+        if required:
+            rosterable = sorted(
+                (e for e in pos_entries if (percentile_for_currency(e.value, currency) or 0) >= MIN_ROSTERABLE_PERCENTILE),
+                key=lambda e: -(percentile_for_currency(e.value, currency) or 0),
             )
-            if pos_entries and (pos_entries[0].value.dynasty_positional_percentile or 0) >= SCARCE_POSITION_PROTECTION_PERCENTILE:
-                ids.add(pos_entries[0].player_id)
+            # Protect exactly the top `required` at this position -- losing
+            # any of them would drop the roster below what the league's own
+            # starting lineup needs there.
+            ids.update(e.player_id for e in rosterable[: int(required)])
     return ids
 
 
@@ -627,28 +665,38 @@ class OpponentFit:
     piece_count: int  # len(give) + len(give_picks) — 1 = clean ask, 2+ = fragmented
 
 
+def _piece_fits(their_roster: ValuedRoster, piece: RosterEntry, currency: str) -> bool:
+    """Would this ONE piece plausibly help their_roster — beats their
+    weakest currently-rosterable player at that position, or fills a
+    position where they have zero rosterable depth at all."""
+    weakest = _weakest_rosterable_percentile(their_roster, piece.position or "", currency)
+    piece_pctl = percentile_for_currency(piece.value, currency) or 0
+    return weakest is None or piece_pctl > weakest
+
+
 def _recipient_need_fit(
     their_roster: ValuedRoster, give: list[RosterEntry], currency: str
-) -> tuple[bool, list[str]]:
+) -> tuple[bool, bool, list[str]]:
     """Would sending `give` plausibly help their_roster, or is it roster
-    clutter they have no use for? True if ANY give piece either beats
-    their weakest currently-rosterable player at that position, or fills a
-    position where they have zero rosterable depth at all. A picks-only
-    give (no players) always passes — draft capital helps any roster.
+    clutter they have no use for? Returns (any_fits, all_fit, notes):
+    any_fits is True if AT LEAST ONE piece clears the bar (used to decide
+    whether an offer is worth proposing at all — a legitimate throw-in
+    alongside a real upgrade is a normal trade shape); all_fit is True
+    only if EVERY piece does (used to decide whether the offer should be
+    scored as a clean, unqualified roster upgrade for them, vs. one that
+    includes dead weight). A picks-only give (no players) always fits
+    fully — draft capital helps any roster.
     """
     if not give:
-        return True, []
+        return True, True, []
     notes: list[str] = []
-    any_fit = False
+    fits_flags: list[bool] = []
     for piece in give:
-        pos = piece.position or ""
-        weakest = _weakest_rosterable_percentile(their_roster, pos, currency)
-        piece_pctl = percentile_for_currency(piece.value, currency) or 0
-        if weakest is None or piece_pctl > weakest:
-            any_fit = True
-        else:
-            notes.append(f"{piece.name} ({pos}) likely wouldn't beat their existing {pos} depth")
-    return any_fit, notes
+        ok = _piece_fits(their_roster, piece, currency)
+        fits_flags.append(ok)
+        if not ok:
+            notes.append(f"{piece.name} ({piece.position}) likely wouldn't beat their existing {piece.position} depth")
+    return any(fits_flags), all(fits_flags), notes
 
 
 MAX_OFFER_RETRIES = 3  # alternate combinations to try before giving up on a candidate/opponent pairing
@@ -660,25 +708,42 @@ def _find_fitting_offer(
     target_value: float,
     currency: str,
     recipient_roster: ValuedRoster,
-) -> tuple[list[RosterEntry], list[OwnedPick], list[str]] | None:
+) -> tuple[list[RosterEntry], list[OwnedPick], list[str], bool] | None:
     """_find_matching_offer returns the first value-tolerance match it
-    finds and stops — if THAT specific combination turns out to be roster
-    clutter for the recipient (_recipient_need_fit), there may still be a
-    different combination at the same target value that fits. Retries a
-    few times, each time excluding the previous attempt's player pieces
-    from the pool, before giving up on this candidate entirely.
+    finds and stops — if that combination includes a piece that's roster
+    clutter for the recipient, there may still be a different combination
+    at the same target value where every piece is a genuine fit. Prefers
+    an all-fit combination: on an any-fit-but-not-all-fit result, retries
+    with just the clutter piece(s) excluded (not the whole trial) to look
+    for a cleaner alternative, falling back to the best any-fit result
+    found if no fully-clean combination turns up within the retry budget.
+    Returns (players, picks, fit_notes, all_fit) — all_fit tells the
+    caller whether the returned offer is an unqualified fit or includes a
+    weaker piece riding along (fit_notes explains which).
     """
     candidate_pool = pool
+    best_any_fit: tuple[list[RosterEntry], list[OwnedPick], list[str]] | None = None
     for _ in range(MAX_OFFER_RETRIES):
         trial = _find_matching_offer(candidate_pool, picks, target_value, currency)
         if trial is None:
-            return None
+            break
         trial_players, trial_picks = trial
-        fits, fit_notes = _recipient_need_fit(recipient_roster, trial_players, currency)
-        if fits:
-            return trial_players, trial_picks, fit_notes
-        excluded_ids = {e.player_id for e in trial_players}
-        candidate_pool = [e for e in candidate_pool if e.player_id not in excluded_ids]
+        any_fit, all_fit, fit_notes = _recipient_need_fit(recipient_roster, trial_players, currency)
+        if all_fit:
+            return trial_players, trial_picks, fit_notes, True
+        if not any_fit:
+            excluded_ids = {e.player_id for e in trial_players}
+            candidate_pool = [e for e in candidate_pool if e.player_id not in excluded_ids]
+            continue
+        # Any-fit but not all-fit: keep this as a fallback, then retry
+        # excluding just the clutter piece(s) to look for an all-fit combo.
+        if best_any_fit is None:
+            best_any_fit = (trial_players, trial_picks, fit_notes)
+        clutter_ids = {e.player_id for e in trial_players if not _piece_fits(recipient_roster, e, currency)}
+        candidate_pool = [e for e in candidate_pool if e.player_id not in clutter_ids]
+    if best_any_fit is not None:
+        players, picks_, notes = best_any_fit
+        return players, picks_, notes, False
     return None
 
 
@@ -811,6 +876,18 @@ def _names_line(entries: list[RosterEntry], picks: list[OwnedPick]) -> str:
     return " + ".join(names)
 
 
+def _content_seed(*parts: str) -> int:
+    """A stable (not process-hash-randomized, unlike Python's built-in
+    hash()) integer derived from actual message content, used to vary
+    opener/closer choice by what the trade actually IS rather than by
+    piece-counts/username-length alone — the latter made two different
+    real trades produce byte-identical messages whenever give/receive
+    counts and username length happened to match, which is common for
+    ordinary single-for-single offers.
+    """
+    return sum(ord(c) for c in "".join(parts))
+
+
 def generate_trade_message(proposal: TradeProposal, fit: OpponentFit | None = None) -> str:
     """A short, casual chat message to actually send — not a summary of the
     proposal's stats. Deliberately avoids AI-sounding phrasing ("according
@@ -819,14 +896,15 @@ def generate_trade_message(proposal: TradeProposal, fit: OpponentFit | None = No
     little informal, no hard sell.
     """
     trade_type = proposal.trade_type if proposal.trade_type in _MESSAGE_OPENERS else "buy_low"
-    opener_idx = (len(proposal.give) + len(proposal.give_picks) + len(proposal.target_username or "")) % len(
-        _MESSAGE_OPENERS[trade_type]
-    )
-    opener = _MESSAGE_OPENERS[trade_type][opener_idx]
     give_line = _names_line(proposal.give, proposal.give_picks)
     receive_line = _names_line(proposal.receive, proposal.receive_picks)
+    seed = _content_seed(give_line, receive_line, proposal.target_username or "")
+    opener_idx = seed % len(_MESSAGE_OPENERS[trade_type])
+    opener = _MESSAGE_OPENERS[trade_type][opener_idx]
     fills_need = fit.would_upgrade_their_roster if fit is not None else True
-    closer_idx = len(give_line) % len(_MESSAGE_CLOSERS_BY_NEED[fills_need])
+    # Different modulus stride than opener_idx so the two don't always
+    # move in lockstep for near-identical seeds.
+    closer_idx = (seed * 7 + 3) % len(_MESSAGE_CLOSERS_BY_NEED[fills_need])
     closer = _MESSAGE_CLOSERS_BY_NEED[fills_need][closer_idx]
     return (opener + closer).format(give_line=give_line, receive_line=receive_line)
 
@@ -984,10 +1062,10 @@ def generate_trade_proposals(
             fitting = _find_fitting_offer(my_pool, my_picks, target_value, currency, their_roster)
             if fitting is None:
                 continue  # no combination at this value would be anything but roster clutter for them
-            offer_players, offer_picks, fit_notes = fitting
+            offer_players, offer_picks, fit_notes, all_fit = fitting
             fit = OpponentFit(
                 target_is_starter=target_entry.is_starter,
-                would_upgrade_their_roster=True,
+                would_upgrade_their_roster=all_fit,
                 fit_notes=fit_notes,
                 opponent_status=their_status_result.status,
                 status_fit=_status_fit(offer_players, offer_picks, their_status_result.status),
@@ -1020,10 +1098,35 @@ def generate_trade_proposals(
         owner_key = their_roster.owner_username or ""
         if owner_key in targeted_owners:
             continue
-        if any(e.player_id in used_player_ids for e in offer_players):
-            continue  # a higher-ranked proposal already spent this asset
-        if any(_pick_key(p) in used_pick_keys for p in offer_picks):
-            continue
+        piece_collision = any(e.player_id in used_player_ids for e in offer_players) or any(
+            _pick_key(p) in used_pick_keys for p in offer_picks
+        )
+        if piece_collision:
+            # A higher-ranked proposal already spent one of this combo's
+            # pieces — don't just drop this opponent, since a different,
+            # still-viable combo for the SAME target may exist in the
+            # remainder of my_pool (two opponents' best-fit offers landing
+            # on the identical give-piece is common when bench-filler
+            # values cluster tightly, which they do in most leagues).
+            remaining = [e for e in my_pool if e.player_id not in used_player_ids]
+            remaining_picks = [p for p in my_picks if _pick_key(p) not in used_pick_keys]
+            retry = _find_fitting_offer(remaining, remaining_picks, target_value, currency, their_roster)
+            if retry is None:
+                continue
+            offer_players, offer_picks, retry_notes, retry_all_fit = retry
+            fit = OpponentFit(
+                target_is_starter=fit.target_is_starter,
+                would_upgrade_their_roster=retry_all_fit,
+                fit_notes=retry_notes,
+                opponent_status=fit.opponent_status,
+                status_fit=_status_fit(offer_players, offer_picks, fit.opponent_status),
+                piece_count=len(offer_players) + len(offer_picks),
+            )
+            my_total = sum(value_for_currency(e.value, currency) or 0 for e in offer_players) + sum(
+                p.value or 0 for p in offer_picks
+            )
+            ratio = (my_total / target_value) if target_value else float("inf")
+            rating, reasons = rate_acceptance(fit, ratio, profile)
 
         rationale_mine, rationale_theirs, caveats = _build_rationale(
             target_entry, offer_players, currency, profile, status_result, offer_picks
@@ -1033,6 +1136,8 @@ def generate_trade_proposals(
                 "This is a multi-piece offer — some managers read fragmented value as a lowball; "
                 "a single clean piece close in value may land better if you have one available."
             )
+        for note in fit.fit_notes:
+            caveats.append(f"{note} — this piece may read as a throw-in rather than real value to them.")
         confidence = proposal_confidence([target_entry.value, *(e.value for e in offer_players)])
 
         proposal = TradeProposal(
@@ -1088,12 +1193,19 @@ def generate_trade_proposals(
                 fitting = _find_fitting_offer(their_pool, their_picks_sorted, sell_value, currency, my_roster)
                 if fitting is None:
                     continue  # nothing they'd send back would actually help my roster either
-                offer_players, offer_picks, fit_notes = fitting
+                offer_players, offer_picks, my_side_fit_notes, _my_side_all_fit = fitting
+                # would_upgrade_their_roster is about THEM, not me — `fitting`'s
+                # all_fit describes whether their return package fits MY
+                # roster (a separate, legitimate check kept above so I'm not
+                # offered garbage back). Whether sell_entry itself is a real
+                # upgrade for THEIR roster needs its own, correctly-directed
+                # check.
+                their_side_fits = _piece_fits(their_roster, sell_entry, currency)
                 profile = get_owner_profile(owner_key, league.name)
                 fit = OpponentFit(
                     target_is_starter=any(e.is_starter for e in offer_players),
-                    would_upgrade_their_roster=True,
-                    fit_notes=fit_notes,
+                    would_upgrade_their_roster=their_side_fits,
+                    fit_notes=my_side_fit_notes,
                     opponent_status=their_status_result.status,
                     status_fit=_status_fit([sell_entry], [], their_status_result.status),
                     piece_count=len(offer_players) + len(offer_picks),
@@ -1106,6 +1218,13 @@ def generate_trade_proposals(
                 rationale_mine, rationale_theirs, caveats = _build_sell_high_rationale(
                     sell_entry, offer_players, currency, profile, status_result, offer_picks
                 )
+                if not their_side_fits:
+                    caveats.append(
+                        f"{sell_entry.name} may not clearly beat their existing {sell_entry.position} depth — "
+                        "this pitch leans on their stated need more than a guaranteed upgrade."
+                    )
+                for note in my_side_fit_notes:
+                    caveats.append(f"{note} — this piece coming back may read as a throw-in.")
                 confidence = proposal_confidence([sell_entry.value, *(e.value for e in offer_players)])
                 proposal = TradeProposal(
                     league_name=league.name,
@@ -1135,12 +1254,16 @@ def generate_trade_proposals(
     # -- Pass 3: pick-target. REBUILD-specific: ask for a pick instead of a
     # player, when nothing above already filled the proposal budget.
     if my_status == REBUILD and valued_picks and len(proposals) < max_proposals:
+        # Pass 1/2 already committed some of my_pool to other proposals --
+        # without excluding those, the SAME player could be proposed away
+        # twice in one report (once here, once in an earlier pass).
+        remaining_pool = [e for e in my_pool if e.player_id not in used_player_ids]
         for their_roster in other_rosters:
             if (their_roster.owner_username or "") in targeted_owners:
                 continue
             their_picks = valued_picks.get(their_roster.roster_id, [])
             pick_proposal = _build_pick_target_proposal(
-                league, their_roster, their_picks, my_pool, currency, status_result,
+                league, their_roster, their_picks, remaining_pool, currency, status_result,
                 rosters=rosters, storage=storage, engine=engine,
             )
             if pick_proposal is not None:

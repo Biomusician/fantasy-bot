@@ -36,10 +36,12 @@ MONITOR = "Monitor"
 
 # -- Horizon: how long you'd expect to hold the player -----------------------
 BREAKOUT = "Breakout"  # young, trending up -- worth a long-term dynasty stash
+SEASON_STARTER = "Season Starter"  # fills a real need at a rosterable-or-better percentile -- expect to hold, not churn
 STASH = "Stash"  # rosterable, dynasty-relevant, but not an immediate need
 STREAMER = "Streamer"  # this-week/short-term only
 BREAKOUT_YEARS_EXP_THRESHOLD = 2  # years_exp <= this counts as a true breakout candidate, not just "young-ish"
 STASH_MIN_PERCENTILE = 40.0
+SEASON_STARTER_MIN_PERCENTILE = 60.0
 
 TOP_TREND_RANK_CUTOFF = 15  # top-N-of-fetched-batch counts as "real buzz" for the Speculative tier -- rank, not a raw
 # count, since Sleeper's absolute add-counts drift week to week with the overall news cycle (a slow week's #1 trending
@@ -89,21 +91,47 @@ def _display_percentile(value: PlayerValue, currency: str) -> float | None:
 
 
 def _find_drop_candidate(
-    my_roster: ValuedRoster, target_position: str | None, my_needs: list[str], currency: str
+    my_roster: ValuedRoster,
+    target_position: str | None,
+    my_needs: list[str],
+    currency: str,
+    *,
+    exclude_ids: set[str] = frozenset(),
 ) -> RosterEntry | None:
-    """The cheapest bench player to cut to make room for this add. Prefers
-    a same-position swap (roster-neutral) and avoids suggesting a cut at a
-    position that's already one of my declared needs — falling back to
-    the full bench pool only when every bench spot IS a need position (a
-    genuinely thin roster, where any suggestion is a real trade-off).
-    Never suggests cutting a player who's currently trending up himself.
+    """The cheapest bench player to cut to make room for this add.
+
+    Same-position bench players are considered FIRST, regardless of
+    whether target_position is itself one of my declared needs — cutting
+    my weakest bench player at a position to make room for a stronger add
+    there is exactly the normal case (most adds target a need position by
+    definition), not something to avoid. The need-avoidance filter only
+    applies as a fallback when there's no bench player at target_position
+    at all, to protect a position OTHER than the one being upgraded.
+
+    `exclude_ids` lets callers dedup across multiple simultaneous waiver
+    suggestions in the same table — without it, several different "Add"
+    rows can all independently recommend cutting the single weakest bench
+    player, which isn't actionable if a user tries to follow more than one
+    of them in the same week.
+
+    Never suggests cutting a player who's currently trending up himself,
+    and ranks a player with no valuation data at all (pctl is None) AFTER
+    one with a real, if low, percentile — a data gap isn't the same thing
+    as "genuinely the worst player," and shouldn't look identical to it.
     """
-    pool = [e for e in my_roster.bench() if e.value.trend != "rising"]
+    pool = [e for e in my_roster.bench() if e.value.trend != "rising" and e.player_id not in exclude_ids]
     if not pool:
         return None
+
+    def _sort_key(e: RosterEntry) -> tuple:
+        pctl = _display_percentile(e.value, currency)
+        return (pctl is None, pctl or 0)
+
+    same_position = [e for e in pool if e.position == target_position]
+    if same_position:
+        return min(same_position, key=_sort_key)
     non_need_pool = [e for e in pool if e.position not in my_needs] or pool
-    same_position = [e for e in non_need_pool if e.position == target_position] or non_need_pool
-    return min(same_position, key=lambda e: _display_percentile(e.value, currency) or 0)
+    return min(non_need_pool, key=_sort_key)
 
 
 def _priority_tier(fills_need: bool, pctl: float | None, trend_rank: int) -> str:
@@ -122,6 +150,14 @@ def _priority_tier(fills_need: bool, pctl: float | None, trend_rank: int) -> str
 def _horizon(value: PlayerValue, years_exp: int | None, currency: str, fills_need: bool, pctl: float | None) -> str:
     if value.trend == "rising" and years_exp is not None and years_exp <= BREAKOUT_YEARS_EXP_THRESHOLD:
         return BREAKOUT
+    # A need-filling, rosterable-or-better add is a real hold, not a
+    # this-week-only churn play — regardless of currency. Previously this
+    # fell through to STREAMER for every add that wasn't a young breakout,
+    # including redraft/dynasty players tiered MUST_ADD/STRONG_ADD, which
+    # directly contradicted STREAMER's own "this-week/short-term only"
+    # definition on the report's most urgent recommendations.
+    if fills_need and (pctl or 0) >= SEASON_STARTER_MIN_PERCENTILE:
+        return SEASON_STARTER
     if currency == DYNASTY_CURRENCY and not fills_need and (pctl or 0) >= STASH_MIN_PERCENTILE:
         return STASH
     return STREAMER
@@ -165,6 +201,7 @@ def get_waiver_targets(
     currency = value_currency(my_roster)
 
     targets: list[WaiverTarget] = []
+    recommended_drop_ids: set[str] = set()
     for trend_rank, row in enumerate(trending):
         pid = row["player_id"]
         if pid in rostered_ids:
@@ -181,7 +218,14 @@ def get_waiver_targets(
         position = pdata.get("position")
         value = engine.value_player(name, my_roster.fmt, position)
         need_rank = needs_ranked.index(position) if position in needs_ranked else None
-        fills_need = need_rank is not None and need_rank < 3  # a real, if secondary, hole -- not just top-2
+        # < 2, matching trade_engine.generate_trade_proposals' own
+        # my_needs[:2] definition of "a real need" -- POSITION_ORDER has
+        # only 4 positions, so < 3 (the original threshold) covered 3 of
+        # them, making "fills_need" true for nearly anything except a
+        # user's single strongest position. Keeping the two definitions
+        # in sync also stops the waiver and trade paths from silently
+        # disagreeing about what counts as a need.
+        fills_need = need_rank is not None and need_rank < 2
 
         # Sleeper's trending endpoint is platform-wide (all leagues, not just
         # this one) — there's no per-league trending data available via the API.
@@ -201,7 +245,11 @@ def get_waiver_targets(
 
         tier = _priority_tier(fills_need, pctl, trend_rank)
         horizon = _horizon(value, pdata.get("years_exp"), currency, fills_need, pctl)
-        drop_candidate = _find_drop_candidate(my_roster, position, needs_ranked[:2], currency)
+        drop_candidate = _find_drop_candidate(
+            my_roster, position, needs_ranked[:2], currency, exclude_ids=recommended_drop_ids
+        )
+        if drop_candidate is not None:
+            recommended_drop_ids.add(drop_candidate.player_id)
         faab_pct = _suggested_faab_pct(tier, waiver_budget, my_roster.waiver_budget_used)
 
         targets.append(

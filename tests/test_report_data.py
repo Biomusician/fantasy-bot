@@ -87,3 +87,31 @@ def test_build_priority_actions_respects_max_actions_cap():
     ld = _league_data(time_sensitive=notes)
     actions = build_priority_actions([ld], max_actions=3)
     assert len(actions) == 3
+
+
+def _trade(username, rating, confidence):
+    return TradeProposal(
+        league_name="X", currency="dynasty", target_username=username, target_team_name=username,
+        give=[], receive=[], my_value_total=100, their_value_total=100,
+        rationale_for_me=[], rationale_for_them=[], caveats=[],
+        acceptance_rating=rating, confidence=confidence,
+    )
+
+
+def test_build_priority_actions_ranks_by_quality_not_league_order():
+    # Regression: a later-processed league's objectively better trade
+    # (High/High) was previously truncated in favor of an earlier
+    # league's weaker-but-still-qualifying trades (Good/Medium), purely
+    # because the sort only bucketed by kind, not by quality within it.
+    weak_league = _league_data(
+        league=make_league_info(name="League A"),
+        proposals=[_trade(f"rival{i}", "Good", "Medium") for i in range(8)],
+    )
+    strong_league = _league_data(
+        league=make_league_info(name="League B"),
+        proposals=[_trade("BestRival", "High", "High")],
+    )
+    actions = build_priority_actions([weak_league, strong_league], max_actions=8)
+    headlines = [a.headline for a in actions]
+    assert any("BestRival" in h for h in headlines), "the objectively best trade must survive the cap regardless of league order"
+    assert actions[0].headline == next(h for h in headlines if "BestRival" in h)  # and it should rank first
