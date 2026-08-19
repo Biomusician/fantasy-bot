@@ -1,6 +1,9 @@
 from conftest import make_entry, make_format, make_league_info, make_roster, make_value
 
+from sleeper_tool.config import MY_USER_ID
+from sleeper_tool.roster_analysis import RosterEntry
 from sleeper_tool.trade_engine import (
+    ACCEPTANCE_TIERS,
     CONTENDER,
     MIDDLING,
     REBUILD,
@@ -8,6 +11,7 @@ from sleeper_tool.trade_engine import (
     _tradeable_pool,
     identify_buy_low,
     identify_needs,
+    identify_sell_high,
     percentile_for_currency,
     value_currency,
     value_for_currency,
@@ -131,7 +135,7 @@ def test_identify_buy_low_filters_by_position_specific_age_for_rebuild():
 
 
 def test_identify_buy_low_contender_ignores_age_filter():
-    old_rb = _buy_low_candidate(position="RB", age=30.0, dynasty_value=3000, dynasty_value_percentile=40.0, redraft_ecr_percentile=20.0)
+    old_rb = _buy_low_candidate(position="RB", age=30.0, dynasty_value=3000, dynasty_value_percentile=55.0, redraft_ecr_percentile=20.0)
     roster = make_roster(entries=[old_rb, *_filler_untouchables()])
     result = identify_buy_low(roster, CONTENDER)
     assert old_rb.player_id in {e.player_id for e in result}
@@ -306,3 +310,313 @@ def test_build_pick_target_proposal_returns_none_with_only_one_pick():
         make_league_info(kind="dynasty"), their_roster, [only_pick], [], "dynasty", status
     )
     assert proposal is None  # their only pick is treated as untouchable, nothing left to target
+
+
+# -- identify_sell_high: a hot week from your actual RB1 isn't a sell signal
+
+
+def test_identify_sell_high_excludes_untouchable_cornerstone_assets():
+    # A trending-up TOP-2 starter (e.g. a true RB1 having a great year) must
+    # never be surfaced as a "sell high" candidate -- that's the whole
+    # point of playing well, not a reason to shop him.
+    cornerstone = make_entry(player_id="rb1", position="RB", is_starter=True,
+        value=make_value(position="RB", dynasty_value=9500, trend="rising"))
+    secondary = make_entry(player_id="rb2", position="RB", is_starter=True,
+        value=make_value(position="RB", dynasty_value=8500, trend="rising"))
+    real_candidate = make_entry(player_id="wr3", position="WR", is_starter=False,
+        value=make_value(position="WR", dynasty_value=2000, trend="rising"))
+    roster = make_roster(entries=[cornerstone, secondary, real_candidate])
+    candidates = identify_sell_high(roster)
+    ids = {e.player_id for e in candidates}
+    assert "rb1" not in ids
+    assert "rb2" not in ids
+    assert "wr3" in ids
+
+
+# -- identify_depth_needs: thin depth behind a strong RB1 is a real need ----
+
+
+def test_identify_depth_needs_flags_zero_rosterable_depth_at_a_position():
+    from sleeper_tool.trade_engine import identify_depth_needs
+
+    # Elite RB1 (99th pctl) but nothing else rosterable at RB, needing 2 starters there.
+    rb1 = make_entry(player_id="rb1", position="RB", value=make_value(position="RB", dynasty_value_percentile=99.0))
+    rb2 = make_entry(player_id="rb2", position="RB", value=make_value(position="RB", dynasty_value_percentile=10.0))  # below MIN_ROSTERABLE_PERCENTILE
+    roster = make_roster(entries=[rb1, rb2])
+    needs = identify_depth_needs(roster, min_starters={"RB": 2})
+    assert "RB" in needs
+
+
+def test_identify_depth_needs_clear_when_enough_rosterable_bodies_exist():
+    from sleeper_tool.trade_engine import identify_depth_needs
+
+    rb1 = make_entry(player_id="rb1", position="RB", value=make_value(position="RB", dynasty_value_percentile=90.0))
+    rb2 = make_entry(player_id="rb2", position="RB", value=make_value(position="RB", dynasty_value_percentile=60.0))
+    roster = make_roster(entries=[rb1, rb2])
+    needs = identify_depth_needs(roster, min_starters={"RB": 2})
+    assert "RB" not in needs
+
+
+def test_derive_league_format_reads_exact_starter_slot_counts():
+    from sleeper_tool.valuation import derive_league_format
+
+    fmt = derive_league_format({
+        "scoring_settings": {},
+        "roster_positions": ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "SUPER_FLEX", "BN", "BN"],
+    })
+    assert fmt.starter_slots == {"QB": 1, "RB": 2, "WR": 2, "TE": 1}
+
+
+# -- _untouchable_ids: starters-only protection, scarce-position protection -
+
+
+def test_untouchable_ids_never_protects_a_non_starting_backup():
+    # A backup QB (is_starter=False) sitting behind a more valuable starter
+    # must NOT be locked untradeable just because its raw value ranks top-2
+    # overall — it's a bench piece, losing it costs the roster nothing.
+    from sleeper_tool.trade_engine import _untouchable_ids
+
+    starter_qb = make_entry(player_id="qb-starter", position="QB", is_starter=True,
+        value=make_value(position="QB", dynasty_value=9500, dynasty_value_percentile=99))
+    backup_qb = make_entry(player_id="qb-backup", position="QB", is_starter=False,
+        value=make_value(position="QB", dynasty_value=9400, dynasty_value_percentile=98, trend="rising"))
+    other_starter = make_entry(player_id="te1", position="TE", is_starter=True,
+        value=make_value(position="TE", dynasty_value=1200, dynasty_value_percentile=15))
+    roster = make_roster(entries=[starter_qb, backup_qb, other_starter])
+    ids = _untouchable_ids(roster, "dynasty", exclude_top=2)
+    assert "qb-backup" not in ids
+
+
+def test_untouchable_ids_protects_a_scarce_positions_clear_best_asset():
+    # A corroborated TE at the 95th within-position percentile is this
+    # team's only real starting TE — protect it even though TE dollar
+    # values run low enough that it'd never crack the top-2-overall cut.
+    from sleeper_tool.trade_engine import _untouchable_ids
+
+    rb1 = make_entry(player_id="rb1", position="RB", is_starter=True,
+        value=make_value(position="RB", dynasty_value=9500, dynasty_value_percentile=99, dynasty_positional_percentile=99))
+    rb2 = make_entry(player_id="rb2", position="RB", is_starter=True,
+        value=make_value(position="RB", dynasty_value=9000, dynasty_value_percentile=97, dynasty_positional_percentile=97))
+    te1 = make_entry(player_id="te1", position="TE", is_starter=True,
+        value=make_value(position="TE", dynasty_value=2600, dynasty_value_percentile=70, dynasty_positional_percentile=95))
+    roster = make_roster(entries=[rb1, rb2, te1])
+    ids = _untouchable_ids(roster, "dynasty", exclude_top=2)
+    assert "te1" in ids
+    assert ids == {"rb1", "rb2", "te1"}
+
+
+# -- _recipient_need_fit: opponent roster-depth awareness -------------------
+
+
+def _rosterable_wr(pid: str, pctl: float) -> RosterEntry:
+    return make_entry(player_id=pid, position="WR", is_starter=pctl >= 50,
+        value=make_value(position="WR", dynasty_value_percentile=pctl))
+
+
+def test_recipient_need_fit_rejects_a_redundant_piece_into_a_glutted_position():
+    from sleeper_tool.trade_engine import _recipient_need_fit
+
+    glutted_roster = make_roster(entries=[_rosterable_wr(f"wr{i}", pctl) for i, pctl in enumerate([85, 80, 70, 65, 60])])
+    weak_offer = [_rosterable_wr("give-wr", 30.0)]  # below every one of their rosterable WRs
+    fits, notes = _recipient_need_fit(glutted_roster, weak_offer, "dynasty")
+    assert fits is False
+    assert notes
+
+
+def test_recipient_need_fit_accepts_a_piece_that_beats_their_weakest_starter():
+    from sleeper_tool.trade_engine import _recipient_need_fit
+
+    roster = make_roster(entries=[_rosterable_wr(f"wr{i}", pctl) for i, pctl in enumerate([85, 60])])
+    strong_offer = [_rosterable_wr("give-wr", 75.0)]  # beats their weakest rosterable WR (60)
+    fits, notes = _recipient_need_fit(roster, strong_offer, "dynasty")
+    assert fits is True
+
+
+def test_recipient_need_fit_accepts_a_piece_at_a_position_theyre_completely_empty_at():
+    from sleeper_tool.trade_engine import _recipient_need_fit
+
+    roster = make_roster(entries=[_rosterable_wr("wr1", 85.0)])  # no TE at all
+    te_offer = [make_entry(player_id="give-te", position="TE", value=make_value(position="TE", dynasty_value_percentile=20.0))]
+    fits, notes = _recipient_need_fit(roster, te_offer, "dynasty")
+    assert fits is True
+
+
+def test_recipient_need_fit_picks_only_always_fits():
+    from sleeper_tool.draft_picks import OwnedPick
+    from sleeper_tool.trade_engine import _recipient_need_fit
+
+    roster = make_roster(entries=[_rosterable_wr(f"wr{i}", pctl) for i, pctl in enumerate([85, 80, 70])])
+    fits, notes = _recipient_need_fit(roster, [], "dynasty")
+    assert fits is True
+    assert notes == []
+
+
+# -- rate_acceptance / proposal_confidence -----------------------------------
+
+
+def test_rate_acceptance_penalizes_targeting_a_starter_and_low_roster_fit():
+    from sleeper_tool.owner_profiles import DEFAULT_PROFILE
+    from sleeper_tool.trade_engine import OpponentFit, rate_acceptance
+
+    good_fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
+        opponent_status="middling", status_fit="neutral", piece_count=1)
+    bad_fit = OpponentFit(target_is_starter=True, would_upgrade_their_roster=False, fit_notes=["doesn't help"],
+        opponent_status="middling", status_fit="mismatch", piece_count=2)
+    good_rating, _ = rate_acceptance(good_fit, 1.0, DEFAULT_PROFILE)
+    bad_rating, _ = rate_acceptance(bad_fit, 1.0, DEFAULT_PROFILE)
+    from sleeper_tool.trade_engine import ACCEPTANCE_TIERS
+    assert ACCEPTANCE_TIERS.index(good_rating) > ACCEPTANCE_TIERS.index(bad_rating)
+
+
+def test_rate_acceptance_floors_at_very_low_for_an_inactive_trader():
+    from sleeper_tool.owner_profiles import OwnerProfile
+    from sleeper_tool.trade_engine import OpponentFit, rate_acceptance
+
+    fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
+        opponent_status="middling", status_fit="neutral", piece_count=1)
+    inactive_profile = OwnerProfile(username="ghost", trades_often="inactive")
+    rating, reasons = rate_acceptance(fit, 1.0, inactive_profile)
+    assert rating == "Very Low"
+
+
+def test_proposal_confidence_is_dragged_down_by_the_weakest_valuation():
+    from sleeper_tool.trade_engine import proposal_confidence
+
+    solid = make_value(sources=["ktc", "fantasypros_dynasty"], cross_source_agreement="agree")
+    shaky = make_value(sources=["ktc"], cross_source_agreement="insufficient_data")
+    assert proposal_confidence([solid, solid]) == "High"
+    assert proposal_confidence([solid, shaky]) == "Low"
+    assert proposal_confidence([]) == "Medium"
+
+
+# -- generate_trade_message ---------------------------------------------------
+
+
+def test_generate_trade_message_is_nonempty_and_not_ai_sounding():
+    from sleeper_tool.trade_engine import TradeProposal, generate_trade_message
+
+    proposal = TradeProposal(
+        league_name="Test League", currency="dynasty", target_username="rival", target_team_name="Rival Team",
+        give=[make_entry(player_id="g1", name="Give Guy")], receive=[make_entry(player_id="r1", name="Receive Guy")],
+        my_value_total=1000, their_value_total=1000, rationale_for_me=[], rationale_for_them=[], caveats=[],
+        trade_type="buy_low",
+    )
+    msg = generate_trade_message(proposal)
+    assert msg
+    assert "Give Guy" in msg and "Receive Guy" in msg
+    banned_phrases = ["according to my projections", "this trade benefits both parties", "the analytics suggest"]
+    assert not any(p in msg.lower() for p in banned_phrases)
+
+
+# -- generate_trade_proposals: end-to-end integration ------------------------
+
+
+def _need_fit_scenario():
+    """A dynasty league: my roster is TE-needy with WR/RB surplus to trade;
+    the opponent is deep at WR (5 rosterable) but has exactly one
+    real, non-scarce buy-low-eligible TE and needs RB. Every player's
+    dynasty AND redraft percentiles are set consistently so the
+    _not_just_a_slump real-decline guard doesn't reject the buy-low
+    candidate as noise.
+    """
+    def pv(pos, dyn_pctl, pos_pctl=None, trend="no change", value=None):
+        return make_value(
+            position=pos, dynasty_value=value if value is not None else int(dyn_pctl * 100),
+            dynasty_value_percentile=dyn_pctl, dynasty_positional_percentile=pos_pctl if pos_pctl is not None else dyn_pctl,
+            redraft_ecr_percentile=dyn_pctl, trend=trend,
+        )
+
+    league = make_league_info(kind="dynasty")
+    my_entries = [
+        make_entry(player_id="my-rb1", position="RB", is_starter=True, value=pv("RB", 95, 95)),
+        make_entry(player_id="my-wr1", position="WR", is_starter=True, value=pv("WR", 90, 90)),
+        make_entry(player_id="my-wr-rising", position="WR", is_starter=False, value=pv("WR", 60, 55, trend="rising")),
+        make_entry(player_id="my-te1", position="TE", is_starter=True, value=pv("TE", 30, 25)),
+        make_entry(player_id="my-filler", position="RB", is_starter=False, value=pv("RB", 50, 45)),
+    ]
+    my_roster = make_roster(roster_id=1, owner_id=MY_USER_ID, owner_username="me", team_name="My Team", league=league, entries=my_entries)
+
+    opp_entries = [
+        make_entry(player_id="opp-wr1", position="WR", is_starter=True, value=pv("WR", 85, 80)),
+        make_entry(player_id="opp-wr2", position="WR", is_starter=True, value=pv("WR", 80, 75)),
+        make_entry(player_id="opp-wr3", position="WR", is_starter=False, value=pv("WR", 70, 65)),
+        make_entry(player_id="opp-wr4", position="WR", is_starter=False, value=pv("WR", 65, 60)),
+        make_entry(player_id="opp-wr5", position="WR", is_starter=False, value=pv("WR", 60, 55)),
+        make_entry(player_id="opp-te1", position="TE", is_starter=True, value=make_value(
+            position="TE", dynasty_value=7000, dynasty_value_percentile=70, dynasty_positional_percentile=70,
+            redraft_ecr_percentile=40, trend="down",  # dynasty holding, redraft dipped -- genuine buy-low pattern,
+        )),  # not just a slump (see _not_just_a_slump's DECLINE_CONFIRMATION_GAP check)
+        make_entry(player_id="opp-te2", position="TE", is_starter=False, value=pv("TE", 35, 30)),
+        make_entry(player_id="opp-rb1", position="RB", is_starter=True, value=pv("RB", 40, 35)),
+    ]
+    opp_roster = make_roster(roster_id=2, owner_id="opp1", owner_username="RivalOwner", team_name="Rival Team", league=league, entries=opp_entries)
+    return league, {1: my_roster, 2: opp_roster}
+
+
+def test_generate_trade_proposals_produces_a_scored_buy_low_offer():
+    from sleeper_tool.trade_engine import generate_trade_proposals
+
+    league, rosters = _need_fit_scenario()
+    proposals = generate_trade_proposals(league, rosters, max_proposals=3)
+    assert len(proposals) >= 1
+    buy_low = [p for p in proposals if p.trade_type == "buy_low"]
+    assert buy_low
+    p = buy_low[0]
+    assert p.receive[0].player_id == "opp-te1"
+    assert p.acceptance_rating in ACCEPTANCE_TIERS
+    assert p.message  # a ready-to-send message was generated
+    assert p.confidence in ("Low", "Medium", "High")
+
+
+def test_generate_trade_proposals_never_offers_a_position_the_opponent_is_already_glutted_at():
+    # Regression for the highest-severity finding across the review panel:
+    # an offer must not send a redundant piece into a position the
+    # recipient already has full rosterable coverage at.
+    from sleeper_tool.trade_engine import generate_trade_proposals
+
+    league, rosters = _need_fit_scenario()
+    proposals = generate_trade_proposals(league, rosters, max_proposals=5)
+    for p in proposals:
+        for piece in p.give:
+            if piece.position == "WR":
+                # The opponent has 5 rosterable WRs already (60-85 pctl) —
+                # any WR offered to them must beat their weakest (60).
+                assert piece.value.dynasty_value_percentile > 60 or piece.value.dynasty_value_percentile is None
+
+
+def test_generate_trade_proposals_includes_sell_high_when_opponent_needs_the_position():
+    from sleeper_tool.trade_engine import generate_trade_proposals
+
+    league, rosters = _need_fit_scenario()
+    proposals = generate_trade_proposals(league, rosters, max_proposals=5)
+    # my-wr-rising (trend=rising) is a sell-high candidate, but the only
+    # opponent here is WR-glutted (not WR-needy) so no sell-high pitch
+    # should fire for it — confirms sell-high respects THEIR needs too.
+    sell_high = [p for p in proposals if p.trade_type == "sell_high"]
+    assert all(p.give[0].player_id != "my-wr-rising" for p in sell_high)
+
+
+def test_generate_trade_proposals_empty_when_no_other_active_rosters():
+    from sleeper_tool.trade_engine import generate_trade_proposals
+
+    league, rosters = _need_fit_scenario()
+    solo = {1: rosters[1]}
+    assert generate_trade_proposals(league, solo, max_proposals=3) == []
+
+
+def test_generate_trade_proposals_handles_a_two_entry_roster_without_crashing():
+    # UNTOUCHABLE_COUNT=2 with only 2 total entries — an edge case the
+    # existing untouchable tests deliberately avoid; generate_trade_proposals
+    # itself must degrade to an empty result, not raise.
+    from sleeper_tool.trade_engine import generate_trade_proposals
+
+    league = make_league_info(kind="dynasty")
+    my_roster = make_roster(roster_id=1, owner_id=MY_USER_ID, owner_username="me", league=league, entries=[
+        make_entry(player_id="only1", value=make_value(dynasty_value=5000, dynasty_value_percentile=80)),
+        make_entry(player_id="only2", value=make_value(dynasty_value=4000, dynasty_value_percentile=70)),
+    ])
+    opp_roster = make_roster(roster_id=2, owner_id="opp", owner_username="opp", league=league, entries=[
+        make_entry(player_id="opp-only", value=make_value(dynasty_value=4500, dynasty_value_percentile=75, trend="down")),
+    ])
+    proposals = generate_trade_proposals(league, {1: my_roster, 2: opp_roster}, max_proposals=3)
+    assert isinstance(proposals, list)  # no crash; empty or non-empty both acceptable

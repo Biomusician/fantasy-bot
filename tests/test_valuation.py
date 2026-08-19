@@ -1,6 +1,25 @@
 from sleeper_tool.valuation import LeagueFormat, PlayerValue, derive_league_format, scale_proj_points_for_games_remaining
 
 
+def test_derive_league_format_handles_explicit_none_scoring_settings():
+    # Regression: Sleeper can return the key present but explicitly null
+    # (e.g. a league mid-creation) -- `.get(key, default)` doesn't catch
+    # that, only `.get(key) or default` does. Previously crashed with
+    # AttributeError: 'NoneType' object has no attribute 'get'.
+    fmt = derive_league_format({"scoring_settings": None, "roster_positions": ["QB", "RB"]})
+    assert fmt.ppr == 0.0
+    assert fmt.pass_td_pts == 4.0
+
+
+def test_derive_league_format_handles_explicit_none_roster_positions():
+    # Regression: previously crashed with
+    # TypeError: argument of type 'NoneType' is not iterable
+    fmt = derive_league_format({"scoring_settings": {"rec": 1.0}, "roster_positions": None})
+    assert fmt.qb_format == "1QB"
+    assert fmt.ppr == 1.0
+    assert fmt.starter_slots == {}
+
+
 def test_derive_league_format_1qb():
     league_data = {
         "scoring_settings": {"rec": 1.0, "pass_td": 4.0},

@@ -57,12 +57,27 @@ from sleeper_tool.valuation import PlayerValue
 
 SELL_HIGH_TREND = "rising"
 BUY_LOW_TREND = "down"
-MIN_ROSTERABLE_PERCENTILE = 20.0
+# A 10-12 team dynasty league rosters ~250-300 total players league-wide out
+# of KTC's ~500-player pool. The old threshold (20.0, ~rank 401/500) let the
+# engine treat deep-bench/practice-squad-caliber players — already flagged
+# noisy by THIN_MARKET_RANK_THRESHOLD=150 in valuation.py — as legitimate
+# buy-low targets. 45.0 (~rank 275/500) keeps eligibility inside the range
+# a real roster in this size league would actually reach, and no longer
+# contradicts the thin-market cutoff by reaching 2.5x deeper into it.
+MIN_ROSTERABLE_PERCENTILE = 45.0
 VALUE_TOLERANCE = 0.20  # accept offers where value ratio is within +/-20%
 UNTOUCHABLE_COUNT = 2  # skip each roster's top N players by value as trade targets/gives
 ELITE_ASSET_PERCENTILE = 90.0  # bypass age filtering for a clear top-tier asset regardless of team timeline
+# A corroborated player who is their position's clear best asset (top decile
+# within-position) is treated as untouchable even outside the top-2-overall-
+# value cut — protects a scarce position's only real starter (e.g. a
+# league's one rosterable TE) that raw cross-position dollar value would
+# otherwise miss, since TE dollar values run far lower than RB/WR.
+SCARCE_POSITION_PROTECTION_PERCENTILE = 90.0
 DECLINE_CONFIRMATION_GAP = 10.0  # dynasty_pctl - redraft_pctl must clear this to call a dip a buy-low, not a real decline
 POSITION_ORDER = ("QB", "RB", "WR", "TE")  # fixed order so need-ranking ties break deterministically
+MAX_CANDIDATES_PER_OPPONENT = 3  # how many buy-low candidates to try matching per opponent before giving up on them
+ACCEPTANCE_TIERS = ("Very Low", "Low", "Moderate", "Good", "High")
 
 DYNASTY_CURRENCY = "dynasty"
 REDRAFT_CURRENCY = "redraft"
@@ -100,6 +115,14 @@ class TradeProposal:
     caveats: list[str]
     give_picks: list[OwnedPick] = field(default_factory=list)
     receive_picks: list[OwnedPick] = field(default_factory=list)
+    # "buy_low" | "sell_high" | "pick_target" — which generation path built
+    # this proposal, so the UI/user can tell a reactive buy-low ask apart
+    # from a proactive sell-before-regression pitch or a rebuild pick grab.
+    trade_type: str = "buy_low"
+    acceptance_rating: str = "Moderate"  # one of ACCEPTANCE_TIERS — a bucket, not a fabricated precise probability
+    acceptance_reasons: list[str] = field(default_factory=list)
+    confidence: str = "Medium"  # "Low"|"Medium"|"High" — confidence in the underlying valuations, separate from acceptance
+    message: str = ""  # short, casual chat-offer text ready to send the opponent
 
     @property
     def value_ratio(self) -> float:
@@ -107,6 +130,30 @@ class TradeProposal:
         if self.their_value_total == 0:
             return float("inf")
         return self.my_value_total / self.their_value_total
+
+    @property
+    def balance_kind(self) -> str:
+        """UI styling bucket for value_ratio — the single source of truth
+        both report.py and html_report.py should read from instead of each
+        re-deriving their own thresholds (they'd previously drifted:
+        different label casing/wording for the same trade)."""
+        ratio = self.value_ratio
+        if ratio <= 1.1:
+            return "positive"
+        if ratio <= 1.15:
+            return "caution"
+        return "negative"
+
+    @property
+    def balance_label(self) -> str:
+        ratio = self.value_ratio
+        if 0.9 <= ratio <= 1.1:
+            return "Balanced"
+        if ratio < 0.9:
+            return "Favors me"
+        if ratio <= 1.15:
+            return "Slight overpay"
+        return "Overpay"
 
     def summary_line(self) -> str:
         give_names = ", ".join([*(e.name for e in self.give), *(p.name for p in self.give_picks)])
@@ -118,12 +165,57 @@ def _corroborated(entry: RosterEntry, currency: str) -> bool:
     return entry.value.is_corroborated and value_for_currency(entry.value, currency) is not None
 
 
-def identify_sell_high(roster: ValuedRoster) -> list[RosterEntry]:
+def identify_sell_high(roster: ValuedRoster, exclude_top: int = UNTOUCHABLE_COUNT) -> list[RosterEntry]:
+    """A trending-up player is only a sell-high CANDIDATE if he's not
+    already one of my roster's true cornerstone assets — a top-2 starter
+    or a scarce position's clear best piece (same _untouchable_ids
+    protection identify_buy_low/_tradeable_pool apply to what I'd give up
+    in a buy-low trade). Playing well is exactly what you want from your
+    actual best players; "sell high" is meant for a SECONDARY asset whose
+    recent hot streak may have outrun his real long-term outlook, not an
+    invitation to shop your true RB1/WR1 the moment he has a good week.
+    """
     currency = value_currency(roster)
+    untouchable_ids = _untouchable_ids(roster, currency, exclude_top)
     return sorted(
-        (e for e in roster.entries if _corroborated(e, currency) and e.value.trend == SELL_HIGH_TREND),
+        (
+            e
+            for e in roster.entries
+            if _corroborated(e, currency) and e.value.trend == SELL_HIGH_TREND and e.player_id not in untouchable_ids
+        ),
         key=lambda e: -(value_for_currency(e.value, currency) or 0),
     )
+
+
+def _untouchable_ids(roster: ValuedRoster, currency: str, exclude_top: int) -> set[str]:
+    """The top-`exclude_top` players a roster is treated as unwilling to
+    move. Ranked among STARTERS first, falling back to all corroborated
+    entries only if there aren't enough starters to fill the cut — a
+    redundant, non-starting backup (e.g. a QB2 sitting behind a more
+    valuable QB1) must never be "protected" purely by raw dollar value,
+    since losing a bench piece costs a roster nothing competitively; only
+    an active starter is genuinely hard to pry loose. Also protects each
+    position's clear best corroborated asset when it's a scarcity outlier
+    (SCARCE_POSITION_PROTECTION_PERCENTILE) even outside the top-N overall
+    — a league's only real starting TE shouldn't be targetable just
+    because TE dollar values run low relative to RB/WR.
+    """
+    corroborated = [e for e in roster.entries if _corroborated(e, currency)]
+    starters = [e for e in corroborated if e.is_starter]
+    rank_pool = starters if len(starters) >= exclude_top else corroborated
+    ids = {
+        e.player_id
+        for e in sorted(rank_pool, key=lambda e: -(value_for_currency(e.value, currency) or 0))[:exclude_top]
+    }
+    if currency == DYNASTY_CURRENCY:
+        for pos in POSITION_ORDER:
+            pos_entries = sorted(
+                (e for e in corroborated if e.position == pos),
+                key=lambda e: -(e.value.dynasty_positional_percentile or 0),
+            )
+            if pos_entries and (pos_entries[0].value.dynasty_positional_percentile or 0) >= SCARCE_POSITION_PROTECTION_PERCENTILE:
+                ids.add(pos_entries[0].player_id)
+    return ids
 
 
 def identify_buy_low(
@@ -136,9 +228,10 @@ def identify_buy_low(
     """
     currency = value_currency(roster)
     ranked = sorted(
-        (e for e in roster.entries if _corroborated(e, currency)), key=lambda e: -(value_for_currency(e.value, currency) or 0)
+        (e for e in roster.entries if _corroborated(e, currency)),
+        key=lambda e: -(percentile_for_currency(e.value, currency) or 0),
     )
-    untouchable_ids = {e.player_id for e in ranked[:exclude_top]}
+    untouchable_ids = _untouchable_ids(roster, currency, exclude_top)
 
     def _age_ok(e: RosterEntry) -> bool:
         if my_status == CONTENDER:
@@ -178,7 +271,15 @@ def identify_buy_low(
             and _age_ok(e)
             and _not_just_a_slump(e)
         ),
-        key=lambda e: -(value_for_currency(e.value, currency) or 0),
+        # Percentile, not raw value — for REDRAFT_CURRENCY, raw value_for_currency
+        # is RotoBaller's un-normalized full-season point total, which runs
+        # structurally 40-70% higher for QBs than RB/WR/TE (passing volume
+        # dwarfs receiving/rushing scoring). Sorting candidates by that raw
+        # number would systematically rank mediocre QBs above elite skill
+        # players; percentile is already normalized within each source's own
+        # pool and is the same metric the MIN_ROSTERABLE_PERCENTILE filter
+        # just above uses, so eligibility and ranking agree on one signal.
+        key=lambda e: -(percentile_for_currency(e.value, currency) or 0),
     )
 
 
@@ -209,9 +310,40 @@ def identify_needs(roster: ValuedRoster) -> list[str]:
     currency = value_currency(roster)
     best_by_position: dict[str, float] = {}
     for pos in POSITION_ORDER:
-        entries = [e for e in roster.by_position(pos) if _need_percentile(e.value, currency) is not None]
+        # Corroborated only (>=2 sources) — same discipline every other
+        # trade-engine function applies (_corroborated), so a single-source
+        # name-matching artifact can't make a genuinely weak position read
+        # as strong (or vice versa) purely off one shaky data point, which
+        # would then wrongly steer which positions get targeted for trades.
+        entries = [
+            e for e in roster.by_position(pos) if _corroborated(e, currency) and _need_percentile(e.value, currency) is not None
+        ]
         best_by_position[pos] = max((_need_percentile(e.value, currency) for e in entries), default=0.0)
     return sorted(POSITION_ORDER, key=lambda p: best_by_position[p])
+
+
+def identify_depth_needs(roster: ValuedRoster, min_starters: dict[str, int] | None = None) -> list[str]:
+    """Positions where I don't have ENOUGH rosterable bodies, independent of
+    how good my single best player there is — the case identify_needs
+    structurally can't see, since it only ever looks at the top player per
+    position. `min_starters` (from LeagueFormat.starter_slots, when
+    available) is how many of that position the league's roster_positions
+    actually requires; without it, this only flags a position with ZERO
+    rosterable depth at all, which is still a real signal on its own.
+    """
+    currency = value_currency(roster)
+    thresholds = min_starters or {}
+    needy: list[str] = []
+    for pos in POSITION_ORDER:
+        rosterable = sum(
+            1
+            for e in roster.by_position(pos)
+            if _corroborated(e, currency) and (percentile_for_currency(e.value, currency) or 0) >= MIN_ROSTERABLE_PERCENTILE
+        )
+        required = thresholds.get(pos, 1)  # at minimum, everyone needs >=1 real body at each core position
+        if rosterable < required:
+            needy.append(pos)
+    return needy
 
 
 def _tradeable_pool(
@@ -224,13 +356,7 @@ def _tradeable_pool(
     win-now veterans for future value, not the reverse.
     """
     currency = value_currency(roster)
-    untouchable_ids = {
-        e.player_id
-        for e in sorted(
-            (e for e in roster.entries if _corroborated(e, currency)),
-            key=lambda e: -(value_for_currency(e.value, currency) or 0),
-        )[:exclude_top]
-    }
+    untouchable_ids = _untouchable_ids(roster, currency, exclude_top)
     pool = [e for e in roster.entries if _corroborated(e, currency) and e.player_id not in untouchable_ids]
 
     if my_status in (MIDDLING, REBUILD):
@@ -398,8 +524,311 @@ def _build_rationale(
     return mine, theirs, caveats
 
 
+def _build_sell_high_rationale(
+    sell_entry: RosterEntry,
+    receive: list[RosterEntry],
+    currency: str,
+    profile,
+    status_result: TeamStatusResult,
+    receive_picks: list[OwnedPick] = (),
+) -> tuple[list[str], list[str], list[str]]:
+    """Mirrors _build_rationale's structure and caveat logic, but for the
+    opposite narrative direction: I'm SELLING a rising asset of mine, not
+    buying a dip of theirs, so the framing (and trend direction) flips.
+    """
+    mine: list[str] = []
+    theirs: list[str] = []
+    caveats: list[str] = []
+    label = value_label_for_currency(currency)
+    mine.append(
+        f"{sell_entry.name} is trending up right now ({ordinal_pct(percentile_for_currency(sell_entry.value, currency))} "
+        f"in {label}) — a good window to sell before performance regresses toward his underlying value profile."
+    )
+    for r in receive:
+        theirs.append(
+            f"{r.name} ({r.position}, {ordinal_pct(percentile_for_currency(r.value, currency))}) "
+            f"fits a need on your roster and is comparable {label} to {sell_entry.name}."
+        )
+    for p in receive_picks:
+        theirs.append(f"{p.name} ({p.value:,} KTC pick value) is comparable {label} to {sell_entry.name}.")
+    theirs.extend(profile.framing_notes())
+    for entry in [sell_entry, *receive]:
+        rookie_suffix = _rookie_context_suffix(entry)
+        if entry.value.te_premium_caveat and entry.position == "TE":
+            caveats.append(entry.value.te_premium_caveat)
+        if entry.value.thin_market_caveat:
+            caveats.append(f"{entry.name}: {entry.value.thin_market_caveat}")
+        if currency == DYNASTY_CURRENCY and entry.value.cross_source_agreement == "moderate_disagreement":
+            caveats.append(
+                f"{entry.name}: KTC and FantasyPros disagree moderately on value "
+                f"({ordinal_pct(entry.value.dynasty_value_percentile)} vs "
+                f"{ordinal_pct(entry.value.dynasty_ecr_percentile)}) — treat this valuation with some caution."
+                f"{rookie_suffix}"
+            )
+        if entry.value.panel_disagreement_caveat:
+            caveats.append(f"{entry.name}: {entry.value.panel_disagreement_caveat}{rookie_suffix}")
+    if receive_picks:
+        caveats.append(
+            "Pick tier (Early/Mid/Late) is estimated from the original team's current roster strength, "
+            "not a locked draft slot — treat pick values as approximate until closer to the actual draft."
+        )
+    if currency == REDRAFT_CURRENCY:
+        caveats.append(
+            "Redraft/keeper trade value here is season point projection (RotoBaller), not a dynasty "
+            "trade-value market like KTC — treat this offer as more approximate."
+        )
+    return mine, theirs, caveats
+
+
 def _pick_key(pick: OwnedPick) -> tuple:
     return (pick.season, pick.round, pick.original_roster_id)
+
+
+# -- Opponent-fit assessment and acceptance rating ---------------------------
+#
+# Everything above this point answers "is the math balanced". None of it
+# ever asks whether the RECEIVING team's roster actually has any use for
+# what they'd get — the single most consequential gap an 8-reviewer audit
+# of this codebase converged on independently. The functions below close
+# that gap using data generate_trade_proposals already has in scope
+# (their_roster, the shared `rosters` dict, owner_profiles) — no new data
+# source is needed.
+
+
+def _position_rosterable_count(roster: ValuedRoster, position: str, currency: str) -> int:
+    return sum(
+        1
+        for e in roster.by_position(position)
+        if _corroborated(e, currency) and (percentile_for_currency(e.value, currency) or 0) >= MIN_ROSTERABLE_PERCENTILE
+    )
+
+
+def _weakest_rosterable_percentile(roster: ValuedRoster, position: str, currency: str) -> float | None:
+    """The bar a give-piece must clear to plausibly be an upgrade for this
+    roster at this position — their worst currently-rosterable player
+    there. None means they have no rosterable depth at all at this
+    position, i.e. ANY reasonable piece would help.
+    """
+    pctls = [
+        percentile_for_currency(e.value, currency)
+        for e in roster.by_position(position)
+        if _corroborated(e, currency) and (percentile_for_currency(e.value, currency) or 0) >= MIN_ROSTERABLE_PERCENTILE
+    ]
+    return min(pctls) if pctls else None
+
+
+@dataclass
+class OpponentFit:
+    target_is_starter: bool
+    would_upgrade_their_roster: bool
+    fit_notes: list[str]
+    opponent_status: str  # contender | middling | rebuild
+    status_fit: str  # good_fit | neutral | mismatch
+    piece_count: int  # len(give) + len(give_picks) — 1 = clean ask, 2+ = fragmented
+
+
+def _recipient_need_fit(
+    their_roster: ValuedRoster, give: list[RosterEntry], currency: str
+) -> tuple[bool, list[str]]:
+    """Would sending `give` plausibly help their_roster, or is it roster
+    clutter they have no use for? True if ANY give piece either beats
+    their weakest currently-rosterable player at that position, or fills a
+    position where they have zero rosterable depth at all. A picks-only
+    give (no players) always passes — draft capital helps any roster.
+    """
+    if not give:
+        return True, []
+    notes: list[str] = []
+    any_fit = False
+    for piece in give:
+        pos = piece.position or ""
+        weakest = _weakest_rosterable_percentile(their_roster, pos, currency)
+        piece_pctl = percentile_for_currency(piece.value, currency) or 0
+        if weakest is None or piece_pctl > weakest:
+            any_fit = True
+        else:
+            notes.append(f"{piece.name} ({pos}) likely wouldn't beat their existing {pos} depth")
+    return any_fit, notes
+
+
+MAX_OFFER_RETRIES = 3  # alternate combinations to try before giving up on a candidate/opponent pairing
+
+
+def _find_fitting_offer(
+    pool: list[RosterEntry],
+    picks: list[OwnedPick],
+    target_value: float,
+    currency: str,
+    recipient_roster: ValuedRoster,
+) -> tuple[list[RosterEntry], list[OwnedPick], list[str]] | None:
+    """_find_matching_offer returns the first value-tolerance match it
+    finds and stops — if THAT specific combination turns out to be roster
+    clutter for the recipient (_recipient_need_fit), there may still be a
+    different combination at the same target value that fits. Retries a
+    few times, each time excluding the previous attempt's player pieces
+    from the pool, before giving up on this candidate entirely.
+    """
+    candidate_pool = pool
+    for _ in range(MAX_OFFER_RETRIES):
+        trial = _find_matching_offer(candidate_pool, picks, target_value, currency)
+        if trial is None:
+            return None
+        trial_players, trial_picks = trial
+        fits, fit_notes = _recipient_need_fit(recipient_roster, trial_players, currency)
+        if fits:
+            return trial_players, trial_picks, fit_notes
+        excluded_ids = {e.player_id for e in trial_players}
+        candidate_pool = [e for e in candidate_pool if e.player_id not in excluded_ids]
+    return None
+
+
+def _status_fit(give: list[RosterEntry], give_picks: list[OwnedPick], opponent_status: str) -> str:
+    """Does what the OPPONENT receives match their apparent team timeline?
+    Veteran, proven production fits a contender and cuts against a
+    rebuild; picks/youth fit a rebuild and cut against a contender who
+    wants to win now, not stockpile future assets.
+    """
+    has_picks = bool(give_picks)
+    veteran_heavy = any(e.age is not None and e.age >= veteran_min_age(e.position) for e in give)
+    young_heavy = (not veteran_heavy) and any(
+        e.age is not None and e.age <= young_max_age(e.position) for e in give
+    )
+    if opponent_status == REBUILD:
+        if has_picks or young_heavy:
+            return "good_fit"
+        if veteran_heavy:
+            return "mismatch"
+    elif opponent_status == CONTENDER:
+        if veteran_heavy:
+            return "good_fit"
+        if has_picks and not give:
+            return "mismatch"
+    return "neutral"
+
+
+def rate_acceptance(fit: OpponentFit, value_ratio: float, profile) -> tuple[str, list[str]]:
+    """Buckets acceptance likelihood into ACCEPTANCE_TIERS rather than a
+    fabricated precise probability — the underlying signals (value
+    closeness, roster fit, timeline fit, owner tendencies) support a
+    directional read, not a number with real statistical meaning.
+    """
+    score = 0
+    reasons: list[str] = []
+    if abs(value_ratio - 1.0) <= 0.05:
+        score += 1
+        reasons.append("Value is nearly dead-even.")
+    elif abs(value_ratio - 1.0) > 0.15:
+        score -= 1
+        reasons.append("Value sits near the edge of an acceptable range.")
+    if fit.target_is_starter:
+        score -= 1
+        reasons.append("Asks for their current starter — expect more resistance than a bench piece.")
+    if not fit.would_upgrade_their_roster:
+        score -= 2
+        reasons.append("What they'd receive doesn't clearly beat their existing depth at that position.")
+    if fit.status_fit == "good_fit":
+        score += 1
+        reasons.append(f"Matches their apparent {fit.opponent_status} timeline.")
+    elif fit.status_fit == "mismatch":
+        score -= 1
+        reasons.append(f"Cuts against their apparent {fit.opponent_status} timeline.")
+    if fit.piece_count >= 2:
+        score -= 1
+        reasons.append("Multi-piece offer — some managers read this as a lowball.")
+    if profile.trades_often == "inactive":
+        score = min(score, -2)
+        reasons.append(f"{profile.username or 'This owner'} is documented as rarely completing trades.")
+    elif profile.trades_often == "active":
+        score += 1
+        reasons.append(f"{profile.username or 'This owner'} trades often.")
+    idx = max(0, min(len(ACCEPTANCE_TIERS) - 1, 2 + score))
+    return ACCEPTANCE_TIERS[idx], reasons
+
+
+def _player_confidence(pv: PlayerValue) -> str:
+    if not pv.is_corroborated or pv.cross_source_agreement == "high_disagreement":
+        return "Low"
+    if pv.cross_source_agreement == "moderate_disagreement" or pv.thin_market_caveat or pv.panel_disagreement_caveat:
+        return "Medium"
+    return "High"
+
+
+_CONFIDENCE_RANK = {"Low": 0, "Medium": 1, "High": 2}
+
+
+def proposal_confidence(values: list[PlayerValue]) -> str:
+    """Confidence in the VALUATIONS behind a proposal — distinct from
+    acceptance_rating (confidence in whether they'd say yes). Rolls up
+    is_corroborated/cross_source_agreement/thin_market/panel_disagreement,
+    which were already computed per-player but previously only ever
+    surfaced as free-text caveat prose, not a structured, sortable field.
+    Takes the WORST confidence among all players in play — one shaky
+    valuation is enough to make the whole proposal less trustworthy.
+    """
+    if not values:
+        return "Medium"
+    return min((_player_confidence(pv) for pv in values), key=lambda c: _CONFIDENCE_RANK[c])
+
+
+# -- Outreach message generation ---------------------------------------------
+
+_MESSAGE_OPENERS = {
+    "buy_low": [
+        "Hey — {give_line} for {receive_line}? ",
+        "Yo, would you do {give_line} for {receive_line}? ",
+        "Hey, I'd offer {give_line} for {receive_line} if you're open to it. ",
+    ],
+    "sell_high": [
+        "Hey — I'd move {give_line} for {receive_line}, interested? ",
+        "Yo, I'd let go of {give_line} for {receive_line} if it helps you out. ",
+    ],
+    "pick_target": [
+        "Hey — I'd send {give_line} for {receive_line}. ",
+        "Yo, thinking {give_line} for {receive_line}? ",
+    ],
+}
+
+_MESSAGE_CLOSERS_BY_NEED = {
+    True: [
+        "Feels like it fills a real need for you.",
+        "Seems like it plugs a hole for you too.",
+        "Figured it helps both of us out.",
+    ],
+    False: [
+        "No pressure either way, just floating it.",
+        "Let me know if it's not your speed.",
+        "Totally open to a different mix if this isn't it.",
+    ],
+}
+
+
+def _names_line(entries: list[RosterEntry], picks: list[OwnedPick]) -> str:
+    names = [e.name for e in entries] + [p.name for p in picks]
+    if not names:
+        return "nothing"
+    if len(names) == 1:
+        return names[0]
+    return " + ".join(names)
+
+
+def generate_trade_message(proposal: TradeProposal, fit: OpponentFit | None = None) -> str:
+    """A short, casual chat message to actually send — not a summary of the
+    proposal's stats. Deliberately avoids AI-sounding phrasing ("according
+    to my projections", "this benefits both parties", etc.) in favor of
+    the way a real manager pitches a trade in a league chat: plain, a
+    little informal, no hard sell.
+    """
+    trade_type = proposal.trade_type if proposal.trade_type in _MESSAGE_OPENERS else "buy_low"
+    opener_idx = (len(proposal.give) + len(proposal.give_picks) + len(proposal.target_username or "")) % len(
+        _MESSAGE_OPENERS[trade_type]
+    )
+    opener = _MESSAGE_OPENERS[trade_type][opener_idx]
+    give_line = _names_line(proposal.give, proposal.give_picks)
+    receive_line = _names_line(proposal.receive, proposal.receive_picks)
+    fills_need = fit.would_upgrade_their_roster if fit is not None else True
+    closer_idx = len(give_line) % len(_MESSAGE_CLOSERS_BY_NEED[fills_need])
+    closer = _MESSAGE_CLOSERS_BY_NEED[fills_need][closer_idx]
+    return (opener + closer).format(give_line=give_line, receive_line=receive_line)
 
 
 def _build_pick_target_proposal(
@@ -409,6 +838,10 @@ def _build_pick_target_proposal(
     my_pool: list[RosterEntry],
     currency: str,
     status_result: TeamStatusResult,
+    *,
+    rosters: dict[int, "ValuedRoster"] | None = None,
+    storage=None,
+    engine=None,
 ) -> TradeProposal | None:
     """A REBUILD-specific proposal shape: give a player, get a pick instead
     of a player back. Real rebuilding teams routinely ask for picks rather
@@ -451,7 +884,22 @@ def _build_pick_target_proposal(
             caveats.append(e.value.te_premium_caveat)
 
     my_total = sum(value_for_currency(e.value, currency) or 0 for e in offer_players)
-    return TradeProposal(
+    ratio = my_total / target_pick.value if target_pick.value else float("inf")
+    their_status_result = (
+        classify_team_status(their_roster.roster_id, rosters, currency, storage=storage, engine=engine)
+        if rosters is not None and storage and engine
+        else None
+    )
+    fit = OpponentFit(
+        target_is_starter=False,  # a pick has no lineup slot to protect
+        would_upgrade_their_roster=True,  # draft capital always has value to any roster
+        fit_notes=[],
+        opponent_status=their_status_result.status if their_status_result else "unknown",
+        status_fit="good_fit" if their_status_result and their_status_result.status == REBUILD else "neutral",
+        piece_count=len(offer_players),
+    )
+    rating, reasons = rate_acceptance(fit, ratio, profile)
+    proposal = TradeProposal(
         league_name=league.name,
         currency=currency,
         target_username=their_roster.owner_username or "unknown",
@@ -464,7 +912,13 @@ def _build_pick_target_proposal(
         rationale_for_me=mine,
         rationale_for_them=theirs,
         caveats=caveats,
+        trade_type="pick_target",
+        acceptance_rating=rating,
+        acceptance_reasons=reasons,
+        confidence=proposal_confidence([e.value for e in offer_players]),
     )
+    proposal.message = generate_trade_message(proposal, fit)
+    return proposal
 
 
 def generate_trade_proposals(
@@ -495,71 +949,200 @@ def generate_trade_proposals(
         status_result = classify_team_status(my_roster.roster_id, rosters, currency, storage=storage, engine=engine)
     my_status = status_result.status
     my_needs = identify_needs(my_roster)
+    # Quality needs (worst single player) plus depth needs (not enough
+    # rosterable bodies at a position regardless of the best one's
+    # quality) — a strong RB1 sitting on zero rosterable RB2/3 depth
+    # wouldn't otherwise ever surface as a target position.
+    depth_needs = identify_depth_needs(my_roster, my_roster.fmt.starter_slots)
+    target_positions = list(dict.fromkeys([*my_needs[:2], *depth_needs]))
     my_pool = _tradeable_pool(my_roster, my_status)
 
     valued_picks = get_valued_picks_by_roster(rosters, currency, storage, engine)
     my_picks = sorted((valued_picks or {}).get(my_roster.roster_id, []), key=lambda p: -(p.value or 0))
 
-    proposals: list[TradeProposal] = []
-    targeted_owners: set[str] = set()
-
     other_rosters = [r for r in rosters.values() if r.owner_id != MY_USER_ID and r.owner_id is not None]
+
+    # -- Pass 1: buy-low. Collect every viable (opponent, target, offer)
+    # combination FIRST, then rank and select — not first-fit by whatever
+    # order Sleeper's roster_ids happen to iterate in. A combination only
+    # survives if it also passes _recipient_need_fit: an offer the
+    # recipient's own roster has no actual use for is dropped here rather
+    # than proposed and rated poorly, since it was never a real trade.
+    Candidate = tuple  # (their_roster, target_entry, offer_players, offer_picks, fit, rating, reasons, profile, my_total, target_value)
+    raw_candidates: list[Candidate] = []
     for their_roster in other_rosters:
-        if not their_roster.entries or their_roster.owner_username in targeted_owners:
+        if not their_roster.entries:
             continue
         buy_low = identify_buy_low(their_roster, my_status)
-        candidates = [e for e in buy_low if e.position in my_needs[:2]]
-        if not candidates:
+        need_candidates = [e for e in buy_low if e.position in target_positions][:MAX_CANDIDATES_PER_OPPONENT]
+        if not need_candidates:
             continue
-        target_entry = candidates[0]
-
-        target_value = value_for_currency(target_entry.value, currency) or 0
-        offer = _find_matching_offer(my_pool, my_picks, target_value, currency)
-        if offer is None:
-            continue
-        offer_players, offer_picks = offer
-
+        their_status_result = classify_team_status(their_roster.roster_id, rosters, currency, storage=storage, engine=engine)
         profile = get_owner_profile(their_roster.owner_username or "", league.name)
+        for target_entry in need_candidates:
+            target_value = value_for_currency(target_entry.value, currency) or 0
+            fitting = _find_fitting_offer(my_pool, my_picks, target_value, currency, their_roster)
+            if fitting is None:
+                continue  # no combination at this value would be anything but roster clutter for them
+            offer_players, offer_picks, fit_notes = fitting
+            fit = OpponentFit(
+                target_is_starter=target_entry.is_starter,
+                would_upgrade_their_roster=True,
+                fit_notes=fit_notes,
+                opponent_status=their_status_result.status,
+                status_fit=_status_fit(offer_players, offer_picks, their_status_result.status),
+                piece_count=len(offer_players) + len(offer_picks),
+            )
+            my_total = sum(value_for_currency(e.value, currency) or 0 for e in offer_players) + sum(
+                p.value or 0 for p in offer_picks
+            )
+            ratio = (my_total / target_value) if target_value else float("inf")
+            rating, reasons = rate_acceptance(fit, ratio, profile)
+            raw_candidates.append(
+                (their_roster, target_entry, offer_players, offer_picks, fit, rating, reasons, profile, my_total, target_value)
+            )
+
+    def _rank_key(c: Candidate) -> tuple:
+        _, _, _, _, _, rating, _, _, my_total, target_value = c
+        tier_idx = ACCEPTANCE_TIERS.index(rating)
+        ratio_gap = abs((my_total / target_value) - 1.0) if target_value else 999.0
+        return (-tier_idx, ratio_gap)  # best acceptance tier first, tightest value match as tiebreak
+
+    raw_candidates.sort(key=_rank_key)
+
+    proposals: list[TradeProposal] = []
+    targeted_owners: set[str] = set()
+    used_player_ids: set[str] = set()
+    used_pick_keys: set[tuple] = set()
+    for their_roster, target_entry, offer_players, offer_picks, fit, rating, reasons, profile, my_total, target_value in raw_candidates:
+        if len(proposals) >= max_proposals:
+            break
+        owner_key = their_roster.owner_username or ""
+        if owner_key in targeted_owners:
+            continue
+        if any(e.player_id in used_player_ids for e in offer_players):
+            continue  # a higher-ranked proposal already spent this asset
+        if any(_pick_key(p) in used_pick_keys for p in offer_picks):
+            continue
+
         rationale_mine, rationale_theirs, caveats = _build_rationale(
             target_entry, offer_players, currency, profile, status_result, offer_picks
         )
-
-        my_total = sum(value_for_currency(e.value, currency) or 0 for e in offer_players) + sum(
-            p.value or 0 for p in offer_picks
-        )
-        proposals.append(
-            TradeProposal(
-                league_name=league.name,
-                currency=currency,
-                target_username=their_roster.owner_username or "unknown",
-                target_team_name=their_roster.team_name,
-                give=offer_players,
-                receive=[target_entry],
-                give_picks=offer_picks,
-                my_value_total=my_total,
-                their_value_total=target_value,
-                rationale_for_me=rationale_mine,
-                rationale_for_them=rationale_theirs,
-                caveats=caveats,
+        if fit.piece_count >= 2:
+            caveats.append(
+                "This is a multi-piece offer — some managers read fragmented value as a lowball; "
+                "a single clean piece close in value may land better if you have one available."
             )
+        confidence = proposal_confidence([target_entry.value, *(e.value for e in offer_players)])
+
+        proposal = TradeProposal(
+            league_name=league.name,
+            currency=currency,
+            target_username=their_roster.owner_username or "unknown",
+            target_team_name=their_roster.team_name,
+            give=offer_players,
+            receive=[target_entry],
+            give_picks=offer_picks,
+            my_value_total=my_total,
+            their_value_total=target_value,
+            rationale_for_me=rationale_mine,
+            rationale_for_them=rationale_theirs,
+            caveats=caveats,
+            trade_type="buy_low",
+            acceptance_rating=rating,
+            acceptance_reasons=reasons,
+            confidence=confidence,
         )
-        targeted_owners.add(their_roster.owner_username or "")
+        proposal.message = generate_trade_message(proposal, fit)
+        proposals.append(proposal)
 
-        # Remove used pieces so later proposals don't re-offer the same assets.
-        used_ids = {e.player_id for e in offer_players}
-        my_pool = [e for e in my_pool if e.player_id not in used_ids]
-        used_pick_keys = {_pick_key(p) for p in offer_picks}
-        my_picks = [p for p in my_picks if _pick_key(p) not in used_pick_keys]
+        targeted_owners.add(owner_key)
+        used_player_ids.update(e.player_id for e in offer_players)
+        used_pick_keys.update(_pick_key(p) for p in offer_picks)
 
-        if len(proposals) >= max_proposals:
-            break
+    # -- Pass 2: sell-high. Shop MY rising/valuable players to whichever
+    # opponent has a real need there, mirroring the buy-low flow but
+    # initiated from my side — previously identify_sell_high was fully
+    # dead code with zero callers, so this half of the tool's own stated
+    # design ("sell before regression, buy before recovery") never fired.
+    if len(proposals) < max_proposals:
+        sell_candidates = [e for e in identify_sell_high(my_roster) if e.player_id not in used_player_ids]
+        for sell_entry in sell_candidates:
+            if len(proposals) >= max_proposals:
+                break
+            sell_value = value_for_currency(sell_entry.value, currency) or 0
+            if not sell_value:
+                continue
+            for their_roster in other_rosters:
+                owner_key = their_roster.owner_username or ""
+                if owner_key in targeted_owners or not their_roster.entries:
+                    continue
+                their_needs = identify_needs(their_roster)
+                if sell_entry.position not in their_needs[:2]:
+                    continue  # not a real need for them — don't pitch a sell into a position they don't need
+                their_status_result = classify_team_status(
+                    their_roster.roster_id, rosters, currency, storage=storage, engine=engine
+                )
+                their_pool = _tradeable_pool(their_roster, their_status_result.status)
+                their_picks_sorted = sorted((valued_picks or {}).get(their_roster.roster_id, []), key=lambda p: -(p.value or 0))
+                fitting = _find_fitting_offer(their_pool, their_picks_sorted, sell_value, currency, my_roster)
+                if fitting is None:
+                    continue  # nothing they'd send back would actually help my roster either
+                offer_players, offer_picks, fit_notes = fitting
+                profile = get_owner_profile(owner_key, league.name)
+                fit = OpponentFit(
+                    target_is_starter=any(e.is_starter for e in offer_players),
+                    would_upgrade_their_roster=True,
+                    fit_notes=fit_notes,
+                    opponent_status=their_status_result.status,
+                    status_fit=_status_fit([sell_entry], [], their_status_result.status),
+                    piece_count=len(offer_players) + len(offer_picks),
+                )
+                their_total = sum(value_for_currency(e.value, currency) or 0 for e in offer_players) + sum(
+                    p.value or 0 for p in offer_picks
+                )
+                ratio = (sell_value / their_total) if their_total else float("inf")
+                rating, reasons = rate_acceptance(fit, ratio, profile)
+                rationale_mine, rationale_theirs, caveats = _build_sell_high_rationale(
+                    sell_entry, offer_players, currency, profile, status_result, offer_picks
+                )
+                confidence = proposal_confidence([sell_entry.value, *(e.value for e in offer_players)])
+                proposal = TradeProposal(
+                    league_name=league.name,
+                    currency=currency,
+                    target_username=their_roster.owner_username or "unknown",
+                    target_team_name=their_roster.team_name,
+                    give=[sell_entry],
+                    receive=offer_players,
+                    receive_picks=offer_picks,
+                    my_value_total=sell_value,
+                    their_value_total=their_total,
+                    rationale_for_me=rationale_mine,
+                    rationale_for_them=rationale_theirs,
+                    caveats=caveats,
+                    trade_type="sell_high",
+                    acceptance_rating=rating,
+                    acceptance_reasons=reasons,
+                    confidence=confidence,
+                )
+                proposal.message = generate_trade_message(proposal, fit)
+                proposals.append(proposal)
+                targeted_owners.add(owner_key)
+                used_player_ids.update(e.player_id for e in offer_players)
+                used_pick_keys.update(_pick_key(p) for p in offer_picks)
+                break  # one sell-high pitch per selling candidate
 
+    # -- Pass 3: pick-target. REBUILD-specific: ask for a pick instead of a
+    # player, when nothing above already filled the proposal budget.
     if my_status == REBUILD and valued_picks and len(proposals) < max_proposals:
         for their_roster in other_rosters:
-            if their_roster.owner_username in targeted_owners:
+            if (their_roster.owner_username or "") in targeted_owners:
                 continue
             their_picks = valued_picks.get(their_roster.roster_id, [])
-            pick_proposal = _build_pick_target_proposal(league, their_roster, their_picks, my_pool, currency, status_result)
+            pick_proposal = _build_pick_target_proposal(
+                league, their_roster, their_picks, my_pool, currency, status_result,
+                rosters=rosters, storage=storage, engine=engine,
+            )
             if pick_proposal is not None:
                 proposals.append(pick_proposal)
                 break

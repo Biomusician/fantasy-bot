@@ -16,7 +16,7 @@ flex slot in {"SUPER_FLEX", "QB"}), not from the handoff doc's labels.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sleeper_tool.name_matching import normalize_name
 from sleeper_tool.rankings import fantasypros, ktc, rotoballer
@@ -78,6 +78,12 @@ class LeagueFormat:
     te_premium_bonus: float  # extra pts per TE reception, 0 if none
     rush_100_bonus: float  # bonus for 100+ rush yd games, 0 if none
     pass_td_pts: float
+    # Exact QB/RB/WR/TE slot counts read directly off roster_positions
+    # (excluding BN/IR/TAXI/FLEX/SUPER_FLEX). A known undercount: FLEX and
+    # SUPER_FLEX slots can be filled by RB/WR/TE (or QB for SUPER_FLEX) but
+    # aren't attributed to any one position here, so this is a floor on
+    # "how many you're guaranteed to need", not the true total demand.
+    starter_slots: dict[str, int] = field(default_factory=dict)
 
     @property
     def is_superflex(self) -> bool:
@@ -95,16 +101,24 @@ class LeagueFormat:
         return min(tiers, key=lambda t: abs(t[0] - self.te_premium_bonus))[1]
 
 
+CORE_SKILL_POSITIONS = ("QB", "RB", "WR", "TE")
+
+
 def derive_league_format(league_data: dict) -> LeagueFormat:
-    scoring = league_data.get("scoring_settings", {})
-    roster_positions = league_data.get("roster_positions", [])
+    # `or {}`/`or []`, not `.get(key, default)` — Sleeper can return the key
+    # present but explicitly null (e.g. a league mid-creation), and `.get`'s
+    # default only covers a MISSING key, not an explicit None.
+    scoring = league_data.get("scoring_settings") or {}
+    roster_positions = league_data.get("roster_positions") or []
     is_sf = "SUPER_FLEX" in roster_positions or roster_positions.count("QB") > 1
+    starter_slots = {pos: roster_positions.count(pos) for pos in CORE_SKILL_POSITIONS if roster_positions.count(pos)}
     return LeagueFormat(
         qb_format="SF" if is_sf else "1QB",
         ppr=float(scoring.get("rec", 0) or 0),
         te_premium_bonus=float(scoring.get("bonus_rec_te", 0) or 0),
         rush_100_bonus=float(scoring.get("bonus_rush_yd_100", 0) or 0),
         pass_td_pts=float(scoring.get("pass_td", 4) or 4),
+        starter_slots=starter_slots,
     )
 
 

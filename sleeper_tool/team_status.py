@@ -103,9 +103,18 @@ class TeamStatusResult:
 
 
 def _percentile(pv: PlayerValue, currency: str) -> float | None:
-    """Mirrors trade_engine.percentile_for_currency without importing that
-    module, which would create a circular import (trade_engine imports this
-    module to bias trade strategy on team status)."""
+    """Mirrors trade_engine._need_percentile without importing that module
+    (trade_engine imports THIS module to bias trade strategy on team
+    status, so importing back would be circular). Prefers the WITHIN-
+    POSITION percentile for dynasty currency, for the same reason
+    trade_engine's own docstring gives: pool-wide percentile makes a
+    shallow position (TE) look weaker and a deep one (RB/WR) look stronger
+    purely from pool-size, not real roster strength. Redraft currency has
+    no positional percentile plumbed through yet (same known, smaller-
+    impact gap trade_engine documents), so it falls back to pool-wide.
+    """
+    if currency == "dynasty" and pv.dynasty_positional_percentile is not None:
+        return pv.dynasty_positional_percentile
     return pv.dynasty_value_percentile if currency == "dynasty" else pv.redraft_ecr_percentile
 
 
