@@ -221,7 +221,7 @@ def _waiver_table(targets: list[WaiverTarget]) -> str:
     )
 
 
-_DROP_PRIORITY_KIND = {"Strong Drop": "negative", "Consider Dropping": "caution"}
+_DROP_PRIORITY_KIND = {"Strong Drop": "caution", "Consider Dropping": "neutral"}
 
 
 def _drop_candidates_section(candidates: list[DropCandidate]) -> str:

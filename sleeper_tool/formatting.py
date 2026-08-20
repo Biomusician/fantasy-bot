@@ -29,7 +29,15 @@ def ordinal(n: int) -> str:
 
 
 def ordinal_pct(value: float | None) -> str:
-    """Formats a 0-100 percentile as e.g. '43rd percentile', or 'unknown' if None."""
+    """Formats a 0-100 percentile as e.g. '43rd percentile', or 'unknown' if None.
+    Clamped to [0, 100] — a rank that exceeds its source's own counted pool
+    size (a real, observed data anomaly, not just a theoretical one) can
+    otherwise produce a negative percentile, which upstream of this clamp
+    once rendered as literal garbled text like "-28nd percentile" straight
+    into a generated report. Clamping degrades gracefully to a boundary
+    value instead of exposing the anomaly as broken prose.
+    """
     if value is None:
         return "unknown"
-    return f"{ordinal(round(value))} percentile"
+    clamped = max(0.0, min(100.0, value))
+    return f"{ordinal(round(clamped))} percentile"

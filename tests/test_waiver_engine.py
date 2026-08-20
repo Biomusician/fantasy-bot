@@ -113,11 +113,18 @@ def test_roster_impact_note_names_the_weak_starter_it_would_beat():
     assert "34" in note
 
 
-def test_roster_impact_note_none_when_add_would_not_actually_beat_the_starter():
+def test_roster_impact_note_honest_depth_framing_when_add_would_not_beat_the_starter():
+    # Previously silently returned None here, which made get_waiver_targets
+    # fall back to the abstract "fills your Nth-worst need" framing even
+    # though a concrete, honest answer ("this is depth, not a starter
+    # upgrade") was computable -- matches trade_engine's equivalent
+    # fallback instead of leaving the common non-upgrade case unstated.
     strong_starter = make_entry(player_id="s1", name="Star RB", position="RB", is_starter=True,
         value=make_value(position="RB", dynasty_value_percentile=90.0))
     roster = make_roster(entries=[strong_starter])
-    assert _roster_impact_note(roster, "RB", new_pctl=40.0, currency="dynasty") is None
+    note = _roster_impact_note(roster, "RB", new_pctl=40.0, currency="dynasty")
+    assert "Star RB" in note
+    assert "not an immediate upgrade" in note
 
 
 def test_roster_impact_note_flags_an_empty_position():

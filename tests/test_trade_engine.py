@@ -461,6 +461,76 @@ def test_identify_drop_candidates_respects_max_candidates_cap():
     assert len(identify_drop_candidates(roster, CONTENDER, max_candidates=3)) == 3
 
 
+def test_identify_drop_candidates_does_not_count_taxi_or_reserve_as_competing_depth():
+    # Regression: a taxi-squad/IR stash isn't eligible to start this week
+    # and was never competing with a real bench player for a lineup slot
+    # -- counting it toward "buried" produced false-positive drop advice
+    # on any dynasty roster with a taxi squad (the normal case).
+    from sleeper_tool.trade_engine import CONTENDER, identify_drop_candidates
+
+    real_bench_rb = make_entry(player_id="bench-rb", position="RB", is_starter=False,
+        value=make_value(position="RB", dynasty_positional_percentile=50.0, trend="no change"))
+    starters = [
+        make_entry(player_id=f"rb-starter-{i}", position="RB", is_starter=True,
+            value=make_value(position="RB", dynasty_positional_percentile=90.0, trend="no change"))
+        for i in range(2)
+    ]
+    taxi_stash = make_entry(player_id="taxi-rb", position="RB", is_starter=False, is_taxi=True,
+        value=make_value(position="RB", dynasty_positional_percentile=75.0, trend="no change"))
+    roster = make_roster(entries=[*starters, real_bench_rb, taxi_stash])
+    roster.fmt.starter_slots["RB"] = 2
+    candidates = identify_drop_candidates(roster, CONTENDER, max_candidates=10)
+    # The real bench RB (only 2 starters ahead of him, required=2) must NOT
+    # be flagged buried just because an uncounted taxi stash also exists.
+    assert not any(c.entry.player_id == "bench-rb" for c in candidates)
+
+
+def test_identify_drop_candidates_never_flags_a_trending_up_sell_high_candidate():
+    # Regression: a low-percentile bench player trending UP is exactly
+    # identify_sell_high's own target profile -- flagging him "Consider
+    # Dropping" in the same report that pitches selling him for value is
+    # a direct self-contradiction.
+    from sleeper_tool.trade_engine import CONTENDER, identify_drop_candidates
+
+    rising_low_value = make_entry(player_id="riser", position="WR", is_starter=False,
+        value=make_value(position="WR", dynasty_positional_percentile=10.0, trend="rising"))
+    roster = make_roster(entries=[rising_low_value])
+    assert identify_drop_candidates(roster, CONTENDER) == []
+
+
+def test_identify_drop_candidates_respects_exclude_ids_for_live_trade_proposals():
+    from sleeper_tool.trade_engine import CONTENDER, identify_drop_candidates
+
+    weak_bench = make_entry(player_id="weak", position="WR", is_starter=False,
+        value=make_value(position="WR", dynasty_positional_percentile=15.0, trend="no change"))
+    roster = make_roster(entries=[weak_bench])
+    assert identify_drop_candidates(roster, CONTENDER, exclude_ids=frozenset({"weak"})) == []
+
+
+def test_identify_drop_candidates_uses_fractional_starter_slots_without_truncating():
+    # Regression: required was cast through int(), so a FLEX-derived
+    # fractional starter_slots value (e.g. 2.667) got truncated to 2,
+    # making the buried threshold fire a full player earlier than the
+    # league's own roster math actually justifies.
+    from sleeper_tool.trade_engine import CONTENDER, identify_drop_candidates
+
+    # required = 2.667 (fractional) -> buried threshold = 2.667 + 1 = 3.667,
+    # so exactly 3 better options should NOT count as buried (3 < 3.667),
+    # only 4+ should.
+    weakest = make_entry(player_id="weakest", position="RB", is_starter=False,
+        value=make_value(position="RB", dynasty_positional_percentile=50.0, trend="no change"))
+    better = [
+        make_entry(player_id=f"better-{i}", position="RB", is_starter=(i < 2),
+            value=make_value(position="RB", dynasty_positional_percentile=90.0 - i, trend="no change"))
+        for i in range(3)
+    ]
+    roster = make_roster(entries=[weakest, *better])
+    roster.fmt.starter_slots["RB"] = 2.667
+    candidates = identify_drop_candidates(roster, CONTENDER, max_candidates=10)
+    buried = [c for c in candidates if any("buried" in r for r in c.reasons)]
+    assert not any(c.entry.player_id == "weakest" for c in buried)
+
+
 # -- _roster_impact_note ---------------------------------------------------
 
 
@@ -482,7 +552,7 @@ def test_roster_impact_note_excludes_departing_player_when_hes_the_weakest_start
     buggy_without_exclusion = _roster_impact_note(roster, "TE", 50.0, "dynasty")
     assert "Departing Guy" in buggy_without_exclusion  # demonstrates the bug exists without the fix
 
-    fixed_with_exclusion = _roster_impact_note(roster, "TE", 50.0, "dynasty", exclude_player_id="dep")
+    fixed_with_exclusion = _roster_impact_note(roster, "TE", 50.0, "dynasty", exclude_ids=frozenset({"dep"}))
     assert "Departing Guy" not in fixed_with_exclusion
     assert "nobody currently starting" in fixed_with_exclusion
 
@@ -495,9 +565,24 @@ def test_roster_impact_note_excludes_departing_player_but_still_compares_against
     other_starter = make_entry(player_id="other", name="Other WR", position="WR", is_starter=True,
         value=make_value(position="WR", dynasty_value_percentile=40.0))
     roster = make_roster(entries=[departing, other_starter])
-    note = _roster_impact_note(roster, "WR", 60.0, "dynasty", exclude_player_id="dep")
+    note = _roster_impact_note(roster, "WR", 60.0, "dynasty", exclude_ids=frozenset({"dep"}))
     assert "Departing Guy" not in note
     assert "Other WR" in note
+
+
+def test_roster_impact_note_excludes_multiple_ids_for_a_two_piece_buy_low_give():
+    # Buy-low can have up to 2 give-pieces; both must be excludable, not
+    # just one, or a same-position 2nd give-piece could still self-reference.
+    from sleeper_tool.trade_engine import _roster_impact_note
+
+    give_a = make_entry(player_id="a", name="Give A", position="RB", is_starter=True,
+        value=make_value(position="RB", dynasty_value_percentile=20.0))
+    give_b = make_entry(player_id="b", name="Give B", position="RB", is_starter=True,
+        value=make_value(position="RB", dynasty_value_percentile=10.0))
+    roster = make_roster(entries=[give_a, give_b])
+    note = _roster_impact_note(roster, "RB", 50.0, "dynasty", exclude_ids=frozenset({"a", "b"}))
+    assert "Give A" not in note and "Give B" not in note
+    assert "nobody currently starting" in note
 
 
 # -- _untouchable_ids: starters-only protection, scarce-position protection -
@@ -706,6 +791,64 @@ def test_benefit_reason_defaults_to_pick_capital_language_with_no_pieces():
     assert "draft capital" in _benefit_reason(roster, [], "dynasty")
 
 
+def test_benefit_reason_excludes_the_departing_target_entry():
+    # Regression: in the buy-low path, their_roster still contains the
+    # target being acquired FROM them (the trade hasn't executed) --
+    # without excluding it, a same-position give-piece could be measured
+    # against the very player leaving their roster in this same deal.
+    from sleeper_tool.trade_engine import _benefit_reason
+
+    departing_target = make_entry(player_id="target", name="Departing Target", position="RB", is_starter=True,
+        value=make_value(position="RB", dynasty_value_percentile=50.0))
+    roster = make_roster(entries=[departing_target])
+    incoming = make_entry(player_id="new", position="RB", value=make_value(position="RB", dynasty_value_percentile=52.0))
+    reason = _benefit_reason(roster, [incoming], "dynasty", exclude_player_id="target")
+    assert "don't have a real RB" in reason  # post-trade, their RB slot is actually empty
+
+
+def test_benefit_reason_defers_to_fit_when_offer_does_not_cleanly_upgrade():
+    # Regression: the closer previously only ever looked at the SINGLE
+    # highest-value piece, so a multi-piece offer with a non-fitting
+    # secondary piece could still get a confident "clean upgrade" closer
+    # that contradicted the same proposal's own acceptance_rating/caveats.
+    from sleeper_tool.trade_engine import OpponentFit, _benefit_reason
+
+    starter = make_entry(player_id="s1", name="Starter", position="WR", is_starter=True,
+        value=make_value(position="WR", dynasty_value_percentile=20.0))
+    roster = make_roster(entries=[starter])
+    strong_piece = make_entry(player_id="p1", position="WR", value=make_value(position="WR", dynasty_value_percentile=80.0))
+    not_upgrading_fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=False, fit_notes=["clutter"],
+        opponent_status="middling", status_fit="neutral", piece_count=2)
+    reason = _benefit_reason(roster, [strong_piece], "dynasty", fit=not_upgrading_fit)
+    assert "start over" not in reason
+    assert "depth" in reason.lower()
+
+
+def test_benefit_reason_start_over_framing_works_for_a_below_rosterable_floor_starter():
+    # Regression: the weakest-rosterable-percentile check (gated at
+    # MIN_ROSTERABLE_PERCENTILE) was consulted BEFORE the starters_here
+    # check, so a real active starter below that floor produced "you
+    # don't have a real X" instead of the more accurate "he'd start over
+    # what you've got" -- the starters_here branch was unreachable for
+    # that common case.
+    from sleeper_tool.trade_engine import _benefit_reason
+
+    weak_starter = make_entry(player_id="s1", name="Weak Starter", position="WR", is_starter=True,
+        value=make_value(position="WR", dynasty_value_percentile=20.0))  # below MIN_ROSTERABLE_PERCENTILE (45)
+    roster = make_roster(entries=[weak_starter])
+    incoming = make_entry(player_id="new", position="WR", value=make_value(position="WR", dynasty_value_percentile=30.0))
+    reason = _benefit_reason(roster, [incoming], "dynasty")
+    assert "start over" in reason
+
+
+def test_benefit_reason_falls_back_to_none_for_position_less_primary_piece():
+    from sleeper_tool.trade_engine import _benefit_reason
+
+    roster = make_roster(entries=[])
+    positionless = make_entry(player_id="p1", position=None, value=make_value(position=None))
+    assert _benefit_reason(roster, [positionless], "dynasty") is None
+
+
 # -- generate_trade_proposals: end-to-end integration ------------------------
 
 
@@ -749,6 +892,49 @@ def _need_fit_scenario():
     ]
     opp_roster = make_roster(roster_id=2, owner_id="opp1", owner_username="RivalOwner", team_name="Rival Team", league=league, entries=opp_entries)
     return league, {1: my_roster, 2: opp_roster}
+
+
+def test_generate_trade_proposals_buy_low_rationale_never_self_references_a_give_piece():
+    # Integration-level regression: a buy-low offer whose give-piece is a
+    # same-position CURRENT STARTER of mine must never have its rationale
+    # claim the incoming target "beats" that very give-piece -- it's
+    # leaving my roster in this exact trade.
+    from sleeper_tool.trade_engine import generate_trade_proposals
+
+    def pv(pos, dyn_pctl, pos_pctl=None, trend="no change"):
+        return make_value(position=pos, dynasty_value=int(dyn_pctl * 100), dynasty_value_percentile=dyn_pctl,
+            dynasty_positional_percentile=pos_pctl if pos_pctl is not None else dyn_pctl, redraft_ecr_percentile=dyn_pctl, trend=trend)
+
+    league = make_league_info(kind="dynasty")
+    # My only RB is a mediocre starter -- exactly the kind of piece that
+    # can end up offered away for a better RB at the same position.
+    my_rb_starter = make_entry(player_id="my-rb-starter", position="RB", is_starter=True, value=pv("RB", 40, 35))
+    my_entries = [
+        my_rb_starter,
+        make_entry(player_id="my-wr1", position="WR", is_starter=True, value=pv("WR", 90, 90)),
+        make_entry(player_id="my-te1", position="TE", is_starter=True, value=pv("TE", 85, 85)),
+        make_entry(player_id="my-qb1", position="QB", is_starter=True, value=pv("QB", 85, 85)),
+    ]
+    my_roster = make_roster(roster_id=1, owner_id=MY_USER_ID, owner_username="me", team_name="My Team", league=league, entries=my_entries)
+
+    opp_entries = [
+        make_entry(player_id="opp-wr1", position="WR", is_starter=True, value=pv("WR", 85, 80)),
+        make_entry(player_id="opp-te1", position="TE", is_starter=True, value=pv("TE", 80, 80)),
+        make_entry(player_id="opp-qb1", position="QB", is_starter=True, value=pv("QB", 80, 80)),
+        make_entry(player_id="opp-rb1", position="RB", is_starter=True, value=make_value(
+            position="RB", dynasty_value=4200, dynasty_value_percentile=55, dynasty_positional_percentile=55,
+            redraft_ecr_percentile=25, trend="down")),
+    ]
+    opp_roster = make_roster(roster_id=2, owner_id="opp1", owner_username="RivalOwner", team_name="Rival Team", league=league, entries=opp_entries)
+
+    proposals = generate_trade_proposals(league, {1: my_roster, 2: opp_roster}, max_proposals=5)
+    for p in proposals:
+        given_names = {e.name for e in p.give}
+        for bullet in p.rationale_for_me:
+            for name in given_names:
+                assert f"starting {name}" not in bullet and f", {name} (" not in bullet, (
+                    f"rationale self-referenced a departing give-piece: {bullet!r}"
+                )
 
 
 def test_generate_trade_proposals_produces_a_scored_buy_low_offer():

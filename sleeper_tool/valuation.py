@@ -234,10 +234,21 @@ class ValuationEngine:
 
     @staticmethod
     def _percentile(rank: int | None, pool_size: int) -> float | None:
-        """Converts a 1-indexed rank into a 0-100 percentile, 100 = best player."""
+        """Converts a 1-indexed rank into a 0-100 percentile, 100 = best player.
+        Clamped to [0, 100] — `rank` and `pool_size` can come from different
+        counts (e.g. a positional rank the source assigns against its own
+        full player pool vs. `pool_size` counted from a locally cached
+        snapshot that doesn't necessarily contain every player that rank
+        was computed against), so `rank > pool_size` is a real, observed
+        case, not just theoretical — confirmed live (a KTC positional rank
+        of 212 against a locally-counted WR pool of 190). Uncapped, that
+        produces a negative percentile that then renders as garbled text
+        ("-28nd percentile") wherever it's formatted.
+        """
         if not rank or not pool_size:
             return None
-        return round(100 * (1 - (rank - 1) / pool_size), 1)
+        raw = 100 * (1 - (rank - 1) / pool_size)
+        return round(max(0.0, min(100.0, raw)), 1)
 
     def _fp_dynasty_key(self, fmt: LeagueFormat) -> str:
         return "dynasty_superflex" if fmt.is_superflex else "dynasty_1qb"

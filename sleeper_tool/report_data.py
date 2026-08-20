@@ -137,6 +137,7 @@ def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int 
                     league_name=ld.league.name, kind="roster",
                     headline=f"Consider dropping {d.entry.name}",
                     detail=f"{ld.league.name} — {'; '.join(d.reasons)}",
+                    rank=-len(d.reasons),  # more independent reasons = a more clear-cut cut, sorts first
                 ))
     actions.sort(key=lambda a: (_ACTION_KIND_ORDER.get(a.kind, 9), a.rank))
     return actions[:max_actions]
@@ -166,7 +167,11 @@ def build_league_report_data(
         storage, engine, league, my_roster, current_week=current_week, waiver_budget=waiver_budget
     )
     time_sensitive = get_time_sensitive_notes(storage, my_roster, current_week=current_week)
-    drop_candidates = identify_drop_candidates(my_roster, status_result.status)
+    # Exclude anyone already used as a give-piece in a live trade proposal
+    # this run -- otherwise the same player could be told to both trade
+    # away for value and cut for nothing in the same report.
+    proposed_give_ids = frozenset(e.player_id for p in proposals for e in p.give)
+    drop_candidates = identify_drop_candidates(my_roster, status_result.status, exclude_ids=proposed_give_ids)
 
     return LeagueReportData(
         league=league,

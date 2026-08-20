@@ -41,7 +41,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sleeper_tool.draft_picks import OwnedPick, compute_owned_picks, relevant_seasons, value_owned_picks
-from sleeper_tool.formatting import ordinal
+from sleeper_tool.formatting import ordinal_pct
 from sleeper_tool.roster_analysis import ValuedRoster
 from sleeper_tool.valuation import PlayerValue
 
@@ -230,7 +230,7 @@ def classify_team_status(
         pick_values = {rid: sum(p.value or 0 for p in picks) for rid, picks in valued_picks.items()}
         pick_pctl = _rank_percentile({rid: float(v) for rid, v in pick_values.items()}, target_roster_id)
         score = (1 - PICK_CAPITAL_WEIGHT) * strength_pctl + PICK_CAPITAL_WEIGHT * pick_pctl
-        pick_note = f", {ordinal(round(pick_pctl))} percentile draft capital ({pick_values[target_roster_id]:,} KTC pick value owned)"
+        pick_note = f", {ordinal_pct(pick_pctl)} draft capital ({pick_values[target_roster_id]:,} KTC pick value owned)"
 
     win_pct = None
     games = target.games_played
@@ -257,11 +257,11 @@ def classify_team_status(
         reason = (
             f"{target.wins}-{target.losses}"
             f"{'-' + str(target.ties) if target.ties else ''} record "
-            f"({win_pct*100:.0f}% win rate) blended with {ordinal(round(strength_pctl))} percentile roster strength"
+            f"({win_pct*100:.0f}% win rate) blended with {ordinal_pct(strength_pctl)} roster strength"
             f"{pick_note}{playoff_note}"
         )
     else:
-        reason = f"{ordinal(round(strength_pctl))} percentile roster strength in-league{pick_note} (no games played yet){playoff_note}"
+        reason = f"{ordinal_pct(strength_pctl)} roster strength in-league{pick_note} (no games played yet){playoff_note}"
 
     return TeamStatusResult(
         status=status, strength_percentile=strength_pctl, win_pct=win_pct, games_played=games, reason=reason

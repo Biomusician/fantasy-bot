@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sleeper_tool.config import LeagueInfo
-from sleeper_tool.formatting import ordinal
+from sleeper_tool.formatting import ordinal, ordinal_pct
 from sleeper_tool.roster_analysis import SKILL_POSITIONS, RosterEntry, ValuedRoster, player_name
 from sleeper_tool.storage import Storage
 from sleeper_tool.trade_engine import (
@@ -84,7 +84,14 @@ def _roster_impact_note(my_roster: ValuedRoster, position: str | None, new_pctl:
     empty. This is the difference between "fills your 1st-worst need at
     RB" (true but says nothing about the actual roster) and "would beat
     your current starting RB (Joe Mixon, 34th percentile)" (an actionable
-    reason).
+    reason). A deliberately separate implementation from
+    trade_engine._roster_impact_note (a phrasing mismatch, not
+    duplication to clean up): this one produces a lowercase clause meant
+    to sit inline in a semicolon-joined reason string, trade_engine's
+    produces a capitalized standalone sentence for a bulleted rationale
+    list — sharing one implementation would need one side to reformat the
+    other's output at every call site. Any *behavioral* fix (not a
+    wording one) should still land in both.
     """
     if not position:
         return None
@@ -96,8 +103,8 @@ def _roster_impact_note(my_roster: ValuedRoster, position: str | None, new_pctl:
     if weak_pctl is None or new_pctl is None:
         return None
     if new_pctl > weak_pctl:
-        return f"would beat your current starting {position} ({weakest_starter.name}, {ordinal(round(weak_pctl))} percentile)"
-    return None
+        return f"would beat your current starting {position} ({weakest_starter.name}, {ordinal_pct(weak_pctl)})"
+    return f"would be depth behind your current starting {position}, {weakest_starter.name} ({ordinal_pct(weak_pctl)}), not an immediate upgrade"
 
 
 def _display_percentile(value: PlayerValue, currency: str) -> float | None:
@@ -275,7 +282,7 @@ def get_waiver_targets(
         if current_week is not None and value.bye_week == current_week:
             reason_bits.append(f"on bye week {current_week} — add for future weeks, not an immediate starter")
         if pctl is not None:
-            reason_bits.append(f"{ordinal(round(pctl))} percentile {value_label_for_currency(currency)}")
+            reason_bits.append(f"{ordinal_pct(pctl)} {value_label_for_currency(currency)}")
 
         tier = _priority_tier(fills_need, pctl, trend_rank)
         horizon = _horizon(value, pdata.get("years_exp"), currency, fills_need, pctl)
