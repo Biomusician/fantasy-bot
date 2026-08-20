@@ -14,7 +14,7 @@ from sleeper_tool.rankings.ff_dynasty_pass import ff_dynasty_status
 from sleeper_tool.roster_analysis import ValuedRoster, build_all_valued_rosters
 from sleeper_tool.storage import Storage
 from sleeper_tool.team_status import TeamStatusResult, classify_team_status
-from sleeper_tool.trade_engine import TradeProposal, generate_trade_proposals, value_currency
+from sleeper_tool.trade_engine import DropCandidate, TradeProposal, generate_trade_proposals, identify_drop_candidates, value_currency
 from sleeper_tool.valuation import LeagueFormat, ValuationEngine
 from sleeper_tool.waiver_engine import TimeSensitiveNote, WaiverTarget, get_time_sensitive_notes, get_waiver_targets
 
@@ -51,6 +51,7 @@ class LeagueReportData:
     proposals: list[TradeProposal] = field(default_factory=list)
     waiver_targets: list[WaiverTarget] = field(default_factory=list)
     time_sensitive: list[TimeSensitiveNote] = field(default_factory=list)
+    drop_candidates: list[DropCandidate] = field(default_factory=list)
     error: str | None = None
 
 
@@ -78,7 +79,7 @@ class WeeklyReportData:
     priority_actions: list[PriorityAction] = field(default_factory=list)
 
 
-_ACTION_KIND_ORDER = {"alert": 0, "trade": 1, "waiver": 2}
+_ACTION_KIND_ORDER = {"alert": 0, "trade": 1, "waiver": 2, "roster": 3}
 
 
 _CONFIDENCE_RANK = {"High": 0, "Medium": 1, "Low": 2}
@@ -90,14 +91,14 @@ def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int 
     time-boxed to this week's lineup lock), then trades with a Good/High
     acceptance rating AND at least Medium valuation confidence (a
     favorable-looking trade built on shaky data isn't a top action), then
-    Must-Add waivers. Within each kind, ranked by actual quality (trade
-    acceptance tier then confidence; waiver percentile) rather than
-    league-iteration order — otherwise truncating to max_actions could
-    silently drop an objectively better action from a later-processed
-    league in favor of a weaker one from an earlier league. An empty
-    result is a legitimate "nothing urgent right now" — this never
-    manufactures activity to avoid an empty list, since a synthetic
-    action would be actively misleading.
+    Must-Add waivers, then Strong-Drop roster cleanup. Within each kind,
+    ranked by actual quality (trade acceptance tier then confidence;
+    waiver percentile) rather than league-iteration order — otherwise
+    truncating to max_actions could silently drop an objectively better
+    action from a later-processed league in favor of a weaker one from an
+    earlier league. An empty result is a legitimate "nothing urgent right
+    now" — this never manufactures activity to avoid an empty list, since
+    a synthetic action would be actively misleading.
     """
     actions: list[PriorityAction] = []
     for ld in leagues:
@@ -130,6 +131,13 @@ def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int 
                     detail=f"{ld.league.name} — {t.reason}",
                     rank=-(pctl or 0),  # higher percentile ranks first (more negative sorts earlier)
                 ))
+        for d in ld.drop_candidates:
+            if d.priority == "Strong Drop":
+                actions.append(PriorityAction(
+                    league_name=ld.league.name, kind="roster",
+                    headline=f"Consider dropping {d.entry.name}",
+                    detail=f"{ld.league.name} — {'; '.join(d.reasons)}",
+                ))
     actions.sort(key=lambda a: (_ACTION_KIND_ORDER.get(a.kind, 9), a.rank))
     return actions[:max_actions]
 
@@ -158,6 +166,7 @@ def build_league_report_data(
         storage, engine, league, my_roster, current_week=current_week, waiver_budget=waiver_budget
     )
     time_sensitive = get_time_sensitive_notes(storage, my_roster, current_week=current_week)
+    drop_candidates = identify_drop_candidates(my_roster, status_result.status)
 
     return LeagueReportData(
         league=league,
@@ -169,6 +178,7 @@ def build_league_report_data(
         proposals=proposals,
         waiver_targets=waiver_targets,
         time_sensitive=time_sensitive,
+        drop_candidates=drop_candidates,
     )
 
 

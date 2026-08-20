@@ -8,7 +8,7 @@ from sleeper_tool.formatting import age_str, ordinal_pct
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
 from sleeper_tool.roster_analysis import ValuedRoster
 from sleeper_tool.storage import Storage
-from sleeper_tool.trade_engine import TradeProposal, percentile_for_currency, value_label_for_currency
+from sleeper_tool.trade_engine import DropCandidate, TradeProposal, percentile_for_currency, value_label_for_currency
 from sleeper_tool.valuation import ValuationEngine
 from sleeper_tool.waiver_engine import WaiverTarget
 
@@ -113,6 +113,18 @@ def _render_waiver_targets(targets: list[WaiverTarget]) -> list[str]:
 _SEVERITY_MARK = {"high": "🔴", "medium": "🟠", "low": "⚪"}
 
 
+_DROP_PRIORITY_MARK = {"Strong Drop": "🔴", "Consider Dropping": "🟡"}
+
+
+def _render_drop_candidates(candidates: list[DropCandidate]) -> list[str]:
+    lines = []
+    for c in candidates:
+        mark = _DROP_PRIORITY_MARK.get(c.priority, "")
+        lines.append(f"- {mark} **{c.priority}: {c.entry.name}** ({c.entry.position or '?'}) — {'; '.join(c.reasons)}")
+    lines.append("")
+    return lines
+
+
 def render_league_section(data: LeagueReportData) -> list[str]:
     lines = [f"## {data.league.name}", ""]
 
@@ -156,6 +168,12 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     waiver_lines = _render_waiver_targets(data.waiver_targets) + [""]
     sections.append(("### Waiver targets", waiver_lines))
 
+    if data.drop_candidates:
+        # Only rendered when there's something real to say — no synthetic
+        # "nothing to drop" filler, matching the empty-state discipline
+        # used elsewhere in this report.
+        sections.append(("### Consider dropping", _render_drop_candidates(data.drop_candidates)))
+
     alert_lines = []
     if data.time_sensitive:
         for n in data.time_sensitive:
@@ -167,7 +185,8 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     sections.append(("### Time-sensitive", alert_lines))
 
     if has_high_alert:
-        sections.insert(0, sections.pop(2))  # move Time-sensitive to the front
+        alert_index = next(i for i, (header, _) in enumerate(sections) if header == "### Time-sensitive")
+        sections.insert(0, sections.pop(alert_index))
 
     for header, body in sections:
         lines.append(header)

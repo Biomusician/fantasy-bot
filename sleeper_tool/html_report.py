@@ -12,7 +12,7 @@ from html import escape as esc
 from sleeper_tool.formatting import age_str
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
-from sleeper_tool.trade_engine import TradeProposal, _player_confidence, percentile_for_currency, value_label_for_currency
+from sleeper_tool.trade_engine import DropCandidate, TradeProposal, _player_confidence, percentile_for_currency, value_label_for_currency
 from sleeper_tool.waiver_engine import TimeSensitiveNote, WaiverTarget
 
 TREND_META = {
@@ -221,6 +221,30 @@ def _waiver_table(targets: list[WaiverTarget]) -> str:
     )
 
 
+_DROP_PRIORITY_KIND = {"Strong Drop": "negative", "Consider Dropping": "caution"}
+
+
+def _drop_candidates_section(candidates: list[DropCandidate]) -> str:
+    # Only rendered when there's something real to say -- no synthetic
+    # "nothing to drop" filler, matching the empty-state discipline used
+    # elsewhere on this page.
+    if not candidates:
+        return ""
+    items = "".join(
+        f'<li class="alert-item alert-{_DROP_PRIORITY_KIND.get(c.priority, "neutral")}">'
+        f'<strong>{esc(c.entry.name)}</strong> ({esc(c.entry.position or "?")}) &middot; {_chip(c.priority, _DROP_PRIORITY_KIND.get(c.priority, "neutral"))}'
+        f'<div class="drop-reasons">{esc("; ".join(c.reasons))}</div>'
+        "</li>"
+        for c in candidates
+    )
+    return f"""
+    <section class="panel-block">
+      <h3>Consider dropping</h3>
+      <ul class="alert-list">{items}</ul>
+    </section>
+    """
+
+
 _ALERT_SEVERITY_KIND = {"high": "negative", "medium": "caution", "low": "neutral"}
 
 
@@ -277,11 +301,12 @@ def _league_panel(data: LeagueReportData) -> str:
           <h3>Waiver targets</h3>
           {_waiver_table(data.waiver_targets)}
         </section>
+        {_drop_candidates_section(data.drop_candidates)}
         """
-        # A high-severity alert (Out/IR/Doubtful, or a starter's bye) is
-        # time-boxed to this week's lineup lock — don't make a scrolling
-        # reader pass two sections that may both be empty-state ("no
-        # trades this week") to reach it.
+        # A high-severity alert (a long-term injury not yet moved to an
+        # IR slot, or a starter's bye) is time-boxed to this week's
+        # lineup lock — don't make a scrolling reader pass two sections
+        # that may both be empty-state ("no trades this week") to reach it.
         ordered = [alerts_section, trades_and_waivers] if has_high_alert else [trades_and_waivers, alerts_section]
         body = _roster_section(data.roster, data.currency) + "".join(ordered)
 
@@ -324,6 +349,7 @@ _ACTION_KIND_META = {
     "alert": ("&#128680;", "negative"),
     "trade": ("&#128260;", "accent"),
     "waiver": ("&#9989;", "positive"),
+    "roster": ("&#9986;", "caution"),
 }
 
 
@@ -587,6 +613,7 @@ tbody tr:last-child td { border-bottom: none; }
 
 .alert-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .alert-item { border-radius: 8px; padding: 8px 12px; font-size: 13px; border-left: 3px solid var(--line); background: var(--surface-raised); }
+.drop-reasons { margin-top: 4px; font-size: 12px; color: var(--ink-muted); }
 .alert-negative { border-left-color: var(--negative); }
 .alert-caution { border-left-color: var(--caution); }
 .badge-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; font-size: 11px; font-family: var(--font-mono); }

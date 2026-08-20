@@ -77,6 +77,29 @@ def get_rostered_player_ids(storage: Storage, league: LeagueInfo) -> set[str]:
     return rostered
 
 
+def _roster_impact_note(my_roster: ValuedRoster, position: str | None, new_pctl: float | None, currency: str) -> str | None:
+    """A concrete comparison against what I'd actually be replacing, not
+    just an abstract "fills a need" label — names the current starter
+    and the specific percentile gap, or says plainly that the position is
+    empty. This is the difference between "fills your 1st-worst need at
+    RB" (true but says nothing about the actual roster) and "would beat
+    your current starting RB (Joe Mixon, 34th percentile)" (an actionable
+    reason).
+    """
+    if not position:
+        return None
+    starters_here = [e for e in my_roster.by_position(position) if e.is_starter]
+    if not starters_here:
+        return f"you have nobody currently starting at {position}"
+    weakest_starter = min(starters_here, key=lambda e: _display_percentile(e.value, currency) or 0)
+    weak_pctl = _display_percentile(weakest_starter.value, currency)
+    if weak_pctl is None or new_pctl is None:
+        return None
+    if new_pctl > weak_pctl:
+        return f"would beat your current starting {position} ({weakest_starter.name}, {ordinal(round(weak_pctl))} percentile)"
+    return None
+
+
 def _display_percentile(value: PlayerValue, currency: str) -> float | None:
     """WITHIN-POSITION percentile for dynasty currency when available —
     the same metric identify_needs itself uses to decide a position is a
@@ -227,19 +250,30 @@ def get_waiver_targets(
         # disagreeing about what counts as a need.
         fills_need = need_rank is not None and need_rank < 2
 
+        pctl = _display_percentile(value, currency)
+
+        # Lead with a CONCRETE roster-impact comparison ("beats your
+        # current starting RB, Joe Mixon, 34th percentile") rather than
+        # the abstract "fills your Nth-worst need" label — the latter is
+        # true but doesn't say anything about what's actually on the
+        # roster. Falls back to the abstract framing only when there's no
+        # starter at the position to compare against.
+        impact_note = _roster_impact_note(my_roster, position, pctl, currency) if fills_need else None
+        reason_bits = []
+        if impact_note:
+            reason_bits.append(impact_note)
+        elif fills_need:
+            reason_bits.append(f"fills your {ordinal(need_rank + 1)}-worst need at {position}")
         # Sleeper's trending endpoint is platform-wide (all leagues, not just
         # this one) — there's no per-league trending data available via the API.
-        reason_bits = [f"{row.get('count', 0)} adds across Sleeper in the last 48h"]
+        reason_bits.append(f"{row.get('count', 0)} adds across Sleeper in the last 48h")
         if current_week is not None and current_week < EARLY_SEASON_WEEK_CUTOFF:
             # Early-season trending is hype/name-recognition driven more than
             # usage-driven — there just isn't enough game data yet for adds
             # to reflect real opportunity share the way they will by week 4+.
             reason_bits.append("small early-season sample, treat as hype risk")
-        if fills_need:
-            reason_bits.append(f"fills your {ordinal(need_rank + 1)}-worst need at {position}")
         if current_week is not None and value.bye_week == current_week:
             reason_bits.append(f"on bye week {current_week} — add for future weeks, not an immediate starter")
-        pctl = _display_percentile(value, currency)
         if pctl is not None:
             reason_bits.append(f"{ordinal(round(pctl))} percentile {value_label_for_currency(currency)}")
 
@@ -282,39 +316,34 @@ class TimeSensitiveNote:
     severity: str = "medium"  # "high" | "medium" | "low" — drives UI treatment, not derived from note text
 
 
-_HIGH_SEVERITY_INJURY_STATUSES = {"Out", "IR", "Doubtful", "PUP", "Suspended"}
-_MEDIUM_SEVERITY_INJURY_STATUSES = {"Questionable"}
-
-
-def _injury_severity(injury_status: str | None) -> str:
-    if injury_status in _HIGH_SEVERITY_INJURY_STATUSES:
-        return "high"
-    if injury_status in _MEDIUM_SEVERITY_INJURY_STATUSES:
-        return "medium"
-    return "low"
+# Season/multi-week injury designations — the actual "this roster spot is
+# dead weight" signal. Deliberately NOT Questionable/Doubtful/Out, which
+# are normal weekly game-day tags that resolve on their own and don't
+# call for any roster action; flagging those every week trained the
+# report to be noise. The only actionable case: the NFL has already
+# effectively ended this player's near-term season, but he isn't
+# occupying my roster's actual IR/reserve slot yet.
+_LONG_TERM_INJURY_STATUSES = {"IR", "PUP", "NFI", "Suspended"}
 
 
 def get_time_sensitive_notes(
     storage: Storage, my_roster: ValuedRoster, *, current_week: int | None = None
 ) -> list[TimeSensitiveNote]:
-    """Injury/inactive/bye-week flags for my own roster — the "anything
-    time-sensitive" part of the weekly report. Bye week comes from
-    FantasyPros/RotoBaller (via PlayerValue.bye_week) since Sleeper's player
-    objects don't carry it at all. `severity` is derived from the
-    structured injury_status/roster-status value, not by pattern-matching
-    the human-readable note text — an Out/IR player and a Questionable one
-    read identically in the note string but must not read identically to
-    the UI.
+    """The "anything time-sensitive" part of the weekly report — deliberately
+    narrow. Bye week comes from FantasyPros/RotoBaller (via
+    PlayerValue.bye_week) since Sleeper's player objects don't carry it at
+    all.
     """
     notes: list[TimeSensitiveNote] = []
     for entry in my_roster.entries:
-        if entry.injury_status and entry.injury_status not in ("Healthy", None):
+        if entry.injury_status in _LONG_TERM_INJURY_STATUSES and not entry.is_reserve:
             notes.append(
-                TimeSensitiveNote(entry.name, f"Injury status: {entry.injury_status}", severity=_injury_severity(entry.injury_status))
+                TimeSensitiveNote(
+                    entry.name,
+                    f"{entry.injury_status} but sitting in an active roster spot — move to IR to free the slot for a streamer",
+                    severity="high",
+                )
             )
-        if entry.status and entry.status not in ("Active", "Inactive"):
-            # "Inactive" alone is common/benign (e.g. practice squad); flag anything unusual instead.
-            notes.append(TimeSensitiveNote(entry.name, f"Roster status: {entry.status}", severity="low"))
         if current_week is not None and entry.value.bye_week == current_week and entry.is_starter:
             notes.append(
                 TimeSensitiveNote(entry.name, f"On bye week {current_week} — starting slot needs a fill-in", severity="medium")

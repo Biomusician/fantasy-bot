@@ -385,6 +385,121 @@ def test_derive_league_format_distributes_flex_and_superflex_demand():
     assert fmt.starter_slots["TE"] == pytest.approx(1 + 1 / 3 + 1 / 4)
 
 
+# -- identify_drop_candidates: proactive roster-cleanup recommendations -----
+
+
+def test_identify_drop_candidates_flags_a_low_ranked_bench_player():
+    from sleeper_tool.trade_engine import CONTENDER, identify_drop_candidates
+
+    weak_bench = make_entry(player_id="weak", position="WR", is_starter=False,
+        value=make_value(position="WR", dynasty_positional_percentile=15.0, trend="no change"))
+    roster = make_roster(entries=[weak_bench])
+    candidates = identify_drop_candidates(roster, CONTENDER)
+    assert len(candidates) == 1
+    assert candidates[0].entry.player_id == "weak"
+    assert any("weakest rosterable" in r for r in candidates[0].reasons)
+
+
+def test_identify_drop_candidates_flags_excess_position_depth():
+    from sleeper_tool.trade_engine import CONTENDER, identify_drop_candidates
+
+    # 4 corroborated WRs on the bench, well above what a 1-WR-slot league needs.
+    entries = [
+        make_entry(player_id=f"wr{i}", position="WR", is_starter=False,
+            value=make_value(position="WR", dynasty_positional_percentile=pctl, trend="no change"))
+        for i, pctl in enumerate([80, 60, 40, 30])
+    ]
+    roster = make_roster(entries=entries)
+    roster.fmt.starter_slots["WR"] = 1
+    candidates = identify_drop_candidates(roster, CONTENDER, max_candidates=10)
+    buried_ids = {c.entry.player_id for c in candidates if any("buried behind" in r for r in c.reasons)}
+    assert "wr3" in buried_ids  # the weakest of 4, buried behind 3 better options
+
+
+def test_identify_drop_candidates_flags_no_upside_aging_veteran_on_a_non_contender():
+    from sleeper_tool.trade_engine import REBUILD, identify_drop_candidates
+
+    aging_vet = make_entry(player_id="vet", position="RB", is_starter=False, age=29.0,
+        value=make_value(position="RB", dynasty_positional_percentile=50.0, trend="no change"))
+    roster = make_roster(league=make_league_info(kind="dynasty"), entries=[aging_vet])
+    candidates = identify_drop_candidates(roster, REBUILD)
+    assert len(candidates) == 1
+    assert any("no upside signal" in r for r in candidates[0].reasons)
+
+
+def test_identify_drop_candidates_never_flags_starters_taxi_or_reserve():
+    from sleeper_tool.trade_engine import CONTENDER, identify_drop_candidates
+
+    weak_value = make_value(position="WR", dynasty_positional_percentile=5.0, trend="no change")
+    starter = make_entry(player_id="s1", position="WR", is_starter=True, value=weak_value)
+    taxi = make_entry(player_id="t1", position="WR", is_starter=False, is_taxi=True, value=weak_value)
+    reserve = make_entry(player_id="r1", position="WR", is_starter=False, is_reserve=True, value=weak_value)
+    roster = make_roster(entries=[starter, taxi, reserve])
+    assert identify_drop_candidates(roster, CONTENDER) == []
+
+
+def test_identify_drop_candidates_strong_drop_when_multiple_reasons_apply():
+    from sleeper_tool.trade_engine import REBUILD, identify_drop_candidates
+
+    doubly_bad = make_entry(player_id="bad", position="RB", is_starter=False, age=30.0,
+        value=make_value(position="RB", dynasty_positional_percentile=10.0, trend="no change"))
+    roster = make_roster(league=make_league_info(kind="dynasty"), entries=[doubly_bad])
+    candidates = identify_drop_candidates(roster, REBUILD)
+    assert candidates[0].priority == "Strong Drop"
+    assert len(candidates[0].reasons) >= 2
+
+
+def test_identify_drop_candidates_respects_max_candidates_cap():
+    from sleeper_tool.trade_engine import CONTENDER, identify_drop_candidates
+
+    entries = [
+        make_entry(player_id=f"wr{i}", position="WR", is_starter=False,
+            value=make_value(position="WR", dynasty_positional_percentile=float(i), trend="no change"))
+        for i in range(10)
+    ]
+    roster = make_roster(entries=entries)
+    assert len(identify_drop_candidates(roster, CONTENDER, max_candidates=3)) == 3
+
+
+# -- _roster_impact_note ---------------------------------------------------
+
+
+def test_roster_impact_note_excludes_departing_player_when_hes_the_weakest_starter():
+    # Regression: a sell-high pitch's "why this helps me" note was
+    # comparing the incoming piece against the very player being SOLD
+    # AWAY in the same trade (still technically on my_roster since the
+    # trade hasn't happened) -- when that departing player is also my
+    # WEAKEST starter at the position (a common sell-high shape: he's
+    # being sold precisely because something better is coming in), the
+    # note would nonsensically cite him as the "current starter" beaten
+    # by his own outgoing trade.
+    from sleeper_tool.trade_engine import _roster_impact_note
+
+    departing = make_entry(player_id="dep", name="Departing Guy", position="TE", is_starter=True,
+        value=make_value(position="TE", dynasty_value_percentile=30.0))
+    roster = make_roster(entries=[departing])
+
+    buggy_without_exclusion = _roster_impact_note(roster, "TE", 50.0, "dynasty")
+    assert "Departing Guy" in buggy_without_exclusion  # demonstrates the bug exists without the fix
+
+    fixed_with_exclusion = _roster_impact_note(roster, "TE", 50.0, "dynasty", exclude_player_id="dep")
+    assert "Departing Guy" not in fixed_with_exclusion
+    assert "nobody currently starting" in fixed_with_exclusion
+
+
+def test_roster_impact_note_excludes_departing_player_but_still_compares_against_others():
+    from sleeper_tool.trade_engine import _roster_impact_note
+
+    departing = make_entry(player_id="dep", name="Departing Guy", position="WR", is_starter=True,
+        value=make_value(position="WR", dynasty_value_percentile=90.0))
+    other_starter = make_entry(player_id="other", name="Other WR", position="WR", is_starter=True,
+        value=make_value(position="WR", dynasty_value_percentile=40.0))
+    roster = make_roster(entries=[departing, other_starter])
+    note = _roster_impact_note(roster, "WR", 60.0, "dynasty", exclude_player_id="dep")
+    assert "Departing Guy" not in note
+    assert "Other WR" in note
+
+
 # -- _untouchable_ids: starters-only protection, scarce-position protection -
 
 
@@ -544,6 +659,51 @@ def test_generate_trade_message_is_nonempty_and_not_ai_sounding():
     assert "Give Guy" in msg and "Receive Guy" in msg
     banned_phrases = ["according to my projections", "this trade benefits both parties", "the analytics suggest"]
     assert not any(p in msg.lower() for p in banned_phrases)
+
+
+def test_generate_trade_message_uses_the_concrete_benefit_reason_not_generic_filler():
+    from sleeper_tool.trade_engine import TradeProposal, generate_trade_message
+
+    proposal = TradeProposal(
+        league_name="Test League", currency="dynasty", target_username="rival", target_team_name="Rival Team",
+        give=[make_entry(player_id="g1", name="Give Guy")], receive=[make_entry(player_id="r1", name="Receive Guy")],
+        my_value_total=1000, their_value_total=1000, rationale_for_me=[], rationale_for_them=[], caveats=[],
+        trade_type="buy_low",
+    )
+    msg = generate_trade_message(proposal, benefit_reason="since he'd start over what you've got at TE now")
+    assert "TE" in msg
+    assert "fills a real need" not in msg.lower()  # the old generic closer bank is gone
+
+
+# -- _benefit_reason ------------------------------------------------------------
+
+
+def test_benefit_reason_names_the_starter_it_would_replace():
+    from sleeper_tool.trade_engine import _benefit_reason
+
+    weak_te = make_entry(player_id="te1", name="Old TE", position="TE", is_starter=True,
+        value=make_value(position="TE", dynasty_value_percentile=50.0))
+    roster = make_roster(entries=[weak_te])
+    incoming = make_entry(player_id="new-te", position="TE", value=make_value(position="TE", dynasty_value_percentile=80.0))
+    reason = _benefit_reason(roster, [incoming], "dynasty")
+    assert "TE" in reason
+    assert "start over" in reason
+
+
+def test_benefit_reason_flags_an_empty_position():
+    from sleeper_tool.trade_engine import _benefit_reason
+
+    roster = make_roster(entries=[make_entry(player_id="wr1", position="WR", is_starter=True, value=make_value(position="WR"))])
+    incoming = make_entry(player_id="new-te", position="TE", value=make_value(position="TE", dynasty_value_percentile=50.0))
+    reason = _benefit_reason(roster, [incoming], "dynasty")
+    assert "don't have a real TE" in reason
+
+
+def test_benefit_reason_defaults_to_pick_capital_language_with_no_pieces():
+    from sleeper_tool.trade_engine import _benefit_reason
+
+    roster = make_roster(entries=[])
+    assert "draft capital" in _benefit_reason(roster, [], "dynasty")
 
 
 # -- generate_trade_proposals: end-to-end integration ------------------------

@@ -15,6 +15,7 @@ from sleeper_tool.waiver_engine import (
     _find_drop_candidate,
     _horizon,
     _priority_tier,
+    _roster_impact_note,
     _suggested_faab_pct,
     get_time_sensitive_notes,
     get_waiver_targets,
@@ -98,6 +99,31 @@ def test_horizon_season_starter_for_a_need_filling_rosterable_add():
 def test_horizon_streamer_as_fallback():
     v = make_value(trend="no change")
     assert _horizon(v, years_exp=8, currency="redraft", fills_need=False, pctl=25.0) == STREAMER
+
+
+# -- _roster_impact_note -------------------------------------------------------
+
+
+def test_roster_impact_note_names_the_weak_starter_it_would_beat():
+    weak_starter = make_entry(player_id="s1", name="Joe Mixon", position="RB", is_starter=True,
+        value=make_value(position="RB", dynasty_value_percentile=34.0))
+    roster = make_roster(entries=[weak_starter])
+    note = _roster_impact_note(roster, "RB", new_pctl=70.0, currency="dynasty")
+    assert "Joe Mixon" in note
+    assert "34" in note
+
+
+def test_roster_impact_note_none_when_add_would_not_actually_beat_the_starter():
+    strong_starter = make_entry(player_id="s1", name="Star RB", position="RB", is_starter=True,
+        value=make_value(position="RB", dynasty_value_percentile=90.0))
+    roster = make_roster(entries=[strong_starter])
+    assert _roster_impact_note(roster, "RB", new_pctl=40.0, currency="dynasty") is None
+
+
+def test_roster_impact_note_flags_an_empty_position():
+    roster = make_roster(entries=[make_entry(player_id="s1", position="WR", is_starter=True, value=make_value(position="WR"))])
+    note = _roster_impact_note(roster, "RB", new_pctl=50.0, currency="dynasty")
+    assert "nobody currently starting" in note
 
 
 # -- _suggested_faab_pct -------------------------------------------------------
@@ -192,14 +218,33 @@ def test_find_drop_candidate_none_when_bench_is_empty():
 # -- get_time_sensitive_notes: structured severity -----------------------------
 
 
-def test_time_sensitive_notes_severity_reflects_injury_status_not_note_text():
-    out_player = make_entry(player_id="p1", name="Out Guy", injury_status="Out", is_starter=True, value=make_value())
-    questionable_player = make_entry(player_id="p2", name="Q Guy", injury_status="Questionable", is_starter=True, value=make_value())
-    roster = make_roster(entries=[out_player, questionable_player])
+def test_time_sensitive_notes_flags_long_term_injury_not_in_an_ir_slot():
+    # The only injury alert that matters: the player is functionally done
+    # for a while (IR/PUP/NFI/Suspended) but is STILL sitting in an active
+    # roster spot instead of the roster's actual IR/reserve slot.
+    stranded_ir = make_entry(player_id="p1", name="Hurt Guy", injury_status="IR", is_starter=False, is_reserve=False, value=make_value())
+    roster = make_roster(entries=[stranded_ir])
     notes = get_time_sensitive_notes(None, roster)
-    by_name = {n.player_name: n for n in notes}
-    assert by_name["Out Guy"].severity == "high"
-    assert by_name["Q Guy"].severity == "medium"
+    assert len(notes) == 1
+    assert notes[0].player_name == "Hurt Guy"
+    assert notes[0].severity == "high"
+
+
+def test_time_sensitive_notes_silent_once_the_player_is_actually_on_reserve():
+    already_stashed = make_entry(player_id="p1", name="Stashed Guy", injury_status="IR", is_starter=False, is_reserve=True, value=make_value())
+    roster = make_roster(entries=[already_stashed])
+    assert get_time_sensitive_notes(None, roster) == []
+
+
+def test_time_sensitive_notes_ignores_routine_weekly_game_status():
+    # Questionable/Doubtful/Out are normal weekly designations that
+    # resolve on their own -- not an "IR and stranded" situation, and
+    # shouldn't generate an alert every single week.
+    questionable = make_entry(player_id="p1", name="Q Guy", injury_status="Questionable", is_starter=True, value=make_value())
+    doubtful = make_entry(player_id="p2", name="D Guy", injury_status="Doubtful", is_starter=True, value=make_value())
+    out = make_entry(player_id="p3", name="Out Guy", injury_status="Out", is_starter=True, value=make_value())
+    roster = make_roster(entries=[questionable, doubtful, out])
+    assert get_time_sensitive_notes(None, roster) == []
 
 
 def test_time_sensitive_notes_bye_week_starter_is_medium_severity():
