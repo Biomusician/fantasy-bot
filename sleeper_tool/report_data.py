@@ -85,6 +85,15 @@ _ACTION_KIND_ORDER = {"alert": 0, "trade": 1, "waiver": 2, "roster": 3}
 _CONFIDENCE_RANK = {"High": 0, "Medium": 1, "Low": 2}
 
 
+# A week with several Good/High-confidence trades can otherwise fill every
+# slot with trades alone, leaving a Must-Add waiver or a Strong-Drop
+# invisible even though it exists in every league that week -- reserve a
+# minimum floor per kind so those still surface. Trades and alerts need no
+# floor: alerts are already sorted first, and trades routinely fill the
+# rest of the budget on their own.
+_KIND_FLOOR = {"waiver": 2, "roster": 2}
+
+
 def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int = 8) -> list[PriorityAction]:
     """Rank the user's highest-value actions across ALL leagues and
     transaction types: high-severity injury/bye alerts first (they're
@@ -96,9 +105,11 @@ def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int 
     waiver percentile) rather than league-iteration order — otherwise
     truncating to max_actions could silently drop an objectively better
     action from a later-processed league in favor of a weaker one from an
-    earlier league. An empty result is a legitimate "nothing urgent right
-    now" — this never manufactures activity to avoid an empty list, since
-    a synthetic action would be actively misleading.
+    earlier league. A minimum number of waiver and roster-cleanup slots are
+    reserved (_KIND_FLOOR) so a week with many good trades can't crowd every
+    other kind out of the list entirely. An empty result is a legitimate
+    "nothing urgent right now" — this never manufactures activity to avoid
+    an empty list, since a synthetic action would be actively misleading.
     """
     actions: list[PriorityAction] = []
     for ld in leagues:
@@ -140,7 +151,22 @@ def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int 
                     rank=-len(d.reasons),  # more independent reasons = a more clear-cut cut, sorts first
                 ))
     actions.sort(key=lambda a: (_ACTION_KIND_ORDER.get(a.kind, 9), a.rank))
-    return actions[:max_actions]
+
+    by_kind: dict[str, list[PriorityAction]] = {}
+    for a in actions:
+        by_kind.setdefault(a.kind, []).append(a)
+    selected: list[PriorityAction] = []
+    for kind, floor in _KIND_FLOOR.items():
+        selected.extend(by_kind.get(kind, [])[:floor])
+    selected_ids = {id(a) for a in selected}
+    for a in actions:
+        if len(selected) >= max_actions:
+            break
+        if id(a) not in selected_ids:
+            selected.append(a)
+            selected_ids.add(id(a))
+    selected.sort(key=lambda a: (_ACTION_KIND_ORDER.get(a.kind, 9), a.rank))
+    return selected[:max_actions]
 
 
 def build_league_report_data(

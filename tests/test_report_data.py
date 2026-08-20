@@ -1,7 +1,7 @@
-from conftest import make_league_info
+from conftest import make_entry, make_league_info
 
 from sleeper_tool.report_data import LeagueReportData, _safe_build_league_report_data, build_priority_actions
-from sleeper_tool.trade_engine import TradeProposal
+from sleeper_tool.trade_engine import DropCandidate, TradeProposal
 from sleeper_tool.waiver_engine import TimeSensitiveNote, WaiverTarget
 
 
@@ -115,3 +115,24 @@ def test_build_priority_actions_ranks_by_quality_not_league_order():
     headlines = [a.headline for a in actions]
     assert any("BestRival" in h for h in headlines), "the objectively best trade must survive the cap regardless of league order"
     assert actions[0].headline == next(h for h in headlines if "BestRival" in h)  # and it should rank first
+
+
+def test_build_priority_actions_reserves_slots_for_waivers_and_drops_even_when_trades_fill_the_cap():
+    # Regression: live production data hit this exact case -- 8+ Good/High
+    # trades filled every slot in the cross-league list, so a Must-Add
+    # waiver and a Strong-Drop candidate (present in every league that
+    # week) never appeared anywhere in "Best moves right now", even though
+    # both are genuinely time-relevant.
+    trades = [_trade(f"rival{i}", "High", "High") for i in range(10)]
+    waiver = WaiverTarget(
+        player_id="w1", name="Hot Add", position="RB", team="KC", trend_count=50,
+        value=None, fills_need=True, need_rank=0, reason="fills a real need",
+        priority_tier="Must Add",
+    )
+    drop = DropCandidate(entry=make_entry(name="Dead Weight"), priority="Strong Drop", reasons=["low value", "buried"])
+    ld = _league_data(proposals=trades, waiver_targets=[waiver], drop_candidates=[drop])
+    actions = build_priority_actions([ld], max_actions=8)
+    kinds = [a.kind for a in actions]
+    assert "waiver" in kinds, "a Must-Add waiver must not be crowded out entirely by an abundance of good trades"
+    assert "roster" in kinds, "a Strong-Drop candidate must not be crowded out entirely by an abundance of good trades"
+    assert len(actions) == 8
