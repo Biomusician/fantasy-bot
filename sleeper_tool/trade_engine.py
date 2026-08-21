@@ -715,11 +715,12 @@ def _corroboration_note(value, currency: str) -> str | None:
     return f"KTC and FantasyPros are within {gap} points of each other on him — not one site's outlier read."
 
 
-def _buy_low_timing_note(entry: RosterEntry, currency: str) -> str | None:
-    """Surfaces the actual dynasty-vs-redraft percentile GAP that
-    _not_just_a_slump already computes to gate buy-low eligibility (see
-    identify_buy_low), instead of discarding the number and asserting a
-    "buy-low window" label with nothing behind it in the rationale text.
+def _buy_low_gap(entry: RosterEntry, currency: str) -> float | None:
+    """The actual dynasty-vs-redraft percentile GAP that _not_just_a_slump
+    already computes to gate buy-low eligibility (see identify_buy_low),
+    factored out so both the rationale note and the short chat-message
+    buzz clause read off the same real number instead of duplicating (and
+    risking drifting) the same threshold check in two places.
     """
     if currency != DYNASTY_CURRENCY:
         return None
@@ -727,8 +728,18 @@ def _buy_low_timing_note(entry: RosterEntry, currency: str) -> str | None:
     if dyn_pctl is None or rd_pctl is None:
         return None
     gap = dyn_pctl - rd_pctl
-    if gap < DECLINE_CONFIRMATION_GAP:
+    return gap if gap >= DECLINE_CONFIRMATION_GAP else None
+
+
+def _buy_low_timing_note(entry: RosterEntry, currency: str) -> str | None:
+    """Surfaces the actual dynasty-vs-redraft percentile GAP instead of
+    discarding the number and asserting a "buy-low window" label with
+    nothing behind it in the rationale text.
+    """
+    gap = _buy_low_gap(entry, currency)
+    if gap is None:
         return None
+    dyn_pctl, rd_pctl = entry.value.dynasty_value_percentile, entry.value.redraft_ecr_percentile
     return (
         f"{entry.name}'s dynasty value has barely moved ({ordinal_pct(dyn_pctl)}) while his current-form/redraft "
         f"stock has dropped to {ordinal_pct(rd_pctl)} — a {round(gap)}-point gap. That split looks like a market "
@@ -737,6 +748,20 @@ def _buy_low_timing_note(entry: RosterEntry, currency: str) -> str | None:
 
 
 SELL_HIGH_CONFIRMATION_GAP = 10.0  # KTC pctl - FantasyPros dynasty ECR pctl must clear this to call it hype-ahead-of-consensus, not just "trending"
+
+
+def _sell_high_gap(entry: RosterEntry, currency: str) -> float | None:
+    """The KTC-vs-FantasyPros-dynasty-consensus GAP _sell_high_timing_note
+    and the chat-message buzz clause both read off — see that function's
+    docstring for why this is a sharper signal than the flat trend label.
+    """
+    if currency != DYNASTY_CURRENCY:
+        return None
+    ktc_pctl, fp_pctl = entry.value.dynasty_value_percentile, entry.value.dynasty_ecr_percentile
+    if ktc_pctl is None or fp_pctl is None:
+        return None
+    gap = ktc_pctl - fp_pctl
+    return gap if gap >= SELL_HIGH_CONFIRMATION_GAP else None
 
 
 def _sell_high_timing_note(entry: RosterEntry, currency: str) -> str | None:
@@ -749,19 +774,82 @@ def _sell_high_timing_note(entry: RosterEntry, currency: str) -> str | None:
     "the market may be pricing in more than the measured panel agrees
     with" signal, not just a flat trend arrow.
     """
-    if currency != DYNASTY_CURRENCY:
+    gap = _sell_high_gap(entry, currency)
+    if gap is None:
         return None
     ktc_pctl, fp_pctl = entry.value.dynasty_value_percentile, entry.value.dynasty_ecr_percentile
-    if ktc_pctl is None or fp_pctl is None:
-        return None
-    gap = ktc_pctl - fp_pctl
-    if gap < SELL_HIGH_CONFIRMATION_GAP:
-        return None
     return (
         f"{entry.name}'s KTC crowd value ({ordinal_pct(ktc_pctl)}) has run {round(gap)} points ahead of FantasyPros' "
         f"expert dynasty consensus ({ordinal_pct(fp_pctl)}) — the market may be pricing in more hype than the "
         "measured panel agrees with, a pattern that often gives some of it back."
     )
+
+
+def _buzz_clause_buy_low(entry: RosterEntry, currency: str) -> str | None:
+    """"Recent buzz" for the chat message, buy-low direction — leads with
+    the sharp dynasty-vs-redraft divergence when it clears the
+    confirmation bar, falls back to the plain trend label otherwise
+    (identify_buy_low's own eligibility filter guarantees trend=="down"
+    for every candidate this is ever called on, so the fallback always
+    has something honest to say).
+    """
+    if _buy_low_gap(entry, currency) is not None:
+        return "he's cooled off a bit recently — might be able to grab him before that turns back around"
+    if entry.value.trend == BUY_LOW_TREND:
+        return "he's been a little quiet lately, buzz-wise"
+    return None
+
+
+def _buzz_clause_sell_high(entry: RosterEntry, currency: str) -> str | None:
+    """The sell-high mirror of _buzz_clause_buy_low."""
+    if _sell_high_gap(entry, currency) is not None:
+        return "he's been heating up lately, more than the rankings have caught up to yet"
+    if entry.value.trend == SELL_HIGH_TREND:
+        return "he's been trending up lately"
+    return None
+
+
+def _timeline_clause(fit: "OpponentFit") -> str | None:
+    """Names the recipient's contender/rebuild timeline in the chat
+    message itself — but only when the ALREADY-COMPUTED status_fit
+    genuinely says this trade matches it. Never claimed for "mismatch" or
+    "neutral", matching the honest-degradation pattern used everywhere
+    else in this file: a false "this fits your rebuild" pitch is worse
+    than no timeline mention at all.
+    """
+    if fit.status_fit != "good_fit":
+        return None
+    if fit.opponent_status == REBUILD:
+        return "figured it makes sense since you guys are rebuilding"
+    if fit.opponent_status == CONTENDER:
+        return "figured it makes sense since you're pushing to win now"
+    return None
+
+
+def _my_interest_clause(
+    my_roster: ValuedRoster, position: str | None, incoming_value, currency: str, *, exclude_ids: frozenset[str] = frozenset()
+) -> str | None:
+    """First-person, chat-voice cousin of _roster_impact_note — same
+    underlying comparison (my weakest starter at this position vs. the
+    incoming piece), rendered as something a manager would actually type
+    ("he'd start over X for me") rather than a report sentence. Answers
+    "why are we interested in this player" directly in the message,
+    instead of leaving that case implicit in the surrounding rationale
+    bullets the recipient never sees.
+    """
+    if not position or incoming_value is None:
+        return None
+    starters_here = [e for e in my_roster.by_position(position) if e.is_starter and e.player_id not in exclude_ids]
+    incoming_pctl = _need_percentile(incoming_value, currency)
+    if not starters_here:
+        return f"I don't have a real {position} right now so this fills a hole for me"
+    weakest = min(starters_here, key=lambda e: _need_percentile(e.value, currency) or 0)
+    weak_pctl = _need_percentile(weakest.value, currency)
+    if weak_pctl is None or incoming_pctl is None:
+        return None
+    if incoming_pctl > weak_pctl:
+        return f"he'd start over {weakest.name} for me at {position}"
+    return f"I like him as depth behind {weakest.name} at {position}"
 
 
 def _scarcity_note(fmt: LeagueFormat, roster: ValuedRoster, position: str | None, currency: str, *, possessive: str = "your") -> str | None:
@@ -1398,30 +1486,54 @@ def generate_trade_message(
     fit: OpponentFit | None = None,
     *,
     benefit_reason: str | None = None,
+    timeline_clause: str | None = None,
+    buzz_clause: str | None = None,
+    my_interest_clause: str | None = None,
 ) -> str:
     """A short, casual chat message to actually send — not a summary of the
     proposal's stats. Deliberately avoids AI-sounding phrasing ("according
     to my projections", "this benefits both parties", etc.) in favor of
     the way a real manager pitches a trade in a league chat: plain, a
-    little informal, no hard sell. `benefit_reason` (from _benefit_reason,
-    computed by the caller which has both rosters in scope) names the
-    SPECIFIC thing about the recipient's roster this trade addresses —
-    e.g. "since he'd start over what you've got at TE now" — rather than
-    a generic "fills a real need" that could be pasted onto any offer.
+    little informal, no hard sell.
+
+    Four independent, optional clauses, each dropped silently when there's
+    nothing honest to say (never padded with filler) — this is deliberately
+    a short PITCH, not the full rationale restated:
+    - `benefit_reason` (from _benefit_reason): the concrete roster-fit case
+      for THEM — e.g. "since he'd start over what you've got at TE now".
+    - `timeline_clause` (from _timeline_clause): why it fits THEIR
+      contender/rebuild timeline, only when it genuinely does.
+    - `buzz_clause` (from _buzz_clause_buy_low/_sell_high): recent
+      market movement on the player driving this trade.
+    - `my_interest_clause` (from _my_interest_clause): why *I* want what
+      I'd be getting — the message previously only ever argued their side,
+      never said anything about why the sender is actually interested.
     """
     trade_type = proposal.trade_type if proposal.trade_type in _MESSAGE_OPENERS else "buy_low"
     give_line = _names_line(proposal.give, proposal.give_picks)
     receive_line = _names_line(proposal.receive, proposal.receive_picks)
     seed = _content_seed(give_line, receive_line, proposal.target_username or "")
     opener_idx = seed % len(_MESSAGE_OPENERS[trade_type])
-    opener = _MESSAGE_OPENERS[trade_type][opener_idx]
-    if benefit_reason:
-        closer = benefit_reason if benefit_reason[:1].isupper() else benefit_reason[0].upper() + benefit_reason[1:]
-        closer = closer if closer.endswith((".", "!", "?")) else closer + "."
-    else:
+    opener = _MESSAGE_OPENERS[trade_type][opener_idx].format(give_line=give_line, receive_line=receive_line)
+
+    def _sentence(clause: str | None) -> str | None:
+        if not clause:
+            return None
+        text = clause[0].upper() + clause[1:]
+        return text if text.endswith((".", "!", "?")) else text + "."
+
+    parts = [opener.strip()]
+    for clause in (benefit_reason, timeline_clause, buzz_clause, my_interest_clause):
+        sentence = _sentence(clause)
+        if sentence:
+            parts.append(sentence)
+    if len(parts) == 1:
+        # Nothing concrete could be computed for ANY clause -- fall back
+        # to a generic closer rather than shipping a bare opener with no
+        # substance at all.
         closer_idx = (seed * 7 + 3) % len(_GENERIC_CLOSERS)
-        closer = _GENERIC_CLOSERS[closer_idx]
-    return (opener + closer).format(give_line=give_line, receive_line=receive_line)
+        parts.append(_GENERIC_CLOSERS[closer_idx])
+    return " ".join(parts)
 
 
 def _build_pick_target_proposal(
@@ -1520,7 +1632,12 @@ def _build_pick_target_proposal(
         acceptance_reasons=reasons,
         confidence=proposal_confidence([e.value for e in offer_players]),
     )
-    proposal.message = generate_trade_message(proposal, fit, benefit_reason=_benefit_reason(their_roster, offer_players, currency, fit=fit))
+    proposal.message = generate_trade_message(
+        proposal, fit,
+        benefit_reason=_benefit_reason(their_roster, offer_players, currency, fit=fit),
+        timeline_clause=_timeline_clause(fit),
+        my_interest_clause="I'd rather stockpile picks than lock into a specific player right now",
+    )
     return proposal
 
 
@@ -1692,6 +1809,12 @@ def generate_trade_proposals(
             benefit_reason=_benefit_reason(
                 their_roster, offer_players, currency, exclude_player_id=target_entry.player_id, fit=fit
             ),
+            timeline_clause=_timeline_clause(fit),
+            buzz_clause=_buzz_clause_buy_low(target_entry, currency),
+            my_interest_clause=_my_interest_clause(
+                my_roster, target_entry.position, target_entry.value, currency,
+                exclude_ids=frozenset(e.player_id for e in offer_players),
+            ),
         )
         proposals.append(proposal)
 
@@ -1780,12 +1903,24 @@ def generate_trade_proposals(
                     acceptance_reasons=reasons,
                     confidence=confidence,
                 )
+                my_interest_clause = None
+                if offer_players:
+                    primary_return = max(offer_players, key=lambda e: _need_percentile(e.value, currency) or 0)
+                    my_interest_clause = _my_interest_clause(
+                        my_roster, primary_return.position, primary_return.value, currency,
+                        exclude_ids=frozenset({sell_entry.player_id}),
+                    )
+                elif offer_picks:
+                    my_interest_clause = "figured picks are useful for me too right now"
                 proposal.message = generate_trade_message(
                     proposal, fit,
                     benefit_reason=_benefit_reason(
                         their_roster, [sell_entry], currency,
                         exclude_player_ids=frozenset(e.player_id for e in offer_players), fit=fit,
                     ),
+                    timeline_clause=_timeline_clause(fit),
+                    buzz_clause=_buzz_clause_sell_high(sell_entry, currency),
+                    my_interest_clause=my_interest_clause,
                 )
                 proposals.append(proposal)
                 targeted_owners.add(owner_key)

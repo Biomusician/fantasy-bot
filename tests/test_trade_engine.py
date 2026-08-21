@@ -857,6 +857,93 @@ def test_generate_trade_message_uses_the_concrete_benefit_reason_not_generic_fil
     assert "fills a real need" not in msg.lower()  # the old generic closer bank is gone
 
 
+def test_generate_trade_message_includes_all_four_clauses_when_all_are_available():
+    # Regression: user feedback was explicit -- the message itself (not
+    # just the surrounding rationale bullets) needs to articulate why it
+    # fits the recipient's timeline, any recent buzz, and why *I* want
+    # what I'm receiving, not just the bare benefit_reason closer.
+    from sleeper_tool.trade_engine import TradeProposal, generate_trade_message
+
+    proposal = TradeProposal(
+        league_name="Test League", currency="dynasty", target_username="rival", target_team_name="Rival Team",
+        give=[make_entry(player_id="g1", name="Give Guy")], receive=[make_entry(player_id="r1", name="Receive Guy")],
+        my_value_total=1000, their_value_total=1000, rationale_for_me=[], rationale_for_them=[], caveats=[],
+        trade_type="buy_low",
+    )
+    msg = generate_trade_message(
+        proposal,
+        benefit_reason="since he'd clear their starter by 10 points",
+        timeline_clause="figured it makes sense since you guys are rebuilding",
+        buzz_clause="he's cooled off a bit recently",
+        my_interest_clause="I like him as depth behind my starter",
+    )
+    assert "clear their starter" in msg
+    assert "rebuilding" in msg
+    assert "cooled off" in msg
+    assert "I like him as depth" in msg
+
+
+def test_generate_trade_message_omits_clauses_that_are_none_without_leaving_gaps():
+    from sleeper_tool.trade_engine import TradeProposal, generate_trade_message
+
+    proposal = TradeProposal(
+        league_name="Test League", currency="dynasty", target_username="rival", target_team_name="Rival Team",
+        give=[make_entry(player_id="g1", name="Give Guy")], receive=[make_entry(player_id="r1", name="Receive Guy")],
+        my_value_total=1000, their_value_total=1000, rationale_for_me=[], rationale_for_them=[], caveats=[],
+        trade_type="buy_low",
+    )
+    msg = generate_trade_message(proposal, benefit_reason="for real depth", timeline_clause=None, buzz_clause=None, my_interest_clause=None)
+    assert "  " not in msg  # no double space from a silently-skipped clause
+    assert msg.strip().endswith(".")
+
+
+# -- _timeline_clause / _buzz_clause_* / _my_interest_clause: message content -
+
+
+def test_timeline_clause_only_fires_on_a_genuine_good_fit():
+    from sleeper_tool.team_status import CONTENDER, REBUILD
+    from sleeper_tool.trade_engine import OpponentFit, _timeline_clause
+
+    rebuild_fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
+        opponent_status=REBUILD, status_fit="good_fit", piece_count=1)
+    contender_fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
+        opponent_status=CONTENDER, status_fit="good_fit", piece_count=1)
+    mismatch_fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
+        opponent_status=REBUILD, status_fit="mismatch", piece_count=1)
+    assert "rebuilding" in _timeline_clause(rebuild_fit)
+    assert "win now" in _timeline_clause(contender_fit)
+    assert _timeline_clause(mismatch_fit) is None  # never claims a fit that isn't real
+
+
+def test_buzz_clause_buy_low_prefers_the_sharp_signal_but_falls_back_to_plain_trend():
+    from sleeper_tool.trade_engine import _buzz_clause_buy_low
+
+    sharp = make_entry(value=make_value(dynasty_value_percentile=70.0, redraft_ecr_percentile=40.0, trend="down"))
+    plain = make_entry(value=make_value(dynasty_value_percentile=70.0, redraft_ecr_percentile=65.0, trend="down"))
+    assert "cooled off" in _buzz_clause_buy_low(sharp, "dynasty")
+    assert _buzz_clause_buy_low(plain, "dynasty") is not None  # honest fallback, not silence
+
+
+def test_buzz_clause_sell_high_prefers_the_sharp_signal_but_falls_back_to_plain_trend():
+    from sleeper_tool.trade_engine import _buzz_clause_sell_high
+
+    sharp = make_entry(value=make_value(dynasty_value_percentile=85.0, dynasty_ecr_percentile=60.0, trend="rising"))
+    plain = make_entry(value=make_value(dynasty_value_percentile=85.0, dynasty_ecr_percentile=80.0, trend="rising"))
+    assert "heating up" in _buzz_clause_sell_high(sharp, "dynasty")
+    assert _buzz_clause_sell_high(plain, "dynasty") is not None
+
+
+def test_my_interest_clause_names_what_it_would_replace_for_me():
+    from sleeper_tool.trade_engine import _my_interest_clause
+
+    weak_starter = make_entry(player_id="s1", name="My Weak TE", position="TE", is_starter=True,
+        value=make_value(position="TE", dynasty_value_percentile=30.0))
+    roster = make_roster(entries=[weak_starter])
+    incoming = make_value(position="TE", dynasty_value_percentile=70.0)
+    clause = _my_interest_clause(roster, "TE", incoming, "dynasty")
+    assert clause is not None and "My Weak TE" in clause and "TE" in clause
+
+
 # -- _benefit_reason ------------------------------------------------------------
 
 
