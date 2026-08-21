@@ -953,18 +953,31 @@ def _status_fit(give: list[RosterEntry], give_picks: list[OwnedPick], opponent_s
     return "neutral"
 
 
-def rate_acceptance(fit: OpponentFit, value_ratio: float, profile) -> tuple[str, list[str]]:
+def rate_acceptance(
+    fit: OpponentFit, value_ratio: float, profile, give: list[RosterEntry] = ()
+) -> tuple[str, list[str]]:
     """Buckets acceptance likelihood into ACCEPTANCE_TIERS rather than a
     fabricated precise probability — the underlying signals (value
     closeness, roster fit, timeline fit, owner tendencies) support a
     directional read, not a number with real statistical meaning.
+
+    `value_ratio` is (value I give) / (value I receive) at every call site
+    — below 1.0 means I'm lowballing them, above 1.0 means I'm overpaying
+    (favorable to THEM). Only the lowball direction should ever reduce
+    acceptance likelihood; a generous overpay should never look less
+    likely to be accepted than a fair trade (the user's own "am I
+    overpaying" signal is surfaced separately via balance_label, not here).
+
+    `give` is the piece(s) the OPPONENT would receive — used only to check
+    the offer's age profile against their documented youth/veteran
+    preference (same veteran_heavy/young_heavy signal _status_fit uses).
     """
     score = 0
     reasons: list[str] = []
     if abs(value_ratio - 1.0) <= 0.05:
         score += 1
         reasons.append("Value is nearly dead-even.")
-    elif abs(value_ratio - 1.0) > 0.15:
+    elif value_ratio < 0.85:
         score -= 1
         reasons.append("Value sits near the edge of an acceptable range.")
     if fit.target_is_starter:
@@ -985,9 +998,21 @@ def rate_acceptance(fit: OpponentFit, value_ratio: float, profile) -> tuple[str,
     if profile.trades_often == "inactive":
         score = min(score, -2)
         reasons.append(f"{profile.username or 'This owner'} is documented as rarely completing trades.")
+    elif profile.trades_often == "infrequent":
+        score -= 1
+        reasons.append(f"{profile.username or 'This owner'} doesn't complete trades often — even a fair offer may take patience and follow-up.")
     elif profile.trades_often == "active":
         score += 1
         reasons.append(f"{profile.username or 'This owner'} trades often.")
+    if give:
+        veteran_heavy = any(e.age is not None and e.age >= veteran_min_age(e.position) for e in give)
+        young_heavy = (not veteran_heavy) and any(e.age is not None and e.age <= young_max_age(e.position) for e in give)
+        if profile.youth_vs_veteran == "prefers_youth" and veteran_heavy:
+            score -= 1
+            reasons.append(f"{profile.username or 'This owner'} prefers young players — this leans veteran, which may need sweetening.")
+        elif profile.youth_vs_veteran == "prefers_veteran" and young_heavy:
+            score -= 1
+            reasons.append(f"{profile.username or 'This owner'} buys veterans, not unproven youth — this leans young, which may need sweetening.")
     idx = max(0, min(len(ACCEPTANCE_TIERS) - 1, 2 + score))
     return ACCEPTANCE_TIERS[idx], reasons
 
@@ -1216,7 +1241,7 @@ def _build_pick_target_proposal(
         status_fit="good_fit" if their_status_result and their_status_result.status == REBUILD else "neutral",
         piece_count=len(offer_players),
     )
-    rating, reasons = rate_acceptance(fit, ratio, profile)
+    rating, reasons = rate_acceptance(fit, ratio, profile, give=offer_players)
     proposal = TradeProposal(
         league_name=league.name,
         currency=currency,
@@ -1317,7 +1342,7 @@ def generate_trade_proposals(
                 p.value or 0 for p in offer_picks
             )
             ratio = (my_total / target_value) if target_value else float("inf")
-            rating, reasons = rate_acceptance(fit, ratio, profile)
+            rating, reasons = rate_acceptance(fit, ratio, profile, give=offer_players)
             raw_candidates.append(
                 (their_roster, target_entry, offer_players, offer_picks, fit, rating, reasons, profile, my_total, target_value)
             )
@@ -1370,7 +1395,7 @@ def generate_trade_proposals(
                 p.value or 0 for p in offer_picks
             )
             ratio = (my_total / target_value) if target_value else float("inf")
-            rating, reasons = rate_acceptance(fit, ratio, profile)
+            rating, reasons = rate_acceptance(fit, ratio, profile, give=offer_players)
 
         rationale_mine, rationale_theirs, caveats = _build_rationale(
             target_entry, offer_players, currency, profile, status_result, my_roster, offer_picks
@@ -1465,7 +1490,7 @@ def generate_trade_proposals(
                     p.value or 0 for p in offer_picks
                 )
                 ratio = (sell_value / their_total) if their_total else float("inf")
-                rating, reasons = rate_acceptance(fit, ratio, profile)
+                rating, reasons = rate_acceptance(fit, ratio, profile, give=[sell_entry])
                 rationale_mine, rationale_theirs, caveats = _build_sell_high_rationale(
                     sell_entry, offer_players, currency, profile, status_result, my_roster, offer_picks
                 )

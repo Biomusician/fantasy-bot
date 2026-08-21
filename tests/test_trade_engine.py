@@ -717,6 +717,68 @@ def test_rate_acceptance_floors_at_very_low_for_an_inactive_trader():
     assert rating == "Very Low"
 
 
+def test_rate_acceptance_penalizes_infrequent_traders_not_just_inactive_ones():
+    # Regression: trades_often had three real tiers ("active"/"infrequent"/
+    # "inactive"), but rate_acceptance only branched on the other two --
+    # "infrequent" (6 of 10 documented owners) was silently treated as
+    # neutral, so a proposal to a documented-infrequent-trader owner could
+    # be rated High with zero penalty even though the same report block
+    # separately warns "doesn't complete trades often."
+    from sleeper_tool.owner_profiles import OwnerProfile
+    from sleeper_tool.trade_engine import OpponentFit, rate_acceptance
+
+    fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
+        opponent_status="middling", status_fit="neutral", piece_count=1)
+    infrequent_profile = OwnerProfile(username="rare_trader", trades_often="infrequent")
+    unknown_profile = OwnerProfile(username="unknown_trader")
+    infrequent_rating, infrequent_reasons = rate_acceptance(fit, 1.0, infrequent_profile)
+    unknown_rating, _ = rate_acceptance(fit, 1.0, unknown_profile)
+    from sleeper_tool.trade_engine import ACCEPTANCE_TIERS
+    assert ACCEPTANCE_TIERS.index(infrequent_rating) < ACCEPTANCE_TIERS.index(unknown_rating)
+    assert any("doesn't complete trades often" in r for r in infrequent_reasons)
+
+
+def test_rate_acceptance_only_penalizes_lowball_direction_not_generous_overpay():
+    # Regression: the value-closeness check was symmetric around ratio=1.0,
+    # so a generous overpay (ratio > 1.15, favorable to the recipient) was
+    # scored identically to a lowball (ratio < 0.85) -- a large overpay
+    # should never make an offer look LESS likely to be accepted.
+    from sleeper_tool.owner_profiles import DEFAULT_PROFILE
+    from sleeper_tool.trade_engine import ACCEPTANCE_TIERS, OpponentFit, rate_acceptance
+
+    fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
+        opponent_status="middling", status_fit="neutral", piece_count=1)
+    lowball_rating, lowball_reasons = rate_acceptance(fit, 0.7, DEFAULT_PROFILE)
+    overpay_rating, overpay_reasons = rate_acceptance(fit, 1.5, DEFAULT_PROFILE)
+    # A big overpay must never be penalized as harshly as a lowball of the
+    # same magnitude -- it should be neutral (no bonus, since it's not
+    # dead-even, but also no penalty), strictly better than the lowball.
+    assert ACCEPTANCE_TIERS.index(overpay_rating) > ACCEPTANCE_TIERS.index(lowball_rating)
+    assert any("edge of an acceptable range" in r for r in lowball_reasons)
+    assert not any("edge of an acceptable range" in r for r in overpay_reasons)
+
+
+def test_rate_acceptance_flags_a_youth_veteran_preference_mismatch():
+    # Regression: OwnerProfile.youth_vs_veteran drove the framing hints
+    # shown right next to the acceptance rating in the report, but never
+    # entered the score itself -- an offer could be rated High while the
+    # same block's own framing text said "prefers young players" about a
+    # veteran-heavy give.
+    from sleeper_tool.owner_profiles import OwnerProfile
+    from sleeper_tool.trade_engine import ACCEPTANCE_TIERS, OpponentFit, rate_acceptance
+
+    fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
+        opponent_status="middling", status_fit="neutral", piece_count=1)
+    prefers_youth = OwnerProfile(username="youth_fan", youth_vs_veteran="prefers_youth")
+    veteran_piece = make_entry(name="Old Vet", position="WR", age=34.0)
+    young_piece = make_entry(name="Rookie", position="WR", age=22.0)
+
+    mismatched_rating, mismatched_reasons = rate_acceptance(fit, 1.0, prefers_youth, give=[veteran_piece])
+    matched_rating, _ = rate_acceptance(fit, 1.0, prefers_youth, give=[young_piece])
+    assert ACCEPTANCE_TIERS.index(mismatched_rating) < ACCEPTANCE_TIERS.index(matched_rating)
+    assert any("prefers young players" in r for r in mismatched_reasons)
+
+
 def test_proposal_confidence_is_dragged_down_by_the_weakest_valuation():
     from sleeper_tool.trade_engine import proposal_confidence
 

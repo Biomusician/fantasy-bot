@@ -231,7 +231,6 @@ def get_waiver_targets(
     currency = value_currency(my_roster)
 
     targets: list[WaiverTarget] = []
-    recommended_drop_ids: set[str] = set()
     for trend_rank, row in enumerate(trending):
         pid = row["player_id"]
         if pid in rostered_ids:
@@ -263,9 +262,12 @@ def get_waiver_targets(
         # current starting RB, Joe Mixon, 34th percentile") rather than
         # the abstract "fills your Nth-worst need" label — the latter is
         # true but doesn't say anything about what's actually on the
-        # roster. Falls back to the abstract framing only when there's no
-        # starter at the position to compare against.
-        impact_note = _roster_impact_note(my_roster, position, pctl, currency) if fills_need else None
+        # roster. Computed unconditionally (not just for declared-need
+        # positions) so a non-need add still gets a concrete "depth behind
+        # your starter" comparison instead of generic trend-count
+        # boilerplate — the same generic-vs-concrete gap trade_engine's
+        # _benefit_reason was rewritten to close for trade messages.
+        impact_note = _roster_impact_note(my_roster, position, pctl, currency)
         reason_bits = []
         if impact_note:
             reason_bits.append(impact_note)
@@ -282,15 +284,16 @@ def get_waiver_targets(
         if current_week is not None and value.bye_week == current_week:
             reason_bits.append(f"on bye week {current_week} — add for future weeks, not an immediate starter")
         if pctl is not None:
-            reason_bits.append(f"{ordinal_pct(pctl)} {value_label_for_currency(currency)}")
+            # _display_percentile silently switches between within-position
+            # (dynasty, when available) and pool-wide percentiles -- label
+            # which one this is, matching trade_engine.identify_drop_candidates'
+            # convention, so two rows showing the same-looking number don't
+            # silently mean different things.
+            qualifier = "within-position " if currency == DYNASTY_CURRENCY and value.dynasty_positional_percentile is not None else ""
+            reason_bits.append(f"{ordinal_pct(pctl)} {qualifier}{value_label_for_currency(currency)}")
 
         tier = _priority_tier(fills_need, pctl, trend_rank)
         horizon = _horizon(value, pdata.get("years_exp"), currency, fills_need, pctl)
-        drop_candidate = _find_drop_candidate(
-            my_roster, position, needs_ranked[:2], currency, exclude_ids=recommended_drop_ids
-        )
-        if drop_candidate is not None:
-            recommended_drop_ids.add(drop_candidate.player_id)
         faab_pct = _suggested_faab_pct(tier, waiver_budget, my_roster.waiver_budget_used)
 
         targets.append(
@@ -306,14 +309,29 @@ def get_waiver_targets(
                 reason="; ".join(reason_bits),
                 priority_tier=tier,
                 horizon=horizon,
-                drop_candidate=drop_candidate,
+                drop_candidate=None,  # assigned below, in final display order
                 suggested_faab_pct=faab_pct,
             )
         )
 
     _TIER_ORDER = {MUST_ADD: 0, STRONG_ADD: 1, MODERATE: 2, SPECULATIVE: 3, MONITOR: 4}
     targets.sort(key=lambda t: (_TIER_ORDER.get(t.priority_tier, 9), -(_display_percentile(t.value, currency) or 0)))
-    return targets[:top_n]
+    targets = targets[:top_n]
+
+    # Assign drop candidates AFTER sorting into final priority order, not
+    # while iterating Sleeper's trending-feed (add-count) order — otherwise
+    # a lower-priority target could claim the one available same-position
+    # bench cut before a higher-priority target at the same position ever
+    # got a chance at it, which is backwards: the row a user is most likely
+    # to actually act on is the one that most needs an actionable pairing.
+    recommended_drop_ids: set[str] = set()
+    for t in targets:
+        drop_candidate = _find_drop_candidate(my_roster, t.position, needs_ranked[:2], currency, exclude_ids=recommended_drop_ids)
+        if drop_candidate is not None:
+            recommended_drop_ids.add(drop_candidate.player_id)
+        t.drop_candidate = drop_candidate
+
+    return targets
 
 
 @dataclass
@@ -330,7 +348,17 @@ class TimeSensitiveNote:
 # report to be noise. The only actionable case: the NFL has already
 # effectively ended this player's near-term season, but he isn't
 # occupying my roster's actual IR/reserve slot yet.
-_LONG_TERM_INJURY_STATUSES = {"IR", "PUP", "NFI", "Suspended"}
+#
+# Checked against Sleeper's own cached player data (2026-08-20): the
+# `injury_status` field's real values are {COV, DNR, Doubtful, IR, NA, Out,
+# PUP, Questionable, Sus} -- "Suspended" and "NFI" never appear there, so
+# the original set silently could never fire for those two. Suspension and
+# non-football-injury designations instead live in the separate `status`
+# field ({Active, Inactive, Injured Reserve, Non Football Injury,
+# Physically Unable to Perform, Practice Squad}), which this used to never
+# read at all. Both fields are checked now.
+_LONG_TERM_INJURY_STATUSES = {"IR", "PUP", "Sus"}
+_LONG_TERM_SLEEPER_STATUSES = {"Injured Reserve", "Non Football Injury", "Physically Unable to Perform"}
 
 
 def get_time_sensitive_notes(
@@ -343,11 +371,18 @@ def get_time_sensitive_notes(
     """
     notes: list[TimeSensitiveNote] = []
     for entry in my_roster.entries:
-        if entry.injury_status in _LONG_TERM_INJURY_STATUSES and not entry.is_reserve:
+        long_term_label = entry.injury_status if entry.injury_status in _LONG_TERM_INJURY_STATUSES else (
+            entry.status if entry.status in _LONG_TERM_SLEEPER_STATUSES else None
+        )
+        # A taxi-squad stash, like a reserve-slotted player, isn't occupying
+        # an active bench spot in the first place -- flagging it as "move to
+        # IR to free the slot" is both false (there's no slot to free) and
+        # exactly the noise this alert was narrowed to eliminate.
+        if long_term_label and not entry.is_reserve and not entry.is_taxi:
             notes.append(
                 TimeSensitiveNote(
                     entry.name,
-                    f"{entry.injury_status} but sitting in an active roster spot — move to IR to free the slot for a streamer",
+                    f"{long_term_label} but sitting in an active roster spot — move to IR to free the slot for a streamer",
                     severity="high",
                 )
             )

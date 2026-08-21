@@ -254,6 +254,35 @@ def test_time_sensitive_notes_ignores_routine_weekly_game_status():
     assert get_time_sensitive_notes(None, roster) == []
 
 
+def test_time_sensitive_notes_matches_sleepers_real_injury_and_status_values():
+    # Regression: the original status set was {"IR", "PUP", "NFI",
+    # "Suspended"} compared against injury_status -- but Sleeper's actual
+    # cached data never uses "Suspended" (it uses "Sus") and never puts
+    # "NFI" in injury_status at all (it's a separate `status` field value,
+    # "Non Football Injury"). Both designations could never fire. Verified
+    # against the real values queried from data/sleeper.sqlite3 this
+    # session: injury_status in {COV, DNR, Doubtful, IR, NA, Out, PUP,
+    # Questionable, Sus}, status in {Active, Inactive, Injured Reserve,
+    # Non Football Injury, Physically Unable to Perform, Practice Squad}.
+    suspended = make_entry(player_id="p1", name="Suspended Guy", injury_status="Sus", is_starter=False, is_reserve=False, value=make_value())
+    nfi = make_entry(player_id="p2", name="NFI Guy", injury_status=None, status="Non Football Injury", is_starter=False, is_reserve=False, value=make_value())
+    roster = make_roster(entries=[suspended, nfi])
+    notes = get_time_sensitive_notes(None, roster)
+    flagged_names = {n.player_name for n in notes}
+    assert flagged_names == {"Suspended Guy", "NFI Guy"}
+
+
+def test_time_sensitive_notes_silent_for_a_taxi_squad_stash():
+    # Regression: a taxi-squad player, like a reserve-slotted one, isn't
+    # occupying an active bench spot -- the alert's own advice ("move to
+    # IR to free the slot") is nonsensical for a stash that never took
+    # bench room to begin with, and firing it here reproduces the exact
+    # noisy-alert complaint this round was meant to eliminate.
+    taxi_stash = make_entry(player_id="p1", name="Taxi Guy", injury_status="IR", is_starter=False, is_reserve=False, is_taxi=True, value=make_value())
+    roster = make_roster(entries=[taxi_stash])
+    assert get_time_sensitive_notes(None, roster) == []
+
+
 def test_time_sensitive_notes_bye_week_starter_is_medium_severity():
     starter_on_bye = make_entry(player_id="p1", name="Bye Guy", is_starter=True, value=make_value(bye_week=5))
     roster = make_roster(entries=[starter_on_bye])
@@ -311,6 +340,85 @@ def test_get_waiver_targets_flags_bye_week_players():
     engine = FakeEngine({"Bye Week Guy": make_value(name="Bye Week Guy", position="WR", bye_week=7)})
     targets = get_waiver_targets(storage, engine, league, my_roster, current_week=7)
     assert "bye" in targets[0].reason.lower()
+
+
+def test_get_waiver_targets_gives_a_concrete_reason_even_for_a_non_need_position():
+    # Regression: the roster-specific impact comparison was only computed
+    # when fills_need was True -- every other row fell back to pure
+    # trend-count + percentile boilerplate with zero connection to the
+    # actual roster, the same generic-vs-concrete gap trade_engine's
+    # _benefit_reason was rewritten to close for trade messages.
+    my_entries = [
+        make_entry(player_id="my-qb", position="QB", is_starter=True, value=make_value(position="QB", dynasty_value_percentile=90.0)),
+        make_entry(player_id="my-rb", position="RB", is_starter=True, value=make_value(position="RB", dynasty_value_percentile=75.0)),
+        make_entry(player_id="my-te", position="TE", is_starter=True, value=make_value(position="TE", dynasty_value_percentile=70.0)),
+        make_entry(player_id="my-weak-wr", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=10.0)),
+    ]
+    league = make_league_info(kind="dynasty")
+    my_roster = make_roster(entries=my_entries, league=league)
+
+    players = {"new1": _player("new1", "Backup QB", "QB")}
+    trending = [{"player_id": "new1", "count": 20}]
+    storage = FakeStorage(players, trending)
+    engine = FakeEngine({"Backup QB": make_value(name="Backup QB", position="QB", dynasty_value_percentile=50.0)})
+
+    targets = get_waiver_targets(storage, engine, league, my_roster)
+    assert len(targets) == 1
+    assert targets[0].fills_need is False  # QB is my strongest position, not a top-2 need
+    assert "depth behind your current starting QB" in targets[0].reason
+
+
+def test_get_waiver_targets_assigns_drop_candidates_in_final_priority_order():
+    # Regression: drop-candidate dedup was reserved while iterating
+    # Sleeper's trending-feed (add-count) order, BEFORE the final
+    # priority-tier sort -- so a lower-priority target processed earlier
+    # in the feed could claim the one available same-position bench cut
+    # ahead of a higher-priority target at the same position. Deliberately
+    # list the weaker target FIRST in the trending feed to prove the fix
+    # assigns drops by final display order, not feed order.
+    my_entries = [
+        make_entry(player_id="my-qb", position="QB", is_starter=True, value=make_value(position="QB", dynasty_value_percentile=80.0)),
+        make_entry(player_id="my-rb", position="RB", is_starter=True, value=make_value(position="RB", dynasty_value_percentile=75.0)),
+        make_entry(player_id="my-te", position="TE", is_starter=True, value=make_value(position="TE", dynasty_value_percentile=70.0)),
+        make_entry(player_id="my-weak-wr", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=10.0)),
+    ]
+    league = make_league_info(kind="dynasty")
+    my_roster = make_roster(entries=my_entries, league=league)
+
+    players = {
+        "low": _player("low", "Low Priority WR", "WR"),
+        "high": _player("high", "High Priority WR", "WR"),
+    }
+    # Low-priority add listed FIRST in the trending feed on purpose.
+    trending = [{"player_id": "low", "count": 40}, {"player_id": "high", "count": 30}]
+    storage = FakeStorage(players, trending)
+    engine = FakeEngine({
+        "Low Priority WR": make_value(name="Low Priority WR", position="WR", dynasty_value_percentile=55.0),
+        "High Priority WR": make_value(name="High Priority WR", position="WR", dynasty_value_percentile=85.0),
+    })
+
+    targets = get_waiver_targets(storage, engine, league, my_roster)
+    by_name = {t.name: t for t in targets}
+    assert by_name["High Priority WR"].priority_tier == MUST_ADD
+    assert by_name["Low Priority WR"].priority_tier == STRONG_ADD
+    assert by_name["High Priority WR"].drop_candidate is not None
+    assert by_name["High Priority WR"].drop_candidate.player_id == "my-weak-wr"
+    assert by_name["Low Priority WR"].drop_candidate is None  # the one available cut was already spent on the higher-priority row
+
+
+def test_get_waiver_targets_labels_within_position_percentile_for_dynasty():
+    # Regression: the trailing percentile in the reason string silently
+    # switched between within-position (dynasty, when available) and
+    # pool-wide, but both were labeled identically -- two rows showing the
+    # same-looking number could mean different things with no visible cue.
+    league = make_league_info(kind="dynasty")
+    my_roster = make_roster(entries=[make_entry(player_id="only", value=make_value())], league=league)
+    players = {"new1": _player("new1", "Positional Guy", "WR")}
+    trending = [{"player_id": "new1", "count": 10}]
+    storage = FakeStorage(players, trending)
+    engine = FakeEngine({"Positional Guy": make_value(name="Positional Guy", position="WR", dynasty_positional_percentile=65.0)})
+    targets = get_waiver_targets(storage, engine, league, my_roster)
+    assert "within-position" in targets[0].reason
 
 
 def test_get_waiver_targets_returns_empty_for_undrafted_roster():
