@@ -1,6 +1,6 @@
 # Autonomous Improvement Report — Trade/Waiver Recommendation Overhaul
 
-**Date:** 2026-08-19 to 2026-08-20 | **Session type:** Autonomous multi-agent engineering pass | **Commits:** `475bf2f`, `16b8ac7`, `48173c5`, `d4952de`, `8ef39bd`
+**Date:** 2026-08-19 to 2026-08-20 | **Session type:** Autonomous multi-agent engineering pass | **Commits:** `475bf2f`, `16b8ac7`, `48173c5`, `d4952de`, `8ef39bd`, `93be182`, `91fcb02`, `c56a2c9`
 
 ## Executive Summary
 
@@ -67,6 +67,21 @@ A fourth, independent review pass (4 fresh reviewers on the round-3 diff) then c
 - `identify_drop_candidates` counted taxi-squad/reserve players as "better options at the position" (they can't take a bench spot's job), truncated fractional `starter_slots` instead of respecting them, and its caveat text could run on past ~2 clauses in an edge case.
 - The dashboard color-coded "Strong Drop" as its `negative` (red) tier when the file's own documented convention reserves that for something worse than a plain drop suggestion — should be `caution` (amber), matching "Consider Dropping".
 
+## Round 4 — Waiver Message Parity, Live-Data Priority-List Gap, Acceptance Calibration
+
+After round 3 shipped, I did a lighter self-directed pass rather than another full 8-agent review: a browser check of the actual rendered dashboard (not just grepping the Markdown) surfaced one issue directly, and a smaller 3-agent Workflow targeted specifically at the code least reviewed so far (waiver_engine's own reasoning, edge cases in the newest alert/drop-candidate logic, and acceptance-rating calibration read against real generated proposals) found the rest.
+
+**Found by direct inspection:** with 8+ trades rated Good/High-confidence this week, the cross-league "Best moves right now" list — which sorts alerts, then trades, then waivers, then drop-cleanup — filled all 8 slots with trades alone, leaving zero visibility for a Must-Add waiver or a Strong-Drop candidate even though every league had at least one. Fixed by reserving a floor of 2 slots each for the waiver and roster-cleanup kinds before filling the remaining budget by overall quality.
+
+**Found by the targeted review (8 findings, all confirmed against live data):**
+- `_LONG_TERM_INJURY_STATUSES` checked for `"Suspended"`/`"NFI"` — strings that never appear in Sleeper's real `injury_status` field (confirmed by querying `data/sleeper.sqlite3` directly: real values are `Sus`/`IR`/`PUP`/etc.; `"NFI"` only ever shows up in the separate `status` field as `"Non Football Injury"`, which the function never read). Two of the alert's four designations could never fire. Now checks both fields against their real values.
+- The same alert fired for taxi-squad stashes, wrongly claiming they occupy "an active roster spot" — a taxi slot doesn't compete for bench room any more than a reserve slot does. Excluded.
+- `rate_acceptance` never had a branch for `trades_often == "infrequent"` (6 of 10 documented owners) — it silently scored as neutral despite the same proposal's own framing text warning "doesn't complete trades often." Confirmed live: two Good/High-rated offers to documented infrequent traders (`dlooney1`, `Bazinga9`) were inflated by this gap; one dropped from High to Good once fixed.
+- `rate_acceptance` also never consulted `youth_vs_veteran`, even though the framing hints shown in the same report block do — an offer could contradict a documented preference with no scoring penalty. Added. Also made the value-closeness penalty direction-aware: a generous overpay was scored identically to a lowball, when only lowballing should ever reduce acceptance likelihood.
+- Waiver reasons only got a concrete roster comparison ("would beat your current starting RB, X, 34th percentile") when the add filled a declared need — every other row was pure trend-count boilerplate, the exact generic-vs-concrete gap round 3 fixed for trade messages but hadn't carried over to waivers. Now computed unconditionally.
+- Waiver drop-candidate dedup was resolved while iterating Sleeper's trending-feed (add-count) order, before the final priority-tier sort — a lower-priority target could claim the one available same-position bench cut ahead of a higher-priority target at the same position. Reassigned after sorting into final display order instead.
+- The percentile in a waiver reason silently switched between within-position and pool-wide with no visible label. Now qualified with "within-position" to match `identify_drop_candidates`' existing convention.
+
 ## Bugs Fixed
 
 - `derive_league_format` crashed on an explicit `null` `scoring_settings`/`roster_positions` (proven, not hypothetical).
@@ -83,9 +98,9 @@ A fourth, independent review pass (4 fresh reviewers on the round-3 diff) then c
 
 ## Tests Added/Run
 
-- **148 tests passing** (baseline was 59; 121 after round 2). New files: `tests/test_waiver_engine.py`, `tests/test_report_data.py`, `tests/test_rankings_cache.py`. Substantial additions to `tests/test_trade_engine.py` and `tests/test_valuation.py` in every round.
-- Every fix above has a dedicated regression test, several built directly from the reviewers' empirical repro scripts (e.g. the FLEX-distribution test, the give-piece-collision test, the cross-league quality-ranking test, the buy-low self-reference integration test, the drop-candidate taxi/reserve/fractional-slot tests).
-- `scripts/daily_run.py` (the actual production entry point) was run end-to-end against all 10 real leagues after every round, and specific fixes were spot-checked against the exact real-data symptom that surfaced them (Dak Prescott no longer appears as a sell-high candidate in the Superflex league where he's the only real starting QB; no waiver row repeats another row's drop suggestion; no negative-percentile text anywhere in the regenerated report; the drop-candidates section renders correctly in both outputs).
+- **157 tests passing** (baseline was 59; 121 after round 2, 148 after round 3). New files: `tests/test_waiver_engine.py`, `tests/test_report_data.py`, `tests/test_rankings_cache.py`. Substantial additions to `tests/test_trade_engine.py`, `tests/test_valuation.py`, and `tests/test_waiver_engine.py` in every round.
+- Every fix above has a dedicated regression test, several built directly from the reviewers' empirical repro scripts (e.g. the FLEX-distribution test, the give-piece-collision test, the cross-league quality-ranking test, the buy-low self-reference integration test, the drop-candidate taxi/reserve/fractional-slot tests, the infrequent-trader/youth-veteran/direction-aware acceptance tests, the taxi-squad-alert and Sus/NFI-status regression tests).
+- `scripts/daily_run.py` (the actual production entry point) was run end-to-end against all 10 real leagues after every round, and specific fixes were spot-checked against the exact real-data symptom that surfaced them (Dak Prescott no longer appears as a sell-high candidate in the Superflex league where he's the only real starting QB; no waiver row repeats another row's drop suggestion; no negative-percentile text anywhere in the regenerated report; the drop-candidates section renders correctly in both outputs; the cross-league priority list now shows a waiver add and two drop candidates instead of eight trades and nothing else; `dlooney1`'s previously-High-rated offer now correctly rates Good).
 - Full suite: `.venv/Scripts/python.exe -m pytest tests/ -v`
 
 ## Remaining Weaknesses
