@@ -305,19 +305,19 @@ def identify_buy_low(
             for e in ranked
             if e.player_id not in untouchable_ids
             and e.value.trend == BUY_LOW_TREND
-            and (percentile_for_currency(e.value, currency) or 0) >= MIN_ROSTERABLE_PERCENTILE
+            and (_need_percentile(e.value, currency) or 0) >= MIN_ROSTERABLE_PERCENTILE
             and _age_ok(e)
             and _not_just_a_slump(e)
         ),
-        # Percentile, not raw value — for REDRAFT_CURRENCY, raw value_for_currency
-        # is RotoBaller's un-normalized full-season point total, which runs
-        # structurally 40-70% higher for QBs than RB/WR/TE (passing volume
-        # dwarfs receiving/rushing scoring). Sorting candidates by that raw
-        # number would systematically rank mediocre QBs above elite skill
-        # players; percentile is already normalized within each source's own
-        # pool and is the same metric the MIN_ROSTERABLE_PERCENTILE filter
-        # just above uses, so eligibility and ranking agree on one signal.
-        key=lambda e: -(percentile_for_currency(e.value, currency) or 0),
+        # WITHIN-POSITION percentile (_need_percentile), not pool-wide — the
+        # same apples-to-oranges problem _need_percentile's own docstring
+        # describes for cross-position need comparison applies here too: a
+        # merely-good TE could clear a pool-wide rosterable bar that a
+        # genuinely weak-for-his-position RB doesn't, purely because TE
+        # values run lower across the whole pool. Eligibility and ranking
+        # use the same signal on purpose, so they never disagree with each
+        # other about what counts as rosterable.
+        key=lambda e: -(_need_percentile(e.value, currency) or 0),
     )
 
 
@@ -376,7 +376,7 @@ def identify_depth_needs(roster: ValuedRoster, min_starters: dict[str, int] | No
         rosterable = sum(
             1
             for e in roster.by_position(pos)
-            if _corroborated(e, currency) and (percentile_for_currency(e.value, currency) or 0) >= MIN_ROSTERABLE_PERCENTILE
+            if _corroborated(e, currency) and (_need_percentile(e.value, currency) or 0) >= MIN_ROSTERABLE_PERCENTILE
         )
         required = thresholds.get(pos, 1)  # at minimum, everyone needs >=1 real body at each core position
         if rosterable < required:

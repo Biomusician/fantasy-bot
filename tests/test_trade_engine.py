@@ -181,6 +181,23 @@ def test_identify_buy_low_requires_min_rosterable_percentile():
     assert identify_buy_low(roster, CONTENDER) == []
 
 
+def test_identify_buy_low_uses_within_position_percentile_not_pool_wide():
+    # Regression: the MIN_ROSTERABLE_PERCENTILE eligibility filter (and the
+    # ranking sort) compared against the POOL-WIDE percentile, the same
+    # apples-to-oranges mistake _need_percentile's docstring describes for
+    # identify_needs -- a real starter at a shallow position (e.g. TE) can
+    # clear the bar within his own position while sitting well below it
+    # pool-wide, purely because pool-wide values skew toward RB/WR. A
+    # dynasty_positional_percentile clearly above MIN_ROSTERABLE_PERCENTILE
+    # (45) but a pool-wide dynasty_value_percentile clearly below it must
+    # still surface as a buy-low candidate.
+    entry = _buy_low_candidate(
+        position="TE", dynasty_value_percentile=30.0, dynasty_positional_percentile=60.0, redraft_ecr_percentile=10.0,
+    )
+    roster = make_roster(entries=[entry, *_filler_untouchables()])
+    assert identify_buy_low(roster, CONTENDER) == [entry]
+
+
 # -- _find_matching_offer: value-tolerance matching --------------------------
 
 
@@ -356,6 +373,23 @@ def test_identify_depth_needs_clear_when_enough_rosterable_bodies_exist():
     roster = make_roster(entries=[rb1, rb2])
     needs = identify_depth_needs(roster, min_starters={"RB": 2})
     assert "RB" not in needs
+
+
+def test_identify_depth_needs_uses_within_position_percentile_not_pool_wide():
+    # Regression: same pool-wide-vs-within-position bias as identify_buy_low
+    # -- a real rosterable TE body with a low pool-wide percentile (TE
+    # values run low across the whole pool) must still count as "rosterable
+    # depth" here when his own within-position percentile clears the bar.
+    from sleeper_tool.trade_engine import identify_depth_needs
+
+    te1 = make_entry(player_id="te1", position="TE", value=make_value(position="TE", dynasty_value_percentile=90.0, dynasty_positional_percentile=90.0))
+    te2 = make_entry(
+        player_id="te2", position="TE",
+        value=make_value(position="TE", dynasty_value_percentile=20.0, dynasty_positional_percentile=55.0),
+    )
+    roster = make_roster(entries=[te1, te2])
+    needs = identify_depth_needs(roster, min_starters={"TE": 2})
+    assert "TE" not in needs
 
 
 def test_derive_league_format_reads_exact_starter_slot_counts_with_no_flex():
