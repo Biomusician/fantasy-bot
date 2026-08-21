@@ -583,10 +583,11 @@ def test_roster_impact_note_excludes_departing_player_when_hes_the_weakest_start
         value=make_value(position="TE", dynasty_value_percentile=30.0))
     roster = make_roster(entries=[departing])
 
-    buggy_without_exclusion = _roster_impact_note(roster, "TE", 50.0, "dynasty")
+    incoming = make_value(position="TE", dynasty_value_percentile=50.0)
+    buggy_without_exclusion = _roster_impact_note(roster, "TE", incoming, "dynasty")
     assert "Departing Guy" in buggy_without_exclusion  # demonstrates the bug exists without the fix
 
-    fixed_with_exclusion = _roster_impact_note(roster, "TE", 50.0, "dynasty", exclude_ids=frozenset({"dep"}))
+    fixed_with_exclusion = _roster_impact_note(roster, "TE", incoming, "dynasty", exclude_ids=frozenset({"dep"}))
     assert "Departing Guy" not in fixed_with_exclusion
     assert "nobody currently starting" in fixed_with_exclusion
 
@@ -599,7 +600,7 @@ def test_roster_impact_note_excludes_departing_player_but_still_compares_against
     other_starter = make_entry(player_id="other", name="Other WR", position="WR", is_starter=True,
         value=make_value(position="WR", dynasty_value_percentile=40.0))
     roster = make_roster(entries=[departing, other_starter])
-    note = _roster_impact_note(roster, "WR", 60.0, "dynasty", exclude_ids=frozenset({"dep"}))
+    note = _roster_impact_note(roster, "WR", make_value(position="WR", dynasty_value_percentile=60.0), "dynasty", exclude_ids=frozenset({"dep"}))
     assert "Departing Guy" not in note
     assert "Other WR" in note
 
@@ -614,7 +615,7 @@ def test_roster_impact_note_excludes_multiple_ids_for_a_two_piece_buy_low_give()
     give_b = make_entry(player_id="b", name="Give B", position="RB", is_starter=True,
         value=make_value(position="RB", dynasty_value_percentile=10.0))
     roster = make_roster(entries=[give_a, give_b])
-    note = _roster_impact_note(roster, "RB", 50.0, "dynasty", exclude_ids=frozenset({"a", "b"}))
+    note = _roster_impact_note(roster, "RB", make_value(position="RB", dynasty_value_percentile=50.0), "dynasty", exclude_ids=frozenset({"a", "b"}))
     assert "Give A" not in note and "Give B" not in note
     assert "nobody currently starting" in note
 
@@ -868,7 +869,7 @@ def test_benefit_reason_names_the_starter_it_would_replace():
     incoming = make_entry(player_id="new-te", position="TE", value=make_value(position="TE", dynasty_value_percentile=80.0))
     reason = _benefit_reason(roster, [incoming], "dynasty")
     assert "TE" in reason
-    assert "start over" in reason
+    assert "clear" in reason and "points" in reason  # names the gap magnitude, not just a bare "beats" claim
 
 
 def test_benefit_reason_flags_an_empty_position():
@@ -902,6 +903,25 @@ def test_benefit_reason_excludes_the_departing_target_entry():
     assert "don't have a real RB" in reason  # post-trade, their RB slot is actually empty
 
 
+def test_benefit_reason_excludes_multiple_departing_return_pieces_for_sell_high():
+    # Regression: caught via real regenerated report output -- the
+    # sell-high chat-message call never excluded ANY of the return pieces
+    # (their_roster still contains them since the trade hasn't executed),
+    # so a return piece could be named as "their current starter" the
+    # trade beats, in a message about why THEY should accept it. Buy-low
+    # only ever has one departing piece (the target); sell-high's return
+    # can be up to 2 pieces, hence the plural exclude_player_ids.
+    from sleeper_tool.trade_engine import _benefit_reason
+
+    returning_starter = make_entry(player_id="returning", name="Returning Guy", position="WR", is_starter=True,
+        value=make_value(position="WR", dynasty_value_percentile=40.0))
+    roster = make_roster(entries=[returning_starter])
+    sell_entry = make_entry(player_id="sell1", position="WR", value=make_value(position="WR", dynasty_value_percentile=90.0))
+    reason = _benefit_reason(roster, [sell_entry], "dynasty", exclude_player_ids=frozenset({"returning"}))
+    assert reason is not None
+    assert "Returning Guy" not in reason
+
+
 def test_benefit_reason_defers_to_fit_when_offer_does_not_cleanly_upgrade():
     # Regression: the closer previously only ever looked at the SINGLE
     # highest-value piece, so a multi-piece offer with a non-fitting
@@ -916,17 +936,17 @@ def test_benefit_reason_defers_to_fit_when_offer_does_not_cleanly_upgrade():
     not_upgrading_fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=False, fit_notes=["clutter"],
         opponent_status="middling", status_fit="neutral", piece_count=2)
     reason = _benefit_reason(roster, [strong_piece], "dynasty", fit=not_upgrading_fit)
-    assert "start over" not in reason
+    assert "clear" not in reason
     assert "depth" in reason.lower()
 
 
-def test_benefit_reason_start_over_framing_works_for_a_below_rosterable_floor_starter():
+def test_benefit_reason_starter_beat_framing_works_for_a_below_rosterable_floor_starter():
     # Regression: the weakest-rosterable-percentile check (gated at
     # MIN_ROSTERABLE_PERCENTILE) was consulted BEFORE the starters_here
     # check, so a real active starter below that floor produced "you
-    # don't have a real X" instead of the more accurate "he'd start over
-    # what you've got" -- the starters_here branch was unreachable for
-    # that common case.
+    # don't have a real X" instead of the more accurate "he'd clear what
+    # you've got" -- the starters_here branch was unreachable for that
+    # common case.
     from sleeper_tool.trade_engine import _benefit_reason
 
     weak_starter = make_entry(player_id="s1", name="Weak Starter", position="WR", is_starter=True,
@@ -934,7 +954,7 @@ def test_benefit_reason_start_over_framing_works_for_a_below_rosterable_floor_st
     roster = make_roster(entries=[weak_starter])
     incoming = make_entry(player_id="new", position="WR", value=make_value(position="WR", dynasty_value_percentile=30.0))
     reason = _benefit_reason(roster, [incoming], "dynasty")
-    assert "start over" in reason
+    assert "clear" in reason and "Weak Starter" in reason
 
 
 def test_benefit_reason_falls_back_to_none_for_position_less_primary_piece():
@@ -943,6 +963,212 @@ def test_benefit_reason_falls_back_to_none_for_position_less_primary_piece():
     roster = make_roster(entries=[])
     positionless = make_entry(player_id="p1", position=None, value=make_value(position=None))
     assert _benefit_reason(roster, [positionless], "dynasty") is None
+
+
+# -- _corroboration_note: positive claim when sources genuinely agree -------
+
+
+def test_corroboration_note_fires_when_ktc_and_fantasypros_agree():
+    from sleeper_tool.trade_engine import _corroboration_note
+
+    value = make_value(dynasty_value_percentile=80.0, dynasty_ecr_percentile=75.0, cross_source_agreement="agree")
+    note = _corroboration_note(value, "dynasty")
+    assert note is not None
+    assert "5" in note  # the actual gap, not a vague claim
+
+
+def test_corroboration_note_silent_on_insufficient_data():
+    from sleeper_tool.trade_engine import _corroboration_note
+
+    value = make_value(dynasty_value_percentile=80.0, dynasty_ecr_percentile=None, cross_source_agreement="insufficient_data")
+    assert _corroboration_note(value, "dynasty") is None
+
+
+def test_corroboration_note_never_fires_for_redraft_currency():
+    # cross_source_agreement is always computed off DYNASTY percentiles --
+    # citing it to support a redraft-currency trade would mix two
+    # different value scales.
+    from sleeper_tool.trade_engine import _corroboration_note
+
+    value = make_value(dynasty_value_percentile=80.0, dynasty_ecr_percentile=78.0, cross_source_agreement="agree")
+    assert _corroboration_note(value, "redraft") is None
+
+
+# -- _buy_low_timing_note / _sell_high_timing_note: real gap magnitude ------
+
+
+def test_buy_low_timing_note_surfaces_the_actual_gap():
+    from sleeper_tool.trade_engine import _buy_low_timing_note
+
+    entry = make_entry(value=make_value(dynasty_value_percentile=70.0, redraft_ecr_percentile=40.0))
+    note = _buy_low_timing_note(entry, "dynasty")
+    assert note is not None
+    assert "30" in note
+
+
+def test_buy_low_timing_note_silent_below_the_confirmation_gap():
+    from sleeper_tool.trade_engine import _buy_low_timing_note
+
+    entry = make_entry(value=make_value(dynasty_value_percentile=70.0, redraft_ecr_percentile=65.0))
+    assert _buy_low_timing_note(entry, "dynasty") is None
+
+
+def test_sell_high_timing_note_fires_when_ktc_runs_ahead_of_fantasypros():
+    from sleeper_tool.trade_engine import _sell_high_timing_note
+
+    entry = make_entry(value=make_value(dynasty_value_percentile=85.0, dynasty_ecr_percentile=60.0))
+    note = _sell_high_timing_note(entry, "dynasty")
+    assert note is not None
+    assert "25" in note
+
+
+def test_sell_high_timing_note_silent_when_fantasypros_is_ahead_of_ktc():
+    # The direction matters -- an expert panel MORE bullish than the crowd
+    # is not evidence of hype to sell into.
+    from sleeper_tool.trade_engine import _sell_high_timing_note
+
+    entry = make_entry(value=make_value(dynasty_value_percentile=60.0, dynasty_ecr_percentile=85.0))
+    assert _sell_high_timing_note(entry, "dynasty") is None
+
+
+# -- _scarcity_note: structural (not just value) reasoning -------------------
+
+
+def test_scarcity_note_flags_superflex_qb():
+    from sleeper_tool.trade_engine import _scarcity_note
+
+    fmt = make_format(qb_format="SF")
+    roster = make_roster(entries=[make_entry(position="QB", value=make_value(position="QB"))])
+    note = _scarcity_note(fmt, roster, "QB", "dynasty")
+    assert note is not None and "Superflex" in note
+
+
+def test_scarcity_note_flags_te_premium():
+    from sleeper_tool.trade_engine import _scarcity_note
+
+    fmt = make_format(te_premium_bonus=1.0)
+    roster = make_roster(entries=[make_entry(position="TE", value=make_value(position="TE"))])
+    note = _scarcity_note(fmt, roster, "TE", "dynasty")
+    assert note is not None and "TE premium" in note
+
+
+def test_scarcity_note_flags_zero_rosterable_depth():
+    from sleeper_tool.trade_engine import _scarcity_note
+
+    fmt = make_format()
+    thin = make_entry(position="TE", value=make_value(position="TE", dynasty_value_percentile=10.0, dynasty_positional_percentile=10.0))
+    roster = make_roster(entries=[thin])
+    note = _scarcity_note(fmt, roster, "TE", "dynasty")
+    assert note is not None and "zero other rosterable bodies" in note
+
+
+def test_scarcity_note_silent_when_nothing_structural_applies():
+    from sleeper_tool.trade_engine import _scarcity_note
+
+    fmt = make_format()
+    solid = make_entry(position="RB", value=make_value(position="RB", dynasty_value_percentile=80.0, dynasty_positional_percentile=80.0))
+    roster = make_roster(entries=[solid])
+    assert _scarcity_note(fmt, roster, "RB", "dynasty") is None
+
+
+# -- _consolidation_note: framing a 2-for-1-up trade as a real move ---------
+
+
+def test_consolidation_note_fires_for_two_bench_pieces():
+    from sleeper_tool.trade_engine import _consolidation_note
+
+    give = [make_entry(player_id="a", is_starter=False), make_entry(player_id="b", is_starter=False)]
+    note = _consolidation_note(give)
+    assert note is not None and "2 bench spots" in note
+
+
+def test_consolidation_note_never_fires_if_a_starter_is_in_the_package():
+    from sleeper_tool.trade_engine import _consolidation_note
+
+    give = [make_entry(player_id="a", is_starter=True), make_entry(player_id="b", is_starter=False)]
+    assert _consolidation_note(give) is None
+
+
+def test_consolidation_note_never_fires_for_a_single_piece():
+    from sleeper_tool.trade_engine import _consolidation_note
+
+    assert _consolidation_note([make_entry(player_id="a", is_starter=False)]) is None
+
+
+# -- rate_acceptance: owner-specific multi-piece aversion --------------------
+
+
+def test_rate_acceptance_penalizes_multi_piece_harder_for_an_owner_who_dislikes_it():
+    from sleeper_tool.owner_profiles import OwnerProfile
+    from sleeper_tool.trade_engine import ACCEPTANCE_TIERS, OpponentFit, rate_acceptance
+
+    fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
+        opponent_status="middling", status_fit="neutral", piece_count=2)
+    generic_profile = OwnerProfile(username="generic")
+    averse_profile = OwnerProfile(username="averse", dislikes_multi_piece=True)
+    generic_rating, generic_reasons = rate_acceptance(fit, 1.0, generic_profile)
+    averse_rating, averse_reasons = rate_acceptance(fit, 1.0, averse_profile)
+    assert ACCEPTANCE_TIERS.index(averse_rating) < ACCEPTANCE_TIERS.index(generic_rating)
+    assert any("pushed back on lopsided multi-piece offers" in r for r in averse_reasons)
+
+
+# -- _build_rationale / _build_sell_high_rationale: "theirs" is trade-specific -
+
+
+def test_build_rationale_theirs_is_not_just_the_static_manager_trait_dump():
+    # The core regression this round fixes: "why they say yes" used to be
+    # ENTIRELY profile.framing_notes() -- identical across every trade sent
+    # to the same owner regardless of what's being offered. It must now
+    # lead with something computed from THIS trade's actual numbers.
+    from sleeper_tool.owner_profiles import OwnerProfile
+    from sleeper_tool.trade_engine import _build_rationale
+    from sleeper_tool.team_status import TeamStatusResult
+
+    target = make_entry(player_id="target", name="Target Guy", position="WR", is_starter=True,
+        value=make_value(position="WR", dynasty_value_percentile=80.0, dynasty_positional_percentile=80.0))
+    their_roster = make_roster(entries=[target])
+    weak_give = make_entry(player_id="give1", name="My Guy", is_starter=False,
+        value=make_value(dynasty_value_percentile=30.0))
+    my_roster = make_roster(entries=[weak_give])
+    profile = OwnerProfile(username="Rival", youth_vs_veteran="prefers_youth")
+    status_result = TeamStatusResult(status="contender", strength_percentile=50.0, win_pct=None, games_played=0, reason="test")
+
+    _, theirs, _ = _build_rationale(target, [weak_give], "dynasty", profile, status_result, my_roster, their_roster)
+    framing_only = profile.framing_notes()
+    assert len(theirs) > len(framing_only), "theirs must contain more than just the static per-manager trait dump"
+    trade_specific = theirs[: len(theirs) - len(framing_only)] if framing_only else theirs
+    assert any(("point" in b or "comparable" in b) for b in trade_specific)
+
+
+def test_build_sell_high_rationale_theirs_impact_never_self_references_a_receive_piece():
+    # Regression: caught via real regenerated report output, not a unit
+    # test -- the new "their_impact" substantiation compared the incoming
+    # sell_entry against their_roster's current starters WITHOUT excluding
+    # `receive` (what they'd send back to me), which is still technically
+    # on their_roster since the trade hasn't executed. A live report
+    # showed a return piece being cited as "their current starting WR"
+    # that this same trade beats -- the exact self-reference bug class
+    # already fixed for the buy-low side, reintroduced on this new
+    # recipient-side computation.
+    from sleeper_tool.owner_profiles import DEFAULT_PROFILE
+    from sleeper_tool.team_status import TeamStatusResult
+    from sleeper_tool.trade_engine import _build_sell_high_rationale
+
+    # Their only WR (their weakest AND only starter there) is the exact
+    # piece they'd send back to me in this trade.
+    returning_starter = make_entry(player_id="returning", name="Returning Guy", position="WR", is_starter=True,
+        value=make_value(position="WR", dynasty_value_percentile=40.0, dynasty_positional_percentile=40.0))
+    their_roster = make_roster(entries=[returning_starter])
+    sell_entry = make_entry(player_id="sell1", name="My Rising Guy", position="WR", is_starter=True,
+        value=make_value(position="WR", dynasty_value_percentile=90.0, dynasty_positional_percentile=90.0, trend="rising"))
+    my_roster = make_roster(entries=[sell_entry])
+    status_result = TeamStatusResult(status="contender", strength_percentile=50.0, win_pct=None, games_played=0, reason="test")
+
+    _, theirs, _ = _build_sell_high_rationale(
+        sell_entry, [returning_starter], "dynasty", DEFAULT_PROFILE, status_result, my_roster, their_roster
+    )
+    for bullet in theirs:
+        assert "current starting WR, Returning Guy" not in bullet, f"self-referenced the departing return piece: {bullet!r}"
 
 
 # -- generate_trade_proposals: end-to-end integration ------------------------

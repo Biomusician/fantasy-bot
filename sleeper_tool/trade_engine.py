@@ -339,6 +339,21 @@ def _need_percentile(pv, currency: str) -> float | None:
     return percentile_for_currency(pv, currency)
 
 
+def _pctl_phrase(pv, currency: str) -> str:
+    """"87th percentile within-position" (dynasty, when the positional
+    number is actually available) or plain "87th percentile" (redraft, or
+    dynasty without a positional rank) — the same _need_percentile value
+    used for eligibility/ranking everywhere else, rendered with an honest
+    label so two rows never show the same-looking number off two different
+    scales with no visible cue (the exact bug class fixed in waiver_engine
+    this session)."""
+    pctl = _need_percentile(pv, currency)
+    if pctl is None:
+        return "unknown"
+    qualifier = " within-position" if currency == DYNASTY_CURRENCY and pv.dynasty_positional_percentile is not None else ""
+    return f"{ordinal_pct(pctl)}{qualifier}"
+
+
 def identify_needs(roster: ValuedRoster) -> list[str]:
     """Positions where my best asset is weaker than my other positions,
     ranked worst-first. Uses whichever single player I have with the
@@ -577,32 +592,49 @@ def _age_note(entry: RosterEntry, my_status: str) -> str | None:
 
 
 def _roster_impact_note(
-    my_roster: ValuedRoster, position: str | None, incoming_pctl: float | None, currency: str, *, exclude_ids: frozenset[str] = frozenset()
+    roster: ValuedRoster,
+    position: str | None,
+    incoming_value,
+    currency: str,
+    *,
+    exclude_ids: frozenset[str] = frozenset(),
+    possessive: str = "your",
+    has_verb: str = "You have",
 ) -> str | None:
-    """The concrete "what actually changes on my roster" sentence — names
-    my current weakest starter at the position and the specific
-    percentile gap, rather than an abstract "fills a need" label. Also
-    honest when it ISN'T an immediate upgrade (depth, not a starter
-    swap) — the point is accuracy, not always finding a flattering angle.
-    `exclude_ids` matters whenever a player still technically on my_roster
-    is departing in THIS SAME trade (the trade hasn't executed, so the
-    roster object still contains him) — a sell-high piece leaving, or (for
-    buy-low, which can have up to 2 give-pieces) any give-piece — without
-    excluding them a pitch could compare the incoming piece against the
-    very player(s) leaving in the same deal.
+    """The concrete "what actually changes on this roster" sentence — names
+    the current weakest starter at the position, the WITHIN-POSITION
+    percentile gap (not just a binary beats/doesn't), and its magnitude —
+    a "beats your starter" claim with no number attached is an assertion,
+    not evidence; "beats him by 37 points within position" is something a
+    reader can actually weigh. Also honest when it ISN'T an immediate
+    upgrade (depth, not a starter swap, with the gap stated either way) —
+    the point is accuracy, not always finding a flattering angle.
+
+    `possessive`/`has_verb` let the SAME computation describe either side
+    of a trade ("your"/"You have" for my roster, "their"/"They have" for
+    the recipient's) instead of a separate near-duplicate implementation
+    per side. `exclude_ids` matters whenever a player still technically on
+    `roster` is departing in THIS SAME trade (the trade hasn't executed,
+    so the roster object still contains him) — without excluding them a
+    pitch could compare the incoming piece against the very player(s)
+    leaving in the same deal.
     """
-    if not position:
+    if not position or incoming_value is None:
         return None
-    starters_here = [e for e in my_roster.by_position(position) if e.is_starter and e.player_id not in exclude_ids]
+    starters_here = [e for e in roster.by_position(position) if e.is_starter and e.player_id not in exclude_ids]
+    incoming_pctl = _need_percentile(incoming_value, currency)
     if not starters_here:
-        return f"You have nobody currently starting at {position} — this fills the slot outright."
-    weakest = min(starters_here, key=lambda e: percentile_for_currency(e.value, currency) or 0)
-    weak_pctl = percentile_for_currency(weakest.value, currency)
+        return f"{has_verb} nobody currently starting at {position} — this fills the slot outright."
+    weakest = min(starters_here, key=lambda e: _need_percentile(e.value, currency) or 0)
+    weak_pctl = _need_percentile(weakest.value, currency)
     if weak_pctl is None or incoming_pctl is None:
         return None
+    weak_phrase = _pctl_phrase(weakest.value, currency)
     if incoming_pctl > weak_pctl:
-        return f"This immediately beats your current starting {position}, {weakest.name} ({ordinal_pct(weak_pctl)})."
-    return f"This slots in as depth behind {weakest.name} ({ordinal_pct(weak_pctl)}) at {position}, not an immediate starter."
+        gap = round(incoming_pctl - weak_pctl)
+        return f"This clears {possessive} current starting {position}, {weakest.name} ({weak_phrase}) — a {gap}-point jump, not a marginal swap."
+    gap = round(weak_pctl - incoming_pctl)
+    return f"This slots in as depth behind {weakest.name} ({weak_phrase}) at {position}, {gap} points back — not an immediate upgrade for {possessive} lineup."
 
 
 def _value_annotated_names(entries: list[RosterEntry], picks: list[OwnedPick], currency: str) -> str:
@@ -665,6 +697,113 @@ def _valuation_caveat(entry: RosterEntry, currency: str) -> str | None:
     return f"{entry.name}: " + " ".join(bits) + rookie_suffix
 
 
+def _corroboration_note(value, currency: str) -> str | None:
+    """A positive claim for when sources genuinely agree, mirroring
+    _valuation_caveat's disagreement-only coverage — a "Confidence: High"
+    tag already shown on every trade card is otherwise unexplained; this
+    makes the reason for it part of the actual argument instead of a bare
+    label nobody can verify. Dynasty only: cross_source_agreement is
+    always computed off KTC vs FantasyPros DYNASTY percentiles
+    (valuation.py), so citing it to support a redraft-currency trade would
+    mix two different value scales.
+    """
+    if currency != DYNASTY_CURRENCY or value.cross_source_agreement != "agree":
+        return None
+    if value.dynasty_value_percentile is None or value.dynasty_ecr_percentile is None:
+        return None
+    gap = round(abs(value.dynasty_value_percentile - value.dynasty_ecr_percentile))
+    return f"KTC and FantasyPros are within {gap} points of each other on him — not one site's outlier read."
+
+
+def _buy_low_timing_note(entry: RosterEntry, currency: str) -> str | None:
+    """Surfaces the actual dynasty-vs-redraft percentile GAP that
+    _not_just_a_slump already computes to gate buy-low eligibility (see
+    identify_buy_low), instead of discarding the number and asserting a
+    "buy-low window" label with nothing behind it in the rationale text.
+    """
+    if currency != DYNASTY_CURRENCY:
+        return None
+    dyn_pctl, rd_pctl = entry.value.dynasty_value_percentile, entry.value.redraft_ecr_percentile
+    if dyn_pctl is None or rd_pctl is None:
+        return None
+    gap = dyn_pctl - rd_pctl
+    if gap < DECLINE_CONFIRMATION_GAP:
+        return None
+    return (
+        f"{entry.name}'s dynasty value has barely moved ({ordinal_pct(dyn_pctl)}) while his current-form/redraft "
+        f"stock has dropped to {ordinal_pct(rd_pctl)} — a {round(gap)}-point gap. That split looks like a market "
+        "overreaction to recent form, not a real decline in what he's worth long-term."
+    )
+
+
+SELL_HIGH_CONFIRMATION_GAP = 10.0  # KTC pctl - FantasyPros dynasty ECR pctl must clear this to call it hype-ahead-of-consensus, not just "trending"
+
+
+def _sell_high_timing_note(entry: RosterEntry, currency: str) -> str | None:
+    """The sell-high analog of _buy_low_timing_note. The plain "trending
+    up — sell before regression" line has no magnitude behind it and is
+    also used, unmodified, as the reasoning for BUYING a dip elsewhere in
+    this same file — nothing distinguished a real breakout from a hype
+    spike. This checks whether KTC's crowd-vote value has run ahead of
+    FantasyPros' curated expert dynasty consensus: a real, data-grounded
+    "the market may be pricing in more than the measured panel agrees
+    with" signal, not just a flat trend arrow.
+    """
+    if currency != DYNASTY_CURRENCY:
+        return None
+    ktc_pctl, fp_pctl = entry.value.dynasty_value_percentile, entry.value.dynasty_ecr_percentile
+    if ktc_pctl is None or fp_pctl is None:
+        return None
+    gap = ktc_pctl - fp_pctl
+    if gap < SELL_HIGH_CONFIRMATION_GAP:
+        return None
+    return (
+        f"{entry.name}'s KTC crowd value ({ordinal_pct(ktc_pctl)}) has run {round(gap)} points ahead of FantasyPros' "
+        f"expert dynasty consensus ({ordinal_pct(fp_pctl)}) — the market may be pricing in more hype than the "
+        "measured panel agrees with, a pattern that often gives some of it back."
+    )
+
+
+def _scarcity_note(fmt: LeagueFormat, roster: ValuedRoster, position: str | None, currency: str, *, possessive: str = "your") -> str | None:
+    """Names an actual STRUCTURAL reason a position matters in THIS
+    league's own format — read live from LeagueFormat, never hardcoded —
+    instead of a generic value comparison. A Superflex league's startable
+    QB is a second lineup slot every roster competes for, not bench depth;
+    this league's own TE-premium bonus (if any) means TE production is
+    worth more here than a standard dynasty ranking implies. Falls back to
+    a real zero-rosterable-depth check (reusing the same MIN_ROSTERABLE_
+    PERCENTILE bar and within-position percentile the rest of the trade
+    engine uses) rather than manufacturing a scarcity argument the format
+    doesn't actually support.
+    """
+    if not position:
+        return None
+    if position == "QB" and fmt.is_superflex:
+        return "This is a Superflex league — a startable QB is a second lineup slot every roster competes for, not bench depth."
+    if position == "TE" and fmt.te_premium_bonus > 0:
+        return f"This league runs TE premium (+{fmt.te_premium_bonus:g}/rec) — TE production is worth more here than a standard dynasty ranking assumes."
+    if _position_rosterable_count(roster, position, currency) == 0:
+        return f"{possessive.capitalize()} roster has zero other rosterable bodies at {position} right now — this isn't marginal depth, it's closing a structural hole."
+    return None
+
+
+def _consolidation_note(give: list[RosterEntry]) -> str | None:
+    """Frames a 2-(or more)-for-1-up trade as a deliberate roster-
+    construction move on MY side — today `piece_count >= 2` is used ONLY
+    as a negative signal against the recipient's acceptance ("some
+    managers read this as a lowball"); nothing ever explains why
+    consolidating bench depth into one better piece is good for ME. Never
+    claimed if a starter is part of the package (real cost isn't "close to
+    zero" if I'm also giving up a lineup spot).
+    """
+    if len(give) < 2 or any(e.is_starter for e in give):
+        return None
+    return (
+        f"This turns {len(give)} bench spots you're deep at into one lineup-quality piece — real cost is close to "
+        "zero, since none of what you're sending was starting for you anyway."
+    )
+
+
 def _build_rationale(
     target_entry: RosterEntry,
     give: list[RosterEntry],
@@ -672,6 +811,7 @@ def _build_rationale(
     profile,
     status_result: TeamStatusResult,
     my_roster: ValuedRoster,
+    their_roster: ValuedRoster,
     give_picks: list[OwnedPick] = (),
 ) -> tuple[list[str], list[str], list[str]]:
     mine: list[str] = []
@@ -682,18 +822,32 @@ def _build_rationale(
     status_labels = {CONTENDER: "a contender", MIDDLING: "middling", REBUILD: "a rebuild candidate"}
 
     # Lead with the concrete roster impact — what actually changes for
-    # ME, named against my actual current starter, not an abstract
-    # "fills a need" label. Exclude the give-piece(s): they're still
-    # technically on my_roster (the trade hasn't executed), so without
-    # excluding them a same-position give could get compared against
-    # itself as "the starter this beats".
+    # ME, named against my actual current starter, the within-position
+    # percentile gap, and its magnitude. Exclude the give-piece(s):
+    # they're still technically on my_roster (the trade hasn't executed),
+    # so without excluding them a same-position give could get compared
+    # against itself as "the starter this beats".
     give_ids = frozenset(e.player_id for e in give)
-    impact = _roster_impact_note(
-        my_roster, target_entry.position, percentile_for_currency(target_entry.value, currency), currency, exclude_ids=give_ids
-    )
+    impact = _roster_impact_note(my_roster, target_entry.position, target_entry.value, currency, exclude_ids=give_ids)
     if impact:
         mine.append(impact)
-    mine.append(f"Your team profiles as {status_labels[my_status]} in this league ({status_result.reason}).")
+
+    timing = _buy_low_timing_note(target_entry, currency)
+    if timing:
+        mine.append(timing)
+
+    scarcity = _scarcity_note(my_roster.fmt, my_roster, target_entry.position, currency)
+    if scarcity:
+        mine.append(scarcity)
+
+    if not mine:
+        # Honest fallback so a proposal never ships with an empty "why it
+        # works for me" list — this sentence used to run unconditionally
+        # on EVERY trade for a team, producing the exact same long string
+        # repeated 2-3 times per team section in the actual report; now
+        # it only appears when nothing more specific to this trade fired.
+        mine.append(f"Your team profiles as {status_labels[my_status]} in this league ({status_result.reason}).")
+
     age_note = _age_note(target_entry, my_status)
     if age_note:
         mine.append(f"{target_entry.name}: {age_note}.")
@@ -702,13 +856,46 @@ def _build_rationale(
             mine.append(f"{give_entry.name} is trending up right now — good time to sell before regression.")
         if my_status in (MIDDLING, REBUILD) and give_entry.age is not None and give_entry.age >= veteran_min_age(give_entry.position):
             mine.append(f"{give_entry.name} (age {give_entry.age:g}) is a win-now veteran worth shedding on a {status_labels[my_status]} team.")
+    consolidation = _consolidation_note(give)
+    if consolidation:
+        mine.append(consolidation)
+
+    # "Why THEY say yes" — built from THIS trade's actual numbers against
+    # THEIR roster, not a static per-manager trait dump. Previously this
+    # was entirely profile.framing_notes(), which depends only on the
+    # recipient's identity and is therefore identical across every trade
+    # sent to that owner regardless of what's actually being offered
+    # (confirmed against real report output: the same trait bullets
+    # appeared verbatim for one owner across 5 different leagues and 5
+    # different assets — the single biggest driver of the "bland" and
+    # "copy-pasted" complaints). Lead with the concrete case; framing_notes
+    # stays at the end as pitching ADVICE, not as the substance itself.
+    if give:
+        primary_give = max(give, key=lambda e: _need_percentile(e.value, currency) or 0)
+        their_impact = _roster_impact_note(
+            their_roster, primary_give.position, primary_give.value, currency,
+            exclude_ids=frozenset({target_entry.player_id}), possessive="their", has_verb="They have",
+        )
+        if their_impact:
+            theirs.append(their_impact)
+        their_scarcity = _scarcity_note(their_roster.fmt, their_roster, primary_give.position, currency, possessive="their")
+        if their_scarcity:
+            theirs.append(their_scarcity)
+        if profile.hot_streak_susceptible and any(e.value.trend == SELL_HIGH_TREND for e in give):
+            theirs.append(f"{profile.username or 'This owner'} has taken the bait on a hot streak before — worth leading with whichever piece here is trending up.")
 
     # ONE consolidated value-comparison bullet, not one per give-piece —
     # a 2-piece offer previously produced near-duplicate "X is comparable
     # value to Y" bullets that added little beyond restating the trade
-    # card's own give/receive line.
+    # card's own give/receive line. Corroboration (when sources agree)
+    # turns it from a restatement of the header numbers into an actual
+    # claim about why the price is trustworthy.
     give_names = _value_annotated_names(give, give_picks, currency) or "This package"
-    theirs.append(f"{give_names} is comparable {label} to {target_entry.name}.")
+    value_line = f"{give_names} is comparable {label} to {target_entry.name}."
+    corroboration = _corroboration_note(target_entry.value, currency)
+    if corroboration:
+        value_line += f" {corroboration}"
+    theirs.append(value_line)
     theirs.extend(profile.framing_notes())
 
     for entry in [target_entry, *give]:
@@ -738,6 +925,7 @@ def _build_sell_high_rationale(
     profile,
     status_result: TeamStatusResult,
     my_roster: ValuedRoster,
+    their_roster: ValuedRoster,
     receive_picks: list[OwnedPick] = (),
 ) -> tuple[list[str], list[str], list[str]]:
     """Mirrors _build_rationale's structure and caveat logic, but for the
@@ -748,21 +936,59 @@ def _build_sell_high_rationale(
     theirs: list[str] = []
     caveats: list[str] = []
     label = value_label_for_currency(currency)
-    mine.append(
-        f"{sell_entry.name} is trending up right now ({ordinal_pct(percentile_for_currency(sell_entry.value, currency))} "
-        f"in {label}) — a good window to sell before performance regresses toward his underlying value profile."
-    )
+
+    timing = _sell_high_timing_note(sell_entry, currency)
+    if timing:
+        mine.append(timing)
+    else:
+        # Honest fallback: the sharper KTC-vs-FantasyPros divergence signal
+        # isn't always available (redraft currency, or the sources happen
+        # to agree) — the plain trend label still says something, just
+        # without the magnitude the sharper check provides.
+        mine.append(
+            f"{sell_entry.name} is trending up right now ({ordinal_pct(percentile_for_currency(sell_entry.value, currency))} "
+            f"in {label}) — a good window to sell before performance regresses toward his underlying value profile."
+        )
     if receive:
-        primary = max(receive, key=lambda e: percentile_for_currency(e.value, currency) or 0)
+        primary = max(receive, key=lambda e: _need_percentile(e.value, currency) or 0)
         impact = _roster_impact_note(
-            my_roster, primary.position, percentile_for_currency(primary.value, currency), currency,
+            my_roster, primary.position, primary.value, currency,
             exclude_ids=frozenset({sell_entry.player_id}),
         )
         if impact:
             mine.append(impact)
 
+    # "Why THEY say yes" — the recipient's need is now SUBSTANTIATED
+    # against their actual roster (previously just asserted: "fits a need
+    # on your roster" with no way for a reader to verify it against data
+    # the tool clearly already has, since it's exactly what selected this
+    # opponent in the first place).
+    # Exclude `receive` (what they'd send back to me): those pieces are
+    # still technically on their_roster since the trade hasn't executed,
+    # so without excluding them their own returning piece could get cited
+    # as "their current starter" this trade beats — the same self-
+    # reference bug class already fixed on the buy-low side this session,
+    # just not yet on this newly-added recipient-side computation.
+    their_impact = _roster_impact_note(
+        their_roster, sell_entry.position, sell_entry.value, currency,
+        exclude_ids=frozenset(e.player_id for e in receive), possessive="their", has_verb="They have",
+    )
+    if their_impact:
+        theirs.append(their_impact)
+    else:
+        theirs.append(f"{sell_entry.name} fits a real need on their roster at {sell_entry.position}.")
+    their_scarcity = _scarcity_note(their_roster.fmt, their_roster, sell_entry.position, currency, possessive="their")
+    if their_scarcity:
+        theirs.append(their_scarcity)
+    if profile.hot_streak_susceptible and sell_entry.value.trend == SELL_HIGH_TREND:
+        theirs.append(f"{profile.username or 'This owner'} has taken the bait on a hot streak before — this is exactly the kind of pitch that's worked on them.")
+
     receive_names = _value_annotated_names(receive, receive_picks, currency) or "This return"
-    theirs.append(f"{receive_names} fits a need on your roster and is comparable {label} to {sell_entry.name}.")
+    value_line = f"{receive_names} is comparable {label} to {sell_entry.name}."
+    corroboration = _corroboration_note(sell_entry.value, currency)
+    if corroboration:
+        value_line += f" {corroboration}"
+    theirs.append(value_line)
     theirs.extend(profile.framing_notes())
 
     for entry in [sell_entry, *receive]:
@@ -801,7 +1027,7 @@ def _position_rosterable_count(roster: ValuedRoster, position: str, currency: st
     return sum(
         1
         for e in roster.by_position(position)
-        if _corroborated(e, currency) and (percentile_for_currency(e.value, currency) or 0) >= MIN_ROSTERABLE_PERCENTILE
+        if _corroborated(e, currency) and (_need_percentile(e.value, currency) or 0) >= MIN_ROSTERABLE_PERCENTILE
     )
 
 
@@ -993,8 +1219,12 @@ def rate_acceptance(
         score -= 1
         reasons.append(f"Cuts against their apparent {fit.opponent_status} timeline.")
     if fit.piece_count >= 2:
-        score -= 1
-        reasons.append("Multi-piece offer — some managers read this as a lowball.")
+        if profile.dislikes_multi_piece:
+            score -= 2
+            reasons.append(f"{profile.username or 'This owner'} has specifically pushed back on lopsided multi-piece offers before — this needs to be a clean, close-to-even bundle or it likely stalls.")
+        else:
+            score -= 1
+            reasons.append("Multi-piece offer — some managers read this as a lowball.")
     if profile.trades_often == "inactive":
         score = min(score, -2)
         reasons.append(f"{profile.username or 'This owner'} is documented as rarely completing trades.")
@@ -1100,6 +1330,7 @@ def _benefit_reason(
     currency: str,
     *,
     exclude_player_id: str | None = None,
+    exclude_player_ids: frozenset[str] = frozenset(),
     fit: "OpponentFit | None" = None,
 ) -> str | None:
     """A short, concrete clause naming exactly why the primary incoming
@@ -1114,31 +1345,50 @@ def _benefit_reason(
     instead of confidently claiming a clean upgrade based only on the
     single highest-value piece, which could otherwise contradict the same
     proposal's own acceptance_rating and caveats. `exclude_player_id`
-    excludes a player still technically on their_roster but departing in
-    this same trade (the buy-low target being acquired FROM them) —
-    without it, a same-position give-piece could get measured against the
-    very player leaving their roster in this same deal.
+    (buy-low: the single target being acquired FROM them) and
+    `exclude_player_ids` (sell-high: the — possibly 1-2 — pieces they'd
+    send back to me) both exclude players still technically on
+    their_roster but departing in this same trade — without excluding
+    them, a same-position piece could get measured against the very
+    player(s) leaving their roster in this same deal. Only the LOCAL
+    starters_here check below honors the plural form; the pool-wide
+    _weakest_rosterable_percentile fallback still only takes the single
+    `exclude_player_id` (that shared primitive is deliberately left
+    untouched — see identify_buy_low's percentile-fix commit — so this is
+    a narrower, lower-severity gap: a departing piece could still prop up
+    the pool-wide "weakest rosterable" bar in that fallback branch, but
+    can no longer be NAMED as "their current starter" this trade beats).
     """
     if not pieces:
         return "for the extra draft capital"
     if fit is not None and not fit.would_upgrade_their_roster:
         return "mixing in some depth alongside the headline piece" if len(pieces) > 1 else "as a depth flier — low cost either way"
-    primary = max(pieces, key=lambda e: percentile_for_currency(e.value, currency) or 0)
+    primary = max(pieces, key=lambda e: _need_percentile(e.value, currency) or 0)
     pos = primary.position
     if not pos:
         return None  # caller falls back to a generic closer rather than a "roster"-shaped sentence
-    piece_pctl = percentile_for_currency(primary.value, currency) or 0
-    starters_here = [e for e in their_roster.by_position(pos) if e.is_starter and e.player_id != exclude_player_id]
+    excluded = exclude_player_ids | ({exclude_player_id} if exclude_player_id else set())
+    # Within-position percentile for the starter comparison (apples to
+    # apples — both numbers are on the same scale), WITH the magnitude of
+    # the gap: "start over what you've got" alone is a bare assertion,
+    # "clear him by 22 points" is something the recipient can actually
+    # weigh. Kept as a SEPARATE pool-wide comparison below against
+    # _weakest_rosterable_percentile's own bar (that shared primitive is
+    # deliberately pool-wide — see identify_buy_low's percentile-fix
+    # commit — so the two branches don't mix scales against each other).
+    starters_here = [e for e in their_roster.by_position(pos) if e.is_starter and e.player_id not in excluded]
     if starters_here:
-        weakest_starter_pctl = percentile_for_currency(
-            min(starters_here, key=lambda e: percentile_for_currency(e.value, currency) or 0).value, currency
-        ) or 0
+        piece_pctl = _need_percentile(primary.value, currency) or 0
+        weakest_starter = min(starters_here, key=lambda e: _need_percentile(e.value, currency) or 0)
+        weakest_starter_pctl = _need_percentile(weakest_starter.value, currency) or 0
         if piece_pctl > weakest_starter_pctl:
-            return f"since he'd start over what you've got at {pos} now"
+            gap = round(piece_pctl - weakest_starter_pctl)
+            return f"since he'd clear {weakest_starter.name} at {pos} by {gap} points, not just marginally better"
     weakest = _weakest_rosterable_percentile(their_roster, pos, currency, exclude_player_id=exclude_player_id)
     if weakest is None:
         return f"since you don't have a real {pos} right now"
-    if piece_pctl > weakest:
+    pool_pctl = percentile_for_currency(primary.value, currency) or 0
+    if pool_pctl > weakest:
         return f"for real {pos} depth behind your starter"
     return f"as a {pos} flier — low cost either way"
 
@@ -1208,15 +1458,30 @@ def _build_pick_target_proposal(
     profile = get_owner_profile(their_roster.owner_username or "", league.name)
     label = value_label_for_currency(currency)
     status_labels = {CONTENDER: "a contender", MIDDLING: "middling", REBUILD: "a rebuild candidate"}
+    their_status_result = (
+        classify_team_status(their_roster.roster_id, rosters, currency, storage=storage, engine=engine)
+        if rosters is not None and storage and engine
+        else None
+    )
     mine = [
         f"Your team profiles as {status_labels[status_result.status]} in this league ({status_result.reason}).",
         f"{target_pick.name} ({target_pick.value:,} KTC pick value) is future draft capital worth prioritizing "
         "over a specific player on a rebuild timeline.",
     ]
-    theirs = [
-        f"{', '.join(e.name for e in offer_players)} is comparable {label} to {target_pick.name}.",
-        *profile.framing_notes(),
-    ]
+    give_names = ", ".join(e.name for e in offer_players)
+    value_line = f"{give_names} is comparable {label} to {target_pick.name}."
+    if len(offer_players) == 1:
+        corroboration = _corroboration_note(offer_players[0].value, currency)
+        if corroboration:
+            value_line += f" {corroboration}"
+    theirs = [value_line]
+    if their_status_result and their_status_result.status == REBUILD:
+        theirs.append(
+            f"{their_roster.owner_username or 'They'} profile as a rebuild candidate here too "
+            f"({their_status_result.reason}) — a pick is worth more to that timeline than locking into a specific "
+            "player at this roster spot."
+        )
+    theirs.extend(profile.framing_notes())
     caveats = [
         "Pick tier (Early/Mid/Late) is estimated from the original team's current roster strength, "
         "not a locked draft slot — it'll move as the season plays out, so treat this pick's value as "
@@ -1228,11 +1493,6 @@ def _build_pick_target_proposal(
 
     my_total = sum(value_for_currency(e.value, currency) or 0 for e in offer_players)
     ratio = my_total / target_pick.value if target_pick.value else float("inf")
-    their_status_result = (
-        classify_team_status(their_roster.roster_id, rosters, currency, storage=storage, engine=engine)
-        if rosters is not None and storage and engine
-        else None
-    )
     fit = OpponentFit(
         target_is_starter=False,  # a pick has no lineup slot to protect
         would_upgrade_their_roster=True,  # draft capital always has value to any roster
@@ -1398,7 +1658,7 @@ def generate_trade_proposals(
             rating, reasons = rate_acceptance(fit, ratio, profile, give=offer_players)
 
         rationale_mine, rationale_theirs, caveats = _build_rationale(
-            target_entry, offer_players, currency, profile, status_result, my_roster, offer_picks
+            target_entry, offer_players, currency, profile, status_result, my_roster, their_roster, offer_picks
         )
         if fit.piece_count >= 2:
             caveats.append(
@@ -1492,7 +1752,7 @@ def generate_trade_proposals(
                 ratio = (sell_value / their_total) if their_total else float("inf")
                 rating, reasons = rate_acceptance(fit, ratio, profile, give=[sell_entry])
                 rationale_mine, rationale_theirs, caveats = _build_sell_high_rationale(
-                    sell_entry, offer_players, currency, profile, status_result, my_roster, offer_picks
+                    sell_entry, offer_players, currency, profile, status_result, my_roster, their_roster, offer_picks
                 )
                 if not their_side_fits:
                     caveats.append(
@@ -1521,7 +1781,11 @@ def generate_trade_proposals(
                     confidence=confidence,
                 )
                 proposal.message = generate_trade_message(
-                    proposal, fit, benefit_reason=_benefit_reason(their_roster, [sell_entry], currency, fit=fit)
+                    proposal, fit,
+                    benefit_reason=_benefit_reason(
+                        their_roster, [sell_entry], currency,
+                        exclude_player_ids=frozenset(e.player_id for e in offer_players), fit=fit,
+                    ),
                 )
                 proposals.append(proposal)
                 targeted_owners.add(owner_key)
