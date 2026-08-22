@@ -897,6 +897,56 @@ def test_generate_trade_message_omits_clauses_that_are_none_without_leaving_gaps
     assert msg.strip().endswith(".")
 
 
+def test_generate_trade_message_never_uses_em_dash_yo_or_you_guys():
+    # Explicit user style rule for chat messages specifically (not the
+    # surrounding rationale bullets, which are unaffected): no em-dash --
+    # semicolon for two independent clauses, plain hyphen otherwise -- and
+    # no "Yo" opener or "you guys". Exercised across every opener variant
+    # and every clause type so a future added phrase can't silently
+    # reintroduce the banned style.
+    from sleeper_tool.team_status import CONTENDER, REBUILD
+    from sleeper_tool.trade_engine import (
+        OpponentFit, TradeProposal, _benefit_reason, _buzz_clause_buy_low, _buzz_clause_sell_high,
+        _timeline_clause, generate_trade_message,
+    )
+
+    down_entry = make_entry(name="Down Guy", value=make_value(dynasty_value_percentile=70.0, redraft_ecr_percentile=40.0, trend="down"))
+    up_entry = make_entry(name="Up Guy", value=make_value(dynasty_value_percentile=85.0, dynasty_ecr_percentile=60.0, trend="rising"))
+    rebuild_fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
+        opponent_status=REBUILD, status_fit="good_fit", piece_count=1)
+    contender_fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
+        opponent_status=CONTENDER, status_fit="good_fit", piece_count=1)
+    no_fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=False, fit_notes=[],
+        opponent_status="middling", status_fit="neutral", piece_count=2)
+
+    candidate_strings = [
+        _buzz_clause_buy_low(down_entry, "dynasty"),
+        _buzz_clause_sell_high(up_entry, "dynasty"),
+        _timeline_clause(rebuild_fit),
+        _timeline_clause(contender_fit),
+        _benefit_reason(make_roster(entries=[]), [], "dynasty"),  # "for the extra draft capital"
+        _benefit_reason(make_roster(entries=[]), [make_entry(position=None)], "dynasty", fit=no_fit),  # the "flier" branches
+    ]
+    for trade_type in ("buy_low", "sell_high", "pick_target"):
+        proposal = TradeProposal(
+            league_name="Test League", currency="dynasty", target_username="rival", target_team_name="Rival Team",
+            give=[make_entry(player_id="g1", name="Give Guy")], receive=[make_entry(player_id="r1", name="Receive Guy")],
+            my_value_total=1000, their_value_total=1000, rationale_for_me=[], rationale_for_them=[], caveats=[],
+            trade_type=trade_type,
+        )
+        for seed_username in ("a", "bb", "ccc", "dddd", "eeeee"):  # vary the opener seed
+            proposal.target_username = seed_username
+            msg = generate_trade_message(proposal)
+            candidate_strings.append(msg)
+
+    for text in candidate_strings:
+        if not text:
+            continue
+        assert "—" not in text, f"em-dash found in chat-message text: {text!r}"
+        assert "Yo" not in text, f"'Yo' opener found in chat-message text: {text!r}"
+        assert "you guys" not in text.lower(), f"'you guys' found in chat-message text: {text!r}"
+
+
 # -- _timeline_clause / _buzz_clause_* / _my_interest_clause: message content -
 
 

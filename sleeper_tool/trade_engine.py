@@ -794,7 +794,7 @@ def _buzz_clause_buy_low(entry: RosterEntry, currency: str) -> str | None:
     has something honest to say).
     """
     if _buy_low_gap(entry, currency) is not None:
-        return "he's cooled off a bit recently — might be able to grab him before that turns back around"
+        return "he's cooled off a bit recently - might be able to grab him before that turns back around"
     if entry.value.trend == BUY_LOW_TREND:
         return "he's been a little quiet lately, buzz-wise"
     return None
@@ -820,7 +820,7 @@ def _timeline_clause(fit: "OpponentFit") -> str | None:
     if fit.status_fit != "good_fit":
         return None
     if fit.opponent_status == REBUILD:
-        return "figured it makes sense since you guys are rebuilding"
+        return "figured it makes sense since you're rebuilding"
     if fit.opponent_status == CONTENDER:
         return "figured it makes sense since you're pushing to win now"
     return None
@@ -1364,17 +1364,17 @@ def proposal_confidence(values: list[PlayerValue]) -> str:
 
 _MESSAGE_OPENERS = {
     "buy_low": [
-        "Hey — {give_line} for {receive_line}? ",
-        "Yo, would you do {give_line} for {receive_line}? ",
+        "Hey, {give_line} for {receive_line}? ",
+        "Would you do {give_line} for {receive_line}? ",
         "Hey, I'd offer {give_line} for {receive_line} if you're open to it. ",
     ],
     "sell_high": [
-        "Hey — I'd move {give_line} for {receive_line}, interested? ",
-        "Yo, I'd let go of {give_line} for {receive_line} if it helps you out. ",
+        "Hey, I'd move {give_line} for {receive_line}, interested? ",
+        "I'd let go of {give_line} for {receive_line} if it helps you out. ",
     ],
     "pick_target": [
-        "Hey — I'd send {give_line} for {receive_line}. ",
-        "Yo, thinking {give_line} for {receive_line}? ",
+        "Hey, I'd send {give_line} for {receive_line}. ",
+        "Thinking {give_line} for {receive_line}? ",
     ],
 }
 
@@ -1450,7 +1450,7 @@ def _benefit_reason(
     if not pieces:
         return "for the extra draft capital"
     if fit is not None and not fit.would_upgrade_their_roster:
-        return "mixing in some depth alongside the headline piece" if len(pieces) > 1 else "as a depth flier — low cost either way"
+        return "mixing in some depth alongside the headline piece" if len(pieces) > 1 else "as a depth flier - low cost either way"
     primary = max(pieces, key=lambda e: _need_percentile(e.value, currency) or 0)
     pos = primary.position
     if not pos:
@@ -1478,7 +1478,7 @@ def _benefit_reason(
     pool_pctl = percentile_for_currency(primary.value, currency) or 0
     if pool_pctl > weakest:
         return f"for real {pos} depth behind your starter"
-    return f"as a {pos} flier — low cost either way"
+    return f"as a {pos} flier - low cost either way"
 
 
 def generate_trade_message(
