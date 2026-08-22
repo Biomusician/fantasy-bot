@@ -13,5 +13,6 @@ data/ff_dynasty_pass.csv
 data/yahoo_token.json
 !data/ff_dynasty_pass.example.csv
 
-# Claude Code local session state
-.claude/
+# Claude Code local session state (but allow shared project config under .claude/)
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
