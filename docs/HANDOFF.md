@@ -15,16 +15,16 @@ touching `trade_engine.py`, since it records which approximations are deliberate
 
 An unattended cloud routine runs `scripts/daily_run.py` at 13:00 UTC (9am ET) and
 publishes the dashboard, so anything pushed to `main` goes live on the next run. Verified
-2026-08-19: 121 tests pass in 0.15s.
+2026-08-19: 184 tests pass in ~0.6s.
 
-Uncommitted as of this writing: a new `CLAUDE.md`, this `docs/` directory, and a narrowed
+Committed in `349ac91`: this `docs/` directory, a project `CLAUDE.md`, and a narrowed
 `.gitignore` (was blanket-ignoring `.claude/`, now only ignores local session state so
-shared project config can be committed).
+shared project config can be committed). Not yet pushed to `origin/main`.
 
 ## Run and test
 
 ```
-.venv/Scripts/python.exe -m pytest tests/ -q          # 121 tests, no network
+.venv/Scripts/python.exe -m pytest tests/ -q          # 184 tests, no network
 .venv/Scripts/python.exe scripts/daily_run.py         # full sync + both reports
 ```
 Output lands in `data/weekly_report.md` and `data/dashboard.html`.
