@@ -41,7 +41,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sleeper_tool.draft_picks import OwnedPick, compute_owned_picks, relevant_seasons, value_owned_picks
-from sleeper_tool.formatting import ordinal
+from sleeper_tool.formatting import ordinal_pct
 from sleeper_tool.roster_analysis import ValuedRoster
 from sleeper_tool.valuation import PlayerValue
 
@@ -103,9 +103,18 @@ class TeamStatusResult:
 
 
 def _percentile(pv: PlayerValue, currency: str) -> float | None:
-    """Mirrors trade_engine.percentile_for_currency without importing that
-    module, which would create a circular import (trade_engine imports this
-    module to bias trade strategy on team status)."""
+    """Mirrors trade_engine._need_percentile without importing that module
+    (trade_engine imports THIS module to bias trade strategy on team
+    status, so importing back would be circular). Prefers the WITHIN-
+    POSITION percentile for dynasty currency, for the same reason
+    trade_engine's own docstring gives: pool-wide percentile makes a
+    shallow position (TE) look weaker and a deep one (RB/WR) look stronger
+    purely from pool-size, not real roster strength. Redraft currency has
+    no positional percentile plumbed through yet (same known, smaller-
+    impact gap trade_engine documents), so it falls back to pool-wide.
+    """
+    if currency == "dynasty" and pv.dynasty_positional_percentile is not None:
+        return pv.dynasty_positional_percentile
     return pv.dynasty_value_percentile if currency == "dynasty" else pv.redraft_ecr_percentile
 
 
@@ -202,6 +211,13 @@ def classify_team_status(
     storage=None,
     engine=None,
 ) -> TeamStatusResult:
+    if target_roster_id not in rosters:
+        # Not reachable from any current call site (each passes a
+        # roster_id sourced from iterating this same `rosters` dict), but
+        # this function is now called from 5 places across two modules —
+        # fail with a clear message here rather than a bare KeyError
+        # several frames away from whatever mismatched the two.
+        raise ValueError(f"roster_id {target_roster_id!r} not found in the {len(rosters)}-roster dict passed to classify_team_status")
     target = rosters[target_roster_id]
 
     strengths = {rid: _roster_strength(r, currency) for rid, r in rosters.items()}
@@ -214,7 +230,7 @@ def classify_team_status(
         pick_values = {rid: sum(p.value or 0 for p in picks) for rid, picks in valued_picks.items()}
         pick_pctl = _rank_percentile({rid: float(v) for rid, v in pick_values.items()}, target_roster_id)
         score = (1 - PICK_CAPITAL_WEIGHT) * strength_pctl + PICK_CAPITAL_WEIGHT * pick_pctl
-        pick_note = f", {ordinal(round(pick_pctl))} percentile draft capital ({pick_values[target_roster_id]:,} KTC pick value owned)"
+        pick_note = f", {ordinal_pct(pick_pctl)} draft capital ({pick_values[target_roster_id]:,} KTC pick value owned)"
 
     win_pct = None
     games = target.games_played
@@ -241,11 +257,11 @@ def classify_team_status(
         reason = (
             f"{target.wins}-{target.losses}"
             f"{'-' + str(target.ties) if target.ties else ''} record "
-            f"({win_pct*100:.0f}% win rate) blended with {ordinal(round(strength_pctl))} percentile roster strength"
+            f"({win_pct*100:.0f}% win rate) blended with {ordinal_pct(strength_pctl)} roster strength"
             f"{pick_note}{playoff_note}"
         )
     else:
-        reason = f"{ordinal(round(strength_pctl))} percentile roster strength in-league{pick_note} (no games played yet){playoff_note}"
+        reason = f"{ordinal_pct(strength_pctl)} roster strength in-league{pick_note} (no games played yet){playoff_note}"
 
     return TeamStatusResult(
         status=status, strength_percentile=strength_pctl, win_pct=win_pct, games_played=games, reason=reason

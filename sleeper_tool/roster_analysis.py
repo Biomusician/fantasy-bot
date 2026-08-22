@@ -4,11 +4,14 @@ on this rather than re-joining Sleeper/valuation data themselves.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from sleeper_tool.config import LeagueInfo
 from sleeper_tool.storage import Storage
 from sleeper_tool.valuation import LeagueFormat, PlayerValue, ValuationEngine, derive_league_format
+
+logger = logging.getLogger(__name__)
 
 SKILL_POSITIONS = {"QB", "RB", "WR", "TE"}
 
@@ -45,6 +48,8 @@ class ValuedRoster:
     wins: int = 0
     losses: int = 0
     ties: int = 0
+    waiver_budget_used: int = 0  # FAAB spent so far this season, from Sleeper roster.settings
+    skipped_player_count: int = 0  # roster player_ids not found in the player cache this run (see build_valued_roster)
 
     def starters(self) -> list[RosterEntry]:
         return [e for e in self.entries if e.is_starter]
@@ -85,12 +90,17 @@ def build_valued_roster(
     reserve = set(roster.get("reserve") or [])
 
     entries = []
+    skipped_count = 0
     for pid in roster.get("players") or []:
         pdata = all_players.get(pid)
         if pdata is None:
             # Sleeper occasionally references a player_id not present in the
             # daily cache (e.g. a just-added practice-squad player). Skip
-            # rather than crash; a re-sync will pick it up.
+            # rather than crash; a re-sync will pick it up. Counted (not
+            # just silently dropped) so need/status classification — which
+            # runs purely over `entries` — can be understood as "over a
+            # roster missing N players" rather than reading as complete.
+            skipped_count += 1
             continue
         name = player_name(pdata)
         value = engine.value_player(name, fmt, pdata.get("position"))
@@ -111,6 +121,12 @@ def build_valued_roster(
             )
         )
 
+    if skipped_count:
+        logger.warning(
+            "%s / %s: %d roster player_id(s) missing from the player cache, skipped",
+            league.name, roster.get("roster_id"), skipped_count,
+        )
+
     owner_id = roster.get("owner_id")
     user = users_by_id.get(owner_id, {})
     settings = roster.get("settings") or {}
@@ -122,6 +138,8 @@ def build_valued_roster(
         team_name=(user.get("metadata") or {}).get("team_name"),
         fmt=fmt,
         entries=entries,
+        skipped_player_count=skipped_count,
+        waiver_budget_used=settings.get("waiver_budget_used", 0) or 0,
         wins=settings.get("wins", 0) or 0,
         losses=settings.get("losses", 0) or 0,
         ties=settings.get("ties", 0) or 0,

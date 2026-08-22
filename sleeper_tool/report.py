@@ -3,27 +3,29 @@ league, meant to be actually read, not a raw data dump.
 """
 from __future__ import annotations
 
-import datetime as dt
-
 from sleeper_tool.config import LEAGUES, LeagueInfo
-from sleeper_tool.formatting import ordinal_pct
-from sleeper_tool.report_data import LeagueReportData, WeeklyReportData, build_weekly_report_data
+from sleeper_tool.formatting import age_str, ordinal_pct
+from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
 from sleeper_tool.roster_analysis import ValuedRoster
 from sleeper_tool.storage import Storage
-from sleeper_tool.trade_engine import TradeProposal, percentile_for_currency, value_label_for_currency
+from sleeper_tool.trade_engine import DropCandidate, TradeProposal, percentile_for_currency, value_label_for_currency
 from sleeper_tool.valuation import ValuationEngine
 from sleeper_tool.waiver_engine import WaiverTarget
 
 TREND_ARROW = {"rising": "↑", "down": "↓", "no change": "→"}
 
 
-def _age_str(age: dt.timedelta) -> str:
-    hours = age.total_seconds() / 3600
-    if hours < 1:
-        return f"{int(age.total_seconds() // 60)}m old"
-    if hours < 48:
-        return f"{hours:.0f}h old"
-    return f"{age.days}d old"
+def _render_priority_actions(actions: list[PriorityAction]) -> list[str]:
+    lines = ["## Best moves right now", ""]
+    if not actions:
+        lines.append("Nothing urgent across any league — hold.")
+        lines.append("")
+        return lines
+    kind_label = {"alert": "ALERT", "trade": "TRADE", "waiver": "WAIVER"}
+    for a in actions:
+        lines.append(f"- **[{kind_label.get(a.kind, a.kind.upper())}]** {a.headline} — _{a.detail}_")
+    lines.append("")
+    return lines
 
 
 def _render_roster_snapshot(roster: ValuedRoster, currency: str) -> list[str]:
@@ -52,14 +54,21 @@ def _render_roster_snapshot(roster: ValuedRoster, currency: str) -> list[str]:
     reserve = [e for e in roster.entries if e.is_reserve]
     if reserve:
         lines.append(f"IR/Reserve: {', '.join(e.name for e in reserve)}")
+    if roster.skipped_player_count:
+        lines.append(
+            f"_Note: {roster.skipped_player_count} roster player(s) couldn't be valued this week "
+            "(missing from the player cache) — this snapshot may be incomplete._"
+        )
 
     return lines
 
 
 def _render_trade_proposal(p: TradeProposal, index: int) -> list[str]:
-    lines = [f"**Offer {index}: {p.summary_line()}**", ""]
-    ratio_note = "balanced" if 0.9 <= p.value_ratio <= 1.1 else ("favors me" if p.value_ratio < 0.9 else "slight overpay")
-    lines.append(f"*Value: {p.my_value_total:.0f} vs {p.their_value_total:.0f} ({ratio_note})*")
+    lines = [f"**Offer {index} ({p.trade_type_label}): {p.summary_line()}**", ""]
+    lines.append(
+        f"*{value_label_for_currency(p.currency)}: {p.my_value_total:.0f} vs {p.their_value_total:.0f} "
+        f"({p.balance_label.lower()}) · Acceptance: {p.acceptance_rating} · Confidence: {p.confidence}*"
+    )
     lines.append("")
     lines.append("Why it works for me:")
     for r in p.rationale_for_me:
@@ -67,20 +76,52 @@ def _render_trade_proposal(p: TradeProposal, index: int) -> list[str]:
     lines.append(f"Why {p.target_username} plausibly says yes:")
     for r in p.rationale_for_them:
         lines.append(f"- {r}")
+    if p.acceptance_reasons:
+        lines.append("")
+        lines.append("Acceptance factors:")
+        for r in p.acceptance_reasons:
+            lines.append(f"- {r}")
     if p.caveats:
         lines.append("")
         lines.append("Caveats:")
         for c in p.caveats:
             lines.append(f"- ⚠️ {c}")
+    if p.message:
+        lines.append("")
+        lines.append(f"> Message to send: _{p.message}_")
     return lines
+
+
+_TIER_MARK = {"Must Add": "🔴", "Strong Add": "🟠", "Moderate": "🟡", "Speculative": "⚪", "Monitor": "⚪"}
 
 
 def _render_waiver_targets(targets: list[WaiverTarget]) -> list[str]:
     if not targets:
         return ["No standout waiver targets this week."]
-    lines = ["| Player | Pos | Team | Why |", "|---|---|---|---|"]
-    for t in targets[:6]:
-        lines.append(f"| {t.name} | {t.position or '?'} | {t.team or '-'} | {t.reason} |")
+    lines = ["| Priority | Player | Pos | Team | Drop | Horizon | FAAB | Why |", "|---|---|---|---|---|---|---|---|"]
+    for t in targets[:8]:
+        mark = _TIER_MARK.get(t.priority_tier, "")
+        drop = t.drop_candidate.name if t.drop_candidate else "—"
+        faab = f"{t.suggested_faab_pct}%" if t.suggested_faab_pct is not None else "—"
+        lines.append(
+            f"| {mark} {t.priority_tier} | {t.name} | {t.position or '?'} | {t.team or '-'} | {drop} | "
+            f"{t.horizon} | {faab} | {t.reason} |"
+        )
+    return lines
+
+
+_SEVERITY_MARK = {"high": "🔴", "medium": "🟠", "low": "⚪"}
+
+
+_DROP_PRIORITY_MARK = {"Strong Drop": "🔴", "Consider Dropping": "🟡"}
+
+
+def _render_drop_candidates(candidates: list[DropCandidate]) -> list[str]:
+    lines = []
+    for c in candidates:
+        mark = _DROP_PRIORITY_MARK.get(c.priority, "")
+        lines.append(f"- {mark} **{c.priority}: {c.entry.name}** ({c.entry.position or '?'}) — {'; '.join(c.reasons)}")
+    lines.append("")
     return lines
 
 
@@ -107,29 +148,50 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     lines.extend(_render_roster_snapshot(data.roster, data.currency))
     lines.append("")
 
-    lines.append("### Trade offers")
-    lines.append("")
+    # Time-sensitive alerts lead when there's a high-severity one — a
+    # scrolling reader shouldn't have to pass two possibly-empty sections
+    # (trades, waivers) to reach the one thing that's actually time-boxed
+    # to this week's lineup lock.
+    has_high_alert = any(n.severity == "high" for n in data.time_sensitive)
+    sections: list[tuple[str, list[str]]] = []
+
+    trade_lines = []
     if data.proposals:
         for i, p in enumerate(data.proposals, start=1):
-            lines.extend(_render_trade_proposal(p, i))
-            lines.append("")
+            trade_lines.extend(_render_trade_proposal(p, i))
+            trade_lines.append("")
     else:
-        lines.append("No trade offers cleared the value-match bar this week.")
-        lines.append("")
+        trade_lines.append("No trade offers cleared the value-match bar this week.")
+        trade_lines.append("")
+    sections.append(("### Trade offers", trade_lines))
 
-    lines.append("### Waiver targets")
-    lines.append("")
-    lines.extend(_render_waiver_targets(data.waiver_targets))
-    lines.append("")
+    waiver_lines = _render_waiver_targets(data.waiver_targets) + [""]
+    sections.append(("### Waiver targets", waiver_lines))
 
-    lines.append("### Time-sensitive")
-    lines.append("")
+    if data.drop_candidates:
+        # Only rendered when there's something real to say — no synthetic
+        # "nothing to drop" filler, matching the empty-state discipline
+        # used elsewhere in this report.
+        sections.append(("### Consider dropping", _render_drop_candidates(data.drop_candidates)))
+
+    alert_lines = []
     if data.time_sensitive:
         for n in data.time_sensitive:
-            lines.append(f"- **{n.player_name}**: {n.note}")
+            mark = _SEVERITY_MARK.get(n.severity, "")
+            alert_lines.append(f"- {mark} **{n.player_name}**: {n.note}")
     else:
-        lines.append("Nothing flagged.")
-    lines.append("")
+        alert_lines.append("Nothing flagged.")
+    alert_lines.append("")
+    sections.append(("### Time-sensitive", alert_lines))
+
+    if has_high_alert:
+        alert_index = next(i for i, (header, _) in enumerate(sections) if header == "### Time-sensitive")
+        sections.insert(0, sections.pop(alert_index))
+
+    for header, body in sections:
+        lines.append(header)
+        lines.append("")
+        lines.extend(body)
 
     return lines
 
@@ -140,11 +202,12 @@ def render_weekly_report(report: WeeklyReportData) -> str:
         "",
         f"_Generated {report.generated_at.strftime('%Y-%m-%d %H:%M UTC')}_",
         "",
-        "## Data freshness",
-        "",
     ]
+    lines.extend(_render_priority_actions(report.priority_actions))
+    lines.append("## Data freshness")
+    lines.append("")
     for source, age in report.source_freshness.items():
-        lines.append(f"- {source}: {_age_str(age)}")
+        lines.append(f"- {source}: {age_str(age)} old")
     lines.append(f"- ff_dynasty_pass (manual CSV): {report.ff_status}")
     lines.append("")
     lines.append("---")

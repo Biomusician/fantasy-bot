@@ -38,6 +38,13 @@ class OwnerProfile:
     rebuild_literate: bool | None = None
     fandom: str | None = None
     relationship: str | None = None  # e.g. spouse sharing rosters with another owner
+    # Structured, not parsed from `notes` at read time -- a specific, actionable
+    # behavioral tell an owner's free-text notes already documented, but that
+    # nothing outside owner_profiles.py could ever act on since it was trapped
+    # in prose. Only set True from a note that says this explicitly; default
+    # False (including for every undocumented owner) rather than guessed.
+    dislikes_multi_piece: bool = False  # pushes back specifically on lopsided multi-for-one offers
+    hot_streak_susceptible: bool = False  # documented as prone to overvaluing a player on a hot stretch
     notes: str = ""
 
     def framing_notes(self) -> list[str]:
@@ -55,6 +62,8 @@ class OwnerProfile:
             hints.append("Doesn't read tanking/rebuilding well — avoid explicit 'you're rebuilding' framing; sell on immediate team need instead.")
         if self.trades_often == "infrequent":
             hints.append("Doesn't complete trades often — keep the offer simple and be patient/willing to follow up.")
+        if self.dislikes_multi_piece:
+            hints.append("Pushes back on lopsided multi-for-one offers — a single clean piece near this value will land better than a bundle.")
         if self.fandom:
             hints.append(f"{self.fandom} fan — a {self.fandom} player in the offer may carry extra appeal.")
         return hints
@@ -81,6 +90,7 @@ GLOBAL_PROFILES: dict[str, OwnerProfile] = {
         trades_often="infrequent",
         ktc_stance=KTC_FRIENDLY,
         youth_vs_veteran="prefers_youth",
+        dislikes_multi_piece=True,
         notes=(
             "Savvy trader. Knows I'm a Cowboys fan and exploits it. Hard to get deals done. "
             "Fan of youth over veteran players. Knows of KTC, use it as a data point. "
@@ -106,6 +116,7 @@ GLOBAL_PROFILES: dict[str, OwnerProfile] = {
         username="cheongwater",
         savvy=DECENT,
         trades_often="active",
+        hot_streak_susceptible=True,
         notes="Not a great trader. Vulnerable to hot starts or streaks — a player coming off a hot stretch may get more than they're worth from him.",
     ),
     "karendurham2": OwnerProfile(

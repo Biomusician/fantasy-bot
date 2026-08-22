@@ -6,9 +6,12 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 CACHE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "rankings_cache"
 
@@ -57,11 +60,24 @@ def load_snapshot(source: str) -> RankingSnapshot | None:
 
 
 def get_or_fetch(source: str, fetch_fn, *, max_age: dt.timedelta, force: bool = False) -> RankingSnapshot:
-    """Return a cached snapshot if fresh enough, otherwise call fetch_fn() and cache the result."""
-    if not force:
-        cached = load_snapshot(source)
-        if cached is not None and cached.age() <= max_age:
-            return cached
+    """Return a cached snapshot if fresh enough, otherwise call fetch_fn() and cache the result.
 
-    payload = fetch_fn()
+    A live re-fetch failure (source down, page layout changed) falls back to
+    a stale cached snapshot rather than propagating — for an unattended
+    daily cron, "report built on N-hour-old data" (already surfaced via
+    RankingSnapshot.age()/source_freshness()) is a far better failure mode
+    than "no report at all". Only propagates if there's no cache to fall
+    back to.
+    """
+    cached = load_snapshot(source)
+    if not force and cached is not None and cached.age() <= max_age:
+        return cached
+
+    try:
+        payload = fetch_fn()
+    except Exception:
+        if cached is not None:
+            logger.warning("Live fetch failed for %s; falling back to cached snapshot from %s", source, cached.fetched_at)
+            return cached
+        raise
     return save_snapshot(source, payload)

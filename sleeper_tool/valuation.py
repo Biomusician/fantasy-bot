@@ -16,7 +16,7 @@ flex slot in {"SUPER_FLEX", "QB"}), not from the handoff doc's labels.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sleeper_tool.name_matching import normalize_name
 from sleeper_tool.rankings import fantasypros, ktc, rotoballer
@@ -78,6 +78,12 @@ class LeagueFormat:
     te_premium_bonus: float  # extra pts per TE reception, 0 if none
     rush_100_bonus: float  # bonus for 100+ rush yd games, 0 if none
     pass_td_pts: float
+    # Exact QB/RB/WR/TE slot counts read directly off roster_positions
+    # (excluding BN/IR/TAXI/FLEX/SUPER_FLEX). A known undercount: FLEX and
+    # SUPER_FLEX slots can be filled by RB/WR/TE (or QB for SUPER_FLEX) but
+    # aren't attributed to any one position here, so this is a floor on
+    # "how many you're guaranteed to need", not the true total demand.
+    starter_slots: dict[str, float] = field(default_factory=dict)
 
     @property
     def is_superflex(self) -> bool:
@@ -95,16 +101,42 @@ class LeagueFormat:
         return min(tiers, key=lambda t: abs(t[0] - self.te_premium_bonus))[1]
 
 
+CORE_SKILL_POSITIONS = ("QB", "RB", "WR", "TE")
+
+
 def derive_league_format(league_data: dict) -> LeagueFormat:
-    scoring = league_data.get("scoring_settings", {})
-    roster_positions = league_data.get("roster_positions", [])
+    # `or {}`/`or []`, not `.get(key, default)` — Sleeper can return the key
+    # present but explicitly null (e.g. a league mid-creation), and `.get`'s
+    # default only covers a MISSING key, not an explicit None.
+    scoring = league_data.get("scoring_settings") or {}
+    roster_positions = league_data.get("roster_positions") or []
     is_sf = "SUPER_FLEX" in roster_positions or roster_positions.count("QB") > 1
+    starter_slots: dict[str, float] = {
+        pos: float(roster_positions.count(pos)) for pos in CORE_SKILL_POSITIONS if roster_positions.count(pos)
+    }
+    # FLEX/SUPER_FLEX slots are real starter demand too — leaving them out
+    # entirely (as if they needed zero players) badly undercounts depth
+    # need in the median real league, which runs 2-3 FLEX spots. Distribute
+    # each FLEX slot's demand evenly across the positions eligible to fill
+    # it (RB/WR/TE for FLEX; every core position for SUPER_FLEX) rather
+    # than attributing it to none of them — still an approximation (real
+    # demand depends on which position actually gets started there most
+    # weeks), but a floor closer to reality than counting it as zero.
+    flex_count = roster_positions.count("FLEX")
+    if flex_count:
+        for pos in ("RB", "WR", "TE"):
+            starter_slots[pos] = starter_slots.get(pos, 0.0) + flex_count / 3
+    superflex_count = roster_positions.count("SUPER_FLEX")
+    if superflex_count:
+        for pos in CORE_SKILL_POSITIONS:
+            starter_slots[pos] = starter_slots.get(pos, 0.0) + superflex_count / len(CORE_SKILL_POSITIONS)
     return LeagueFormat(
         qb_format="SF" if is_sf else "1QB",
         ppr=float(scoring.get("rec", 0) or 0),
         te_premium_bonus=float(scoring.get("bonus_rec_te", 0) or 0),
         rush_100_bonus=float(scoring.get("bonus_rush_yd_100", 0) or 0),
         pass_td_pts=float(scoring.get("pass_td", 4) or 4),
+        starter_slots=starter_slots,
     )
 
 
@@ -202,10 +234,21 @@ class ValuationEngine:
 
     @staticmethod
     def _percentile(rank: int | None, pool_size: int) -> float | None:
-        """Converts a 1-indexed rank into a 0-100 percentile, 100 = best player."""
+        """Converts a 1-indexed rank into a 0-100 percentile, 100 = best player.
+        Clamped to [0, 100] — `rank` and `pool_size` can come from different
+        counts (e.g. a positional rank the source assigns against its own
+        full player pool vs. `pool_size` counted from a locally cached
+        snapshot that doesn't necessarily contain every player that rank
+        was computed against), so `rank > pool_size` is a real, observed
+        case, not just theoretical — confirmed live (a KTC positional rank
+        of 212 against a locally-counted WR pool of 190). Uncapped, that
+        produces a negative percentile that then renders as garbled text
+        ("-28nd percentile") wherever it's formatted.
+        """
         if not rank or not pool_size:
             return None
-        return round(100 * (1 - (rank - 1) / pool_size), 1)
+        raw = 100 * (1 - (rank - 1) / pool_size)
+        return round(max(0.0, min(100.0, raw)), 1)
 
     def _fp_dynasty_key(self, fmt: LeagueFormat) -> str:
         return "dynasty_superflex" if fmt.is_superflex else "dynasty_1qb"
