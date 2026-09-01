@@ -37,7 +37,7 @@ Output lands in `data/weekly_report.md` and `data/dashboard.html`.
 - `sleeper_tool/config.py` — league identities. Everything else about a league is read
   from the Sleeper API at runtime, on purpose.
 - `sleeper_tool/valuation.py` — format-aware per-player value; the source reconciliation.
-- `sleeper_tool/trade_engine.py` — 1273 lines. Candidate selection, opponent-fit scoring,
+- `sleeper_tool/trade_engine.py` — ~1950 lines. Candidate selection, opponent-fit scoring,
   acceptance rating, and message generation all live here. The hard logic in the project.
 - `sleeper_tool/waiver_engine.py` — trending-add targeting, drop candidates, FAAB.
 - `sleeper_tool/report_data.py` — shared derived-data layer. New computed fields belong
@@ -54,10 +54,8 @@ Nothing half-implemented and nothing uncommitted. Everything above is merged to
 
 - `trade_engine.py` mixes scoring, orchestration, and presentation in one file. The
   presentation layer (rationale + message templating) is the safe thing to split out; it
-  carries no scoring risk. Deferred deliberately, not forgotten.
-- "Rosterable" is still a pool-wide percentile at a few call sites (`identify_buy_low`'s
-  eligibility filter, `identify_depth_needs`) rather than the within-position percentile
-  `identify_needs` uses. Same class of bias that was already fixed elsewhere. 3–4 sites.
+  carries no scoring risk. Deferred deliberately, not forgotten — but the file has grown
+  from ~1150 to ~1950 lines since that call was made, so the tradeoff is worth revisiting.
 - `get_or_fetch`'s stale-cache fallback has no ceiling — if a ranking source breaks
   permanently, every run serves the same increasingly stale snapshot with only a log line.
   No user-facing escalation. This is the most likely way the tool silently goes wrong.
@@ -74,23 +72,23 @@ Nothing half-implemented and nothing uncommitted. Everything above is merged to
   `qb_format` is informational only.
 - Acceptance ratings stay bucketed (Very Low → High). Converting them to a percentage
   would imply calibration that doesn't exist.
-- The test suite is fully synthetic and offline. Keep it that way — it's what makes it
-  usable at 0.15s.
+- The test suite is fully synthetic and offline. Keep it that way — sub-second runs are
+  what make it worth running on every change.
 - `trade_engine.py` was not split, because a pure refactor carries regression risk with no
-  user-facing benefit. That tradeoff still holds until the file grows further.
+  user-facing benefit. That was conditioned on the file not growing further — it since has
+  (~1150 → ~1950 lines), so this decision is now due for a deliberate re-ruling rather than
+  automatic renewal.
 
 ## Next actions
 
 1. **Put a ceiling on the stale-cache fallback** in `sleeper_tool/rankings/cache.py`. Beyond
    N days, surface it in the report itself rather than only a log line. Small, and it
    closes the quietest failure mode in the system.
-2. **Thread within-position percentile** through the remaining `MIN_ROSTERABLE_PERCENTILE`
-   call sites in `trade_engine.py`.
-3. **Split the presentation layer** out of `trade_engine.py` before adding more fields to
+2. **Split the presentation layer** out of `trade_engine.py` before adding more fields to
    `TradeProposal`.
-4. **Investigate a usage/role data source** (`nfl_data_py` / nflverse are free and
+3. **Investigate a usage/role data source** (`nfl_data_py` / nflverse are free and
    unauthenticated) as a supplementary buy-low trigger. Biggest capability gap.
-5. **Acceptance-rating feedback signal** — even a manual "did they accept?" note per
+4. **Acceptance-rating feedback signal** — even a manual "did they accept?" note per
    proposal starts building calibration data.
 
 ## Gotchas

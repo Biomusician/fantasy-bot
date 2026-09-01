@@ -36,7 +36,7 @@ Individual stages: `scripts/pull_data.py` (sync only), `scripts/generate_report.
 ## Where the thinking is
 
 `valuation.py` (format-aware player values) → `roster_analysis.py` → `team_status.py`
-(contender/rebuild) → `trade_engine.py` (1273 lines; the acceptance-rating logic is the
+(contender/rebuild) → `trade_engine.py` (~1950 lines; the acceptance-rating logic is the
 hard part) and `waiver_engine.py`. `report_data.py` is the shared layer both renderers
 read from — put new derived data there, not in a renderer.
 
