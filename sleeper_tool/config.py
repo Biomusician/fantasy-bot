@@ -116,7 +116,7 @@ LEAGUES: list[LeagueInfo] = [
         league_id="1367544788303253504",
         kind="redraft",
         sleeper_type=0,
-        my_team_name="",
+        my_team_name="Statistical Anomalies",
         qb_format="1QB",
     ),
 ]
