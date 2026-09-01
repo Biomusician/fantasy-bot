@@ -1,4 +1,4 @@
-# Handoff — as of 2026-08-19
+# Handoff — as of 2026-08-29
 
 To resume cold, start a session with:
 `Read CLAUDE.md and docs/HANDOFF.md, verify the current state, and continue from the
@@ -13,13 +13,16 @@ overhauled and then hardened in a second review pass (commits `475bf2f`, `16b8ac
 the full findings are written up in `AUTONOMOUS_IMPROVEMENT_REPORT.md` — read that before
 touching `trade_engine.py`, since it records which approximations are deliberate.
 
-An unattended cloud routine runs `scripts/daily_run.py` at 13:00 UTC (9am ET) and
+An unattended cloud routine runs `scripts/daily_run.py` at 13:00 UTC (9am ET during
+daylight saving, 8am ET the rest of the year — the cron itself is fixed UTC) and
 publishes the dashboard, so anything pushed to `main` goes live on the next run. Verified
-2026-08-19: 184 tests pass in ~0.6s.
+2026-08-29: 184 tests pass in ~0.2s.
 
-Committed in `349ac91`: this `docs/` directory, a project `CLAUDE.md`, and a narrowed
-`.gitignore` (was blanket-ignoring `.claude/`, now only ignores local session state so
-shared project config can be committed). Not yet pushed to `origin/main`.
+Since this doc was first written (`349ac91`): "The Surfeit" had a blank `my_team_name`
+backfilled (`4613d17`), and "The 7th League" was removed from `sleeper_tool/config.py`
+(`481e89d`) after confirming via `/user/{id}/leagues/nfl/2026` that it no longer exists on
+Sleeper's side (not a transient 404 — every other configured league, including other
+pre-draft ones, still showed up there). All pushed to `origin/main`.
 
 ## Run and test
 
@@ -44,8 +47,8 @@ Output lands in `data/weekly_report.md` and `data/dashboard.html`.
 
 ## In flight
 
-Nothing half-implemented. The working tree changes listed above are configuration only and
-don't touch application code.
+Nothing half-implemented and nothing uncommitted. Everything above is merged to
+`origin/main`.
 
 ## Known problems
 
