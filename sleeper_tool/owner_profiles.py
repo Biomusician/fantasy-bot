@@ -6,9 +6,9 @@ into storage — all matched exactly.
 These drive HOW trade offers get framed (e.g. don't cite KTC to someone who
 hates it), not just whether an offer is fair by value. Coverage is
 necessarily incomplete: the dynasty/keeper leagues are well documented, but
-several redraft leagues (Disco, The Surfeit, The 7th League) have owners
-never captured in the notes. Unknown owners get DEFAULT_PROFILE rather than
-a crash or a fabricated read on them.
+several redraft leagues (Disco, The Surfeit) have owners never captured in
+the notes. Unknown owners get DEFAULT_PROFILE rather than a crash or a
+fabricated read on them.
 """
 from __future__ import annotations
 
