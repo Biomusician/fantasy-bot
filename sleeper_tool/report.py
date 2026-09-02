@@ -6,6 +6,7 @@ from __future__ import annotations
 from sleeper_tool.config import LEAGUES, LeagueInfo
 from sleeper_tool.decision_delta import DecisionDelta
 from sleeper_tool.formatting import age_str, ordinal_pct
+from sleeper_tool.league_economy import LeagueEconomy
 from sleeper_tool.lineup_leverage import LineupLeverage
 from sleeper_tool.portfolio_exposure import PortfolioExposure
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
@@ -191,6 +192,26 @@ def _render_drop_candidates(candidates: list[DropCandidate]) -> list[str]:
     return lines
 
 
+def _render_league_economy(economy: LeagueEconomy | None, my_roster_id: int) -> list[str]:
+    if economy is None:
+        return []
+    lines = []
+    if economy.limited_sample:
+        lines.append(
+            f"_Limited trade-history sample ({economy.total_completed_trades} completed trade"
+            f"{'s' if economy.total_completed_trades != 1 else ''} this season) — trader-activity labels suppressed._"
+        )
+    labelled = economy.labelled()
+    if labelled:
+        for m in sorted(labelled, key=lambda m: (m.roster_id != my_roster_id, -m.completed_trades)):
+            who = f"{m.team_name or m.username or f'roster {m.roster_id}'}{' (you)' if m.roster_id == my_roster_id else ''}"
+            lines.append(f"- **{who}** — {m.describe()}")
+    elif not economy.limited_sample:
+        lines.append("Nothing stands out: no frequent/inactive traders, pick hoarders, or position stockpiles this season.")
+    lines.append("")
+    return lines
+
+
 def render_league_section(data: LeagueReportData) -> list[str]:
     lines = [f"## {data.league.name}", ""]
 
@@ -246,6 +267,10 @@ def render_league_section(data: LeagueReportData) -> list[str]:
             f"- **{c.entry.name}** ({c.entry.position or '?'}) — {'; '.join(c.reasons)}" for c in data.roster_clogs
         ] + [""]
         sections.append(("### Roster clogs (dead roster spots)", clog_lines))
+
+    economy_lines = _render_league_economy(data.league_economy, data.roster.roster_id)
+    if economy_lines:
+        sections.append(("### League economy", economy_lines))
 
     alert_lines = []
     if data.time_sensitive:

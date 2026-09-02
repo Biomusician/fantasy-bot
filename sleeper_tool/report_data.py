@@ -18,6 +18,7 @@ from sleeper_tool.contender_insurance import (
     merge_insurance_into_waiver_targets,
 )
 from sleeper_tool.decision_delta import DecisionDelta, build_snapshot, compute_delta, load_latest_snapshot
+from sleeper_tool.league_economy import LeagueEconomy, build_league_economy
 from sleeper_tool.lineup_leverage import LineupLeverage, build_lineup_leverage
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup
 from sleeper_tool.portfolio_exposure import PortfolioExposure, acquisition_exposure_note, build_portfolio_exposure
@@ -69,6 +70,7 @@ class LeagueReportData:
     lineup_leverage: LineupLeverage | None = None
     insurance: list[InsuranceRecommendation] = field(default_factory=list)  # contenders only; also merged into waiver_targets
     bye_collision: ByeCollision | None = None  # earliest look-ahead week with a Bye Hole; also a time_sensitive note
+    league_economy: LeagueEconomy | None = None  # per-manager trade/pick/position tendencies, current season
     error: str | None = None
 
 
@@ -253,6 +255,12 @@ def build_league_report_data(
     if lineup_leverage is not None:
         _annotate_proposals_with_bench_surplus(proposals, lineup_leverage)
 
+    league_economy = build_league_economy(
+        rosters, storage.get_all_transactions(league.league_id), storage.get_traded_picks(league.league_id),
+        season=str(league_data.get("season") or ""),
+    )
+    _annotate_proposals_with_league_economy(proposals, league_economy, rosters)
+
     return LeagueReportData(
         league=league,
         fmt_desc=fmt_desc,
@@ -269,7 +277,22 @@ def build_league_report_data(
         lineup_leverage=lineup_leverage,
         insurance=insurance,
         bye_collision=bye_collision,
+        league_economy=league_economy,
     )
+
+
+def _annotate_proposals_with_league_economy(
+    proposals: list[TradeProposal], economy: LeagueEconomy, rosters: dict[int, ValuedRoster]
+) -> None:
+    """What this league's own transaction record says about the counterparty
+    — added to the "why they say yes" side, never to the acceptance bucket."""
+    by_username = {r.owner_username: r.roster_id for r in rosters.values() if r.owner_username}
+    for p in proposals:
+        rid = by_username.get(p.target_username)
+        m = economy.managers.get(rid) if rid is not None else None
+        if m is None or not m.labels:
+            continue
+        p.rationale_for_them.append(f"This league's transaction record: {m.describe()}.")
 
 
 def _annotate_proposals_with_bench_surplus(proposals: list[TradeProposal], leverage: LineupLeverage) -> None:

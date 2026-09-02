@@ -11,6 +11,7 @@ from html import escape as esc
 
 from sleeper_tool.decision_delta import DecisionDelta
 from sleeper_tool.formatting import age_str
+from sleeper_tool.league_economy import LeagueEconomy
 from sleeper_tool.lineup_leverage import LineupLeverage
 from sleeper_tool.portfolio_exposure import VERY_HIGH, PortfolioExposure
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
@@ -302,6 +303,44 @@ def _roster_clogs_section(clogs: list[RosterClog]) -> str:
     """
 
 
+_ECONOMY_LABEL_KIND = {
+    "Frequent Trader": "positive", "Inactive Trader": "caution", "Pick Accumulator": "accent",
+    "Pick Seller": "accent", "Position Heavy": "neutral",
+}
+
+
+def _league_economy_section(economy: LeagueEconomy | None, my_roster_id: int) -> str:
+    if economy is None:
+        return ""
+    labelled = economy.labelled()
+    if not labelled and not economy.limited_sample:
+        return ""
+    note = ""
+    if economy.limited_sample:
+        n = economy.total_completed_trades
+        note = (
+            f'<p class="roster-note">Limited trade-history sample ({n} completed trade{"s" if n != 1 else ""} this season) '
+            "&mdash; trader-activity labels suppressed.</p>"
+        )
+    rows = []
+    for m in sorted(labelled, key=lambda m: (m.roster_id != my_roster_id, -m.completed_trades)):
+        who = esc(m.team_name or m.username or f"roster {m.roster_id}") + (" <span class=\"muted\">(you)</span>" if m.roster_id == my_roster_id else "")
+        chips = "".join(_chip(label, _ECONOMY_LABEL_KIND.get(label, "neutral")) for label in m.labels)
+        rows.append(f'<tr><td class="player-cell">{who}</td><td>{chips}</td><td class="waiver-reason">{esc(m.describe())}</td></tr>')
+    table = (
+        '<div class="table-scroll"><table><thead><tr><th>Manager</th><th>Tendencies</th><th>Detail</th></tr></thead>'
+        f'<tbody>{"".join(rows)}</tbody></table></div>'
+        if rows
+        else ""
+    )
+    return f"""
+    <section class="panel-block">
+      <h3>League economy <span class="muted">&middot; this season's transaction record</span></h3>
+      {note}{table}
+    </section>
+    """
+
+
 _ALERT_SEVERITY_KIND = {"high": "negative", "medium": "caution", "low": "neutral"}
 
 
@@ -360,6 +399,7 @@ def _league_panel(data: LeagueReportData) -> str:
         </section>
         {_drop_candidates_section(data.drop_candidates)}
         {_roster_clogs_section(data.roster_clogs)}
+        {_league_economy_section(data.league_economy, data.roster.roster_id)}
         """
         # A high-severity alert (a long-term injury not yet moved to an
         # IR slot, or a starter's bye) is time-boxed to this week's

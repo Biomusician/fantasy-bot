@@ -328,6 +328,15 @@ class Storage:
         ).fetchall()
         return [json.loads(r["data"]) for r in rows]
 
+    def get_all_transactions(self, league_id: str) -> list[dict]:
+        """Every transaction ever cached for this league, any week. Rows
+        are keyed by transaction_id, so weeks synced on earlier runs are
+        still here even though each sync only refetches the recent ones."""
+        rows = self._conn.execute(
+            "SELECT data FROM transactions WHERE league_id = ? ORDER BY week", (league_id,)
+        ).fetchall()
+        return [json.loads(r["data"]) for r in rows]
+
     # -- traded picks -----------------------------------------------------------
 
     def save_traded_picks(self, league_id: str, picks: list[dict]) -> None:
