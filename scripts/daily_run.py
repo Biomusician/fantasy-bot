@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sleeper_tool.client import SleeperClient
 from sleeper_tool.config import LEAGUES
 from sleeper_tool.console import ensure_utf8_stdout
+from sleeper_tool.decision_delta import is_complete_run, save_snapshot
 from sleeper_tool.html_report import render_dashboard_html
 from sleeper_tool.report import render_weekly_report
 from sleeper_tool.report_data import build_weekly_report_data
@@ -51,6 +52,14 @@ def main() -> None:
     print(f"OK: synced {len(results) - len(failed)}/{len(results)} leagues")
     print(f"OK: wrote {report_path}")
     print(f"OK: wrote {dashboard_path}")
+
+    # The "since last run" delta only ever compares against a run that was
+    # itself complete — a partial run as the baseline would make the next
+    # delta report a missing league's players as "joined your roster".
+    if is_complete_run(report_data, sync_failures=len(failed)) and report_data.snapshot is not None:
+        print(f"OK: saved decision snapshot {save_snapshot(report_data.snapshot)}")
+    else:
+        print("SKIP: decision snapshot not saved (run was not complete)", file=sys.stderr)
 
 
 if __name__ == "__main__":

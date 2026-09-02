@@ -9,6 +9,7 @@ data/*.sqlite3
 data/rankings_cache/
 data/weekly_report.md
 data/dashboard.html
+data/run_snapshots/
 data/ff_dynasty_pass.csv
 data/yahoo_token.json
 !data/ff_dynasty_pass.example.csv

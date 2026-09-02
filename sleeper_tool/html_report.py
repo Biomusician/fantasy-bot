@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from html import escape as esc
 
+from sleeper_tool.decision_delta import DecisionDelta
 from sleeper_tool.formatting import age_str
 from sleeper_tool.lineup_leverage import LineupLeverage
 from sleeper_tool.portfolio_exposure import VERY_HIGH, PortfolioExposure
@@ -446,6 +447,36 @@ def _priority_actions_section(actions: list[PriorityAction]) -> str:
     """
 
 
+_DELTA_KIND_META = {
+    "status": ("Team status", "caution"),
+    "roster": ("Roster moves", "accent"),
+    "recommendation": ("Recommendations", "neutral"),
+    "valuation": ("Value swings (15%+)", "neutral"),
+}
+
+
+def _delta_section(delta: DecisionDelta | None) -> str:
+    if delta is None:
+        return ""  # first complete run — nothing to compare against yet
+    since = delta.since.strftime("%b %d, %H:%M UTC")
+    if not delta.items:
+        body = '<p class="empty-note">No meaningful changes &mdash; same statuses, recommendations, and rosters as last time.</p>'
+    else:
+        items = []
+        for kind, (label, chip_kind) in _DELTA_KIND_META.items():
+            for i in delta.by_kind(kind):
+                items.append(
+                    f'<li class="alert-item">{_chip(label, chip_kind)} <strong>{esc(i.league_name)}</strong> &middot; {esc(i.text)}</li>'
+                )
+        body = f'<ul class="alert-list">{"".join(items)}</ul>'
+    return f"""
+    <section class="panel-block">
+      <h3>Since last run <span class="muted">&middot; {esc(since)}</span></h3>
+      {body}
+    </section>
+    """
+
+
 def _portfolio_section(portfolio: PortfolioExposure | None) -> str:
     if portfolio is None or not portfolio.players:
         return ""
@@ -491,6 +522,7 @@ def _overview_panel(report: WeeklyReportData) -> str:
         <p class="muted">Generated {report.generated_at.strftime('%b %d, %Y &middot; %H:%M UTC')}</p>
       </header>
       {_priority_actions_section(report.priority_actions)}
+      {_delta_section(report.delta)}
       {_portfolio_section(report.portfolio)}
       <section class="panel-block">
         <h3>Leagues</h3>

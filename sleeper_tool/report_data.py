@@ -17,6 +17,7 @@ from sleeper_tool.contender_insurance import (
     identify_fragile_starters,
     merge_insurance_into_waiver_targets,
 )
+from sleeper_tool.decision_delta import DecisionDelta, build_snapshot, compute_delta, load_latest_snapshot
 from sleeper_tool.lineup_leverage import LineupLeverage, build_lineup_leverage
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup
 from sleeper_tool.portfolio_exposure import PortfolioExposure, acquisition_exposure_note, build_portfolio_exposure
@@ -94,6 +95,8 @@ class WeeklyReportData:
     leagues: list[LeagueReportData]
     priority_actions: list[PriorityAction] = field(default_factory=list)
     portfolio: PortfolioExposure | None = None  # cross-league player concentration
+    delta: DecisionDelta | None = None  # vs the last complete run's snapshot; None on a first run
+    snapshot: dict | None = None  # this run's decision snapshot, for daily_run to persist after a complete run
 
 
 _ACTION_KIND_ORDER = {"alert": 0, "trade": 1, "waiver": 2, "roster": 3}
@@ -315,7 +318,7 @@ def build_weekly_report_data(
     )
     _annotate_recommendations_with_exposure(league_data, portfolio)
 
-    return WeeklyReportData(
+    report = WeeklyReportData(
         generated_at=now,
         current_week=current_week,
         source_freshness=engine.source_freshness(),
@@ -324,6 +327,9 @@ def build_weekly_report_data(
         priority_actions=build_priority_actions(league_data),
         portfolio=portfolio,
     )
+    report.snapshot = build_snapshot(report)
+    report.delta = compute_delta(load_latest_snapshot(), report.snapshot)
+    return report
 
 
 def _annotate_recommendations_with_exposure(leagues: list[LeagueReportData], portfolio: PortfolioExposure) -> None:

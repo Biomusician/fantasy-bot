@@ -4,6 +4,7 @@ league, meant to be actually read, not a raw data dump.
 from __future__ import annotations
 
 from sleeper_tool.config import LEAGUES, LeagueInfo
+from sleeper_tool.decision_delta import DecisionDelta
 from sleeper_tool.formatting import age_str, ordinal_pct
 from sleeper_tool.lineup_leverage import LineupLeverage
 from sleeper_tool.portfolio_exposure import PortfolioExposure
@@ -27,6 +28,29 @@ def _render_priority_actions(actions: list[PriorityAction]) -> list[str]:
     for a in actions:
         lines.append(f"- **[{kind_label.get(a.kind, a.kind.upper())}]** {a.headline} — _{a.detail}_")
     lines.append("")
+    return lines
+
+
+_DELTA_KIND_LABEL = {"status": "Team status", "roster": "Roster moves", "recommendation": "Recommendations", "valuation": "Value swings (15%+)"}
+
+
+def _render_delta(delta: DecisionDelta | None) -> list[str]:
+    if delta is None:
+        return []  # first complete run — nothing to compare against yet
+    since = delta.since.strftime("%b %d, %H:%M UTC")
+    lines = [f"## Since last run ({since})", ""]
+    if not delta.items:
+        lines.append("No meaningful changes — same statuses, recommendations, and rosters as last time.")
+        lines.append("")
+        return lines
+    for kind, label in _DELTA_KIND_LABEL.items():
+        items = delta.by_kind(kind)
+        if not items:
+            continue
+        lines.append(f"**{label}**")
+        for i in items:
+            lines.append(f"- {i.league_name}: {i.text}")
+        lines.append("")
     return lines
 
 
@@ -253,6 +277,7 @@ def render_weekly_report(report: WeeklyReportData) -> str:
         "",
     ]
     lines.extend(_render_priority_actions(report.priority_actions))
+    lines.extend(_render_delta(report.delta))
     lines.extend(_render_portfolio_exposure(report.portfolio))
     lines.append("## Data freshness")
     lines.append("")
