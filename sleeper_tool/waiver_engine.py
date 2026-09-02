@@ -9,6 +9,7 @@ season.
 """
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from sleeper_tool.config import LeagueInfo
@@ -127,8 +128,15 @@ def _find_drop_candidate(
     currency: str,
     *,
     exclude_ids: set[str] = frozenset(),
+    preferred_ids: Collection[str] = (),
 ) -> RosterEntry | None:
     """The cheapest bench player to cut to make room for this add.
+
+    `preferred_ids` (roster_clog's output) win outright when any are on
+    the bench: a player with literally no path to the lineup is a better
+    cut than a same-position backup who is at least the next man up, so
+    the positional preference below only orders WITHIN the clogs when
+    there are several, and applies as before when there are none.
 
     Same-position bench players are considered FIRST, regardless of
     whether target_position is itself one of my declared needs — cutting
@@ -157,6 +165,9 @@ def _find_drop_candidate(
         pctl = _display_percentile(e.value, currency)
         return (pctl is None, pctl or 0)
 
+    clogs = [e for e in pool if e.player_id in set(preferred_ids)]
+    if clogs:
+        pool = clogs
     same_position = [e for e in pool if e.position == target_position]
     if same_position:
         return min(same_position, key=_sort_key)
@@ -218,7 +229,10 @@ def get_waiver_targets(
     top_n: int = 8,
     current_week: int | None = None,
     waiver_budget: int | None = None,
+    clog_ids: Collection[str] = (),
 ) -> list[WaiverTarget]:
+    """`clog_ids`: roster_clog's dead-weight players, preferred as the drop
+    paired with each add (see _find_drop_candidate)."""
     if not my_roster.entries:
         # No roster yet usually means the league hasn't drafted (redraft
         # leagues start empty) — nothing meaningful to recommend yet.
@@ -326,7 +340,9 @@ def get_waiver_targets(
     # to actually act on is the one that most needs an actionable pairing.
     recommended_drop_ids: set[str] = set()
     for t in targets:
-        drop_candidate = _find_drop_candidate(my_roster, t.position, needs_ranked[:2], currency, exclude_ids=recommended_drop_ids)
+        drop_candidate = _find_drop_candidate(
+            my_roster, t.position, needs_ranked[:2], currency, exclude_ids=recommended_drop_ids, preferred_ids=clog_ids
+        )
         if drop_candidate is not None:
             recommended_drop_ids.add(drop_candidate.player_id)
         t.drop_candidate = drop_candidate

@@ -12,6 +12,7 @@ from html import escape as esc
 from sleeper_tool.formatting import age_str
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
+from sleeper_tool.roster_clog import RosterClog
 from sleeper_tool.trade_engine import DropCandidate, TradeProposal, _player_confidence, percentile_for_currency, value_label_for_currency
 from sleeper_tool.waiver_engine import TimeSensitiveNote, WaiverTarget
 
@@ -245,6 +246,24 @@ def _drop_candidates_section(candidates: list[DropCandidate]) -> str:
     """
 
 
+def _roster_clogs_section(clogs: list[RosterClog]) -> str:
+    if not clogs:
+        return ""
+    items = "".join(
+        f'<li class="alert-item alert-caution">'
+        f'<strong>{esc(c.entry.name)}</strong> ({esc(c.entry.position or "?")}) &middot; {_chip("Roster Clog", "caution")}'
+        f'<div class="drop-reasons">{esc("; ".join(c.reasons))}</div>'
+        "</li>"
+        for c in clogs
+    )
+    return f"""
+    <section class="panel-block">
+      <h3>Roster clogs <span class="muted">&middot; dead roster spots</span></h3>
+      <ul class="alert-list">{items}</ul>
+    </section>
+    """
+
+
 _ALERT_SEVERITY_KIND = {"high": "negative", "medium": "caution", "low": "neutral"}
 
 
@@ -302,6 +321,7 @@ def _league_panel(data: LeagueReportData) -> str:
           {_waiver_table(data.waiver_targets)}
         </section>
         {_drop_candidates_section(data.drop_candidates)}
+        {_roster_clogs_section(data.roster_clogs)}
         """
         # A high-severity alert (a long-term injury not yet moved to an
         # IR slot, or a starter's bye) is time-boxed to this week's

@@ -174,6 +174,12 @@ def render_league_section(data: LeagueReportData) -> list[str]:
         # used elsewhere in this report.
         sections.append(("### Consider dropping", _render_drop_candidates(data.drop_candidates)))
 
+    if data.roster_clogs:
+        clog_lines = [
+            f"- **{c.entry.name}** ({c.entry.position or '?'}) — {'; '.join(c.reasons)}" for c in data.roster_clogs
+        ] + [""]
+        sections.append(("### Roster clogs (dead roster spots)", clog_lines))
+
     alert_lines = []
     if data.time_sensitive:
         for n in data.time_sensitive:

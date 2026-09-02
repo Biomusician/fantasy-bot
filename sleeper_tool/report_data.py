@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from sleeper_tool.config import LEAGUES, LeagueInfo, MY_USER_ID
 from sleeper_tool.rankings.ff_dynasty_pass import ff_dynasty_status
 from sleeper_tool.roster_analysis import ValuedRoster, build_all_valued_rosters
+from sleeper_tool.roster_clog import RosterClog, identify_roster_clogs
 from sleeper_tool.storage import Storage
 from sleeper_tool.team_status import TeamStatusResult, classify_team_status
 from sleeper_tool.trade_engine import DropCandidate, TradeProposal, generate_trade_proposals, identify_drop_candidates, value_currency
@@ -52,6 +53,7 @@ class LeagueReportData:
     waiver_targets: list[WaiverTarget] = field(default_factory=list)
     time_sensitive: list[TimeSensitiveNote] = field(default_factory=list)
     drop_candidates: list[DropCandidate] = field(default_factory=list)
+    roster_clogs: list[RosterClog] = field(default_factory=list)  # excludes players already listed as drop candidates
     error: str | None = None
 
 
@@ -189,15 +191,22 @@ def build_league_report_data(
     proposals = generate_trade_proposals(league, rosters, status_result=status_result, storage=storage, engine=engine)
     league_data = storage.get_league(league.league_id) or {}
     waiver_budget = (league_data.get("settings") or {}).get("waiver_budget")
-    waiver_targets = get_waiver_targets(
-        storage, engine, league, my_roster, current_week=current_week, waiver_budget=waiver_budget
-    )
-    time_sensitive = get_time_sensitive_notes(storage, my_roster, current_week=current_week)
     # Exclude anyone already used as a give-piece in a live trade proposal
     # this run -- otherwise the same player could be told to both trade
     # away for value and cut for nothing in the same report.
     proposed_give_ids = frozenset(e.player_id for p in proposals for e in p.give)
+    trending_add_ids = {row["player_id"] for row in storage.get_trending("add")}
+    roster_clogs = identify_roster_clogs(my_roster, trending_add_ids=trending_add_ids, exclude_ids=proposed_give_ids)
+    clog_ids = frozenset(c.entry.player_id for c in roster_clogs)
+    waiver_targets = get_waiver_targets(
+        storage, engine, league, my_roster, current_week=current_week, waiver_budget=waiver_budget, clog_ids=clog_ids
+    )
+    time_sensitive = get_time_sensitive_notes(storage, my_roster, current_week=current_week)
     drop_candidates = identify_drop_candidates(my_roster, status_result.status, exclude_ids=proposed_give_ids)
+    # A clog that's already a drop candidate is surfaced there; listing him
+    # twice under two headings is noise, not extra information.
+    drop_ids = {d.entry.player_id for d in drop_candidates}
+    roster_clogs = [c for c in roster_clogs if c.entry.player_id not in drop_ids]
 
     return LeagueReportData(
         league=league,
@@ -210,6 +219,7 @@ def build_league_report_data(
         waiver_targets=waiver_targets,
         time_sensitive=time_sensitive,
         drop_candidates=drop_candidates,
+        roster_clogs=roster_clogs,
     )
 
 
