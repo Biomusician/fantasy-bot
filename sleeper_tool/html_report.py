@@ -14,6 +14,7 @@ from sleeper_tool.formatting import age_str
 from sleeper_tool.league_economy import LeagueEconomy
 from sleeper_tool.lineup_leverage import LineupLeverage
 from sleeper_tool.move_impact import MoveImpact
+from sleeper_tool.negotiation_ladder import NegotiationLadder
 from sleeper_tool.pick_opportunity import PickOpportunity
 from sleeper_tool.portfolio_exposure import VERY_HIGH, PortfolioExposure
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
@@ -179,7 +180,37 @@ def _impact_block(impact: MoveImpact | None) -> str:
     return f'<div class="impact-block"><span class="rationale-label">What actually changes</span><ul>{items}</ul></div>'
 
 
-def _trade_card(p: TradeProposal, index: int, impact: MoveImpact | None = None) -> str:
+def _ladder_block(ladder: NegotiationLadder | None) -> str:
+    if ladder is None:
+        return ""
+
+    def step(s) -> str:
+        return (
+            f"<strong>{esc(s.asset_names)}</strong> "
+            f'<span class="tabular muted">{s.outgoing_value:.0f} · {s.ratio:.0%} of what you get</span> '
+            f"{_chip('Acceptance: ' + s.acceptance, _ACCEPTANCE_CHIP_KIND.get(s.acceptance, 'neutral'))}"
+        )
+
+    lowball = ' <span class="muted">— deliberately below value, expect a counter</span>' if ladder.opening.lowball else ""
+    rows = [f'<li><span class="ladder-step">Opening</span> {step(ladder.opening)}{lowball}</li>']
+    if ladder.opening_message:
+        rows.append(f'<li class="ladder-message">{esc(ladder.opening_message)}</li>')
+    if ladder.fallback:
+        rows.append(f'<li><span class="ladder-step">Fallback</span> {step(ladder.fallback)}</li>')
+    else:
+        rows.append('<li><span class="ladder-step">Fallback</span> <span class="muted">none within 10% improves the rating — if countered, hold or walk</span></li>')
+    if ladder.walk_away:
+        rows.append(
+            f'<li><span class="ladder-step">Walk away above</span> {step(ladder.walk_away)} '
+            '<span class="muted">— past this you\'re overpaying</span></li>'
+        )
+    else:
+        top = "fallback" if ladder.fallback else "opening"
+        rows.append(f'<li><span class="ladder-step">Walk away</span> <span class="muted">above the {top} — nothing more expensive still rates acceptable</span></li>')
+    return f'<div class="ladder"><span class="rationale-label">Negotiation ladder</span><ul>{"".join(rows)}</ul></div>'
+
+
+def _trade_card(p: TradeProposal, index: int, impact: MoveImpact | None = None, ladder: NegotiationLadder | None = None) -> str:
     give_chips = "".join(
         [*(_asset_chip(e.name, is_pick=False) for e in p.give), *(_asset_chip(pk.name, is_pick=True) for pk in p.give_picks)]
     )
@@ -233,6 +264,7 @@ def _trade_card(p: TradeProposal, index: int, impact: MoveImpact | None = None) 
         </div>
         {acceptance_block}
         {caveats_block}
+        {_ladder_block(ladder)}
       </details>
     </article>
     """
@@ -449,7 +481,7 @@ def _league_panel(data: LeagueReportData) -> str:
         <section class="panel-block">
           <h3>Trade offers</h3>
           <div class="trade-grid">
-            {"".join(_trade_card(p, i, data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None) for i, p in enumerate(data.proposals, start=1)) if data.proposals else '<p class="empty-note">No trade offers cleared the value-match bar this week.</p>'}
+            {"".join(_trade_card(p, i, data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None, data.ladders.get(i - 1)) for i, p in enumerate(data.proposals, start=1)) if data.proposals else '<p class="empty-note">No trade offers cleared the value-match bar this week.</p>'}
           </div>
         </section>
         <section class="panel-block">
@@ -836,6 +868,10 @@ tbody tr:last-child td { border-bottom: none; }
 .trade-rationale { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 6px; }
 .trade-rationale ul, .caveats ul { margin: 4px 0 0; padding-left: 18px; font-size: 13px; color: var(--ink-muted); }
 .rationale-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-faint); }
+.ladder { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.ladder ul { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.ladder-step { display: inline-block; min-width: 118px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent-ink); }
+.ladder-message { padding-left: 118px; font-style: italic; color: var(--ink-muted); }
 .caveats { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
 .caveat-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--caution); }
 .caveat-item { color: var(--caution) !important; }

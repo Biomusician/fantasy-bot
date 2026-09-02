@@ -22,6 +22,7 @@ from sleeper_tool.league_economy import LeagueEconomy, build_league_economy
 from sleeper_tool.lineup_leverage import LineupLeverage, build_lineup_leverage
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup
 from sleeper_tool.move_impact import PREVIEWED_WAIVER_TIERS, MoveImpact, preview_add_drop, preview_trade, snapshot_roster
+from sleeper_tool.negotiation_ladder import NegotiationLadder, build_ladders
 from sleeper_tool.pick_opportunity import SPENDABLE, STRATEGIC, PickOpportunity, assess_picks
 from sleeper_tool.playoff_leverage import PlayoffLeverage, classify_playoff_leverage
 from sleeper_tool.portfolio_exposure import PortfolioExposure, acquisition_exposure_note, build_portfolio_exposure
@@ -78,6 +79,7 @@ class LeagueReportData:
     waiver_impacts: dict[str, MoveImpact] = field(default_factory=dict)  # by waiver target player_id (Must Add only)
     playoff: PlayoffLeverage | None = None  # standings position vs the playoff cut; None until 3 games are played
     pick_opportunity: PickOpportunity | None = None  # dynasty only: what my 1st/2nd-round picks mean to this roster
+    ladders: dict[int, NegotiationLadder] = field(default_factory=dict)  # by proposal index; top two buy-low/pick-target trades
     error: str | None = None
 
 
@@ -281,6 +283,15 @@ def build_league_report_data(
 
     pick_opportunity = None
     valued_picks = get_valued_picks_by_roster(rosters, currency, storage, engine)
+    counterparty_status = {
+        r.roster_id: classify_team_status(r.roster_id, rosters, currency, storage=storage, engine=engine).status
+        for r in rosters.values()
+        if r.owner_username in {p.target_username for p in proposals}
+    }
+    ladders = build_ladders(
+        proposals, my_roster, rosters, (valued_picks or {}).get(my_roster.roster_id, []),
+        my_status=status_result.status, status_of=counterparty_status,
+    )
     if valued_picks is not None:
         pick_opportunity = assess_picks(
             my_roster, rosters, valued_picks.get(my_roster.roster_id, []),
@@ -333,6 +344,7 @@ def build_league_report_data(
         waiver_impacts=waiver_impacts,
         playoff=playoff,
         pick_opportunity=pick_opportunity,
+        ladders=ladders,
     )
 
 

@@ -9,6 +9,7 @@ from sleeper_tool.formatting import age_str, ordinal_pct
 from sleeper_tool.league_economy import LeagueEconomy
 from sleeper_tool.lineup_leverage import LineupLeverage
 from sleeper_tool.move_impact import MoveImpact
+from sleeper_tool.negotiation_ladder import NegotiationLadder
 from sleeper_tool.pick_opportunity import PickOpportunity
 from sleeper_tool.portfolio_exposure import PortfolioExposure
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
@@ -132,7 +133,28 @@ def _render_lineup_leverage(lev: LineupLeverage | None, currency: str) -> list[s
     return lines
 
 
-def _render_trade_proposal(p: TradeProposal, index: int, impact: MoveImpact | None = None) -> list[str]:
+def _render_ladder(ladder: NegotiationLadder) -> list[str]:
+    def step(s):
+        return f"{s.asset_names} ({s.outgoing_value:.0f}, {s.ratio:.0%} of what you get · acceptance {s.acceptance})"
+
+    lines = ["Negotiation ladder:"]
+    lowball = " — deliberately below value, expect a counter" if ladder.opening.lowball else ""
+    lines.append(f"- **Opening:** {step(ladder.opening)}{lowball}")
+    if ladder.opening_message:
+        lines.append(f"  - _Message:_ {ladder.opening_message}")
+    if ladder.fallback:
+        lines.append(f"- **Fallback (after a counter):** {step(ladder.fallback)}")
+    else:
+        lines.append("- **Fallback:** none within 10% of the baseline improves the rating — if the opening is countered, hold or walk")
+    if ladder.walk_away:
+        lines.append(f"- **Walk away above:** {step(ladder.walk_away)} — the most the engine still calls acceptable; past this you're overpaying")
+    else:
+        top = "fallback" if ladder.fallback else "opening"
+        lines.append(f"- **Walk away above the {top}** — nothing more expensive still rates acceptable")
+    return lines
+
+
+def _render_trade_proposal(p: TradeProposal, index: int, impact: MoveImpact | None = None, ladder: NegotiationLadder | None = None) -> list[str]:
     lines = [f"**Offer {index} ({p.trade_type_label}): {p.summary_line()}**", ""]
     lines.append(
         f"*{value_label_for_currency(p.currency)}: {p.my_value_total:.0f} vs {p.their_value_total:.0f} "
@@ -166,6 +188,9 @@ def _render_trade_proposal(p: TradeProposal, index: int, impact: MoveImpact | No
     if p.message:
         lines.append("")
         lines.append(f"> Message to send: _{p.message}_")
+    if ladder is not None:
+        lines.append("")
+        lines.extend(_render_ladder(ladder))
     return lines
 
 
@@ -283,7 +308,7 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     if data.proposals:
         for i, p in enumerate(data.proposals, start=1):
             impact = data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None
-            trade_lines.extend(_render_trade_proposal(p, i, impact))
+            trade_lines.extend(_render_trade_proposal(p, i, impact, data.ladders.get(i - 1)))
             trade_lines.append("")
     else:
         trade_lines.append("No trade offers cleared the value-match bar this week.")
