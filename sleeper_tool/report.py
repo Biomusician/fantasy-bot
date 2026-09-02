@@ -134,7 +134,8 @@ def _render_lineup_leverage(lev: LineupLeverage | None, currency: str) -> list[s
 
 def _render_ladder(ladder: NegotiationLadder) -> list[str]:
     def step(s):
-        return f"{s.asset_names} ({s.outgoing_value:.0f}, {s.ratio:.0%} of what you get · acceptance {s.acceptance})"
+        note = f" — {s.starter_note}" if s.starter_note else ""
+        return f"{s.asset_names} ({s.outgoing_value:.0f}, {s.ratio:.0%} of what you get · acceptance {s.acceptance}){note}"
 
     lines = ["Negotiation ladder:"]
     lowball = " — deliberately below value, expect a counter" if ladder.opening.lowball else ""
@@ -314,7 +315,9 @@ def render_league_section(data: LeagueReportData) -> list[str]:
         trade_lines.append("")
     sections.append(("### Trade offers", trade_lines))
 
-    waiver_lines = _render_waiver_targets(data.waiver_targets, data.waiver_impacts) + [""]
+    waiver_lines = (
+        [f"_{data.waivers_note}_", ""] if data.waivers_note else _render_waiver_targets(data.waiver_targets, data.waiver_impacts) + [""]
+    )
     sections.append(("### Waiver targets", waiver_lines))
 
     if data.drop_candidates:
@@ -322,19 +325,6 @@ def render_league_section(data: LeagueReportData) -> list[str]:
         # "nothing to drop" filler, matching the empty-state discipline
         # used elsewhere in this report.
         sections.append(("### Consider dropping", _render_drop_candidates(data.drop_candidates)))
-
-    if data.roster_clogs:
-        clog_lines = [
-            f"- **{c.entry.name}** ({c.entry.position or '?'}) — {'; '.join(c.reasons)}" for c in data.roster_clogs
-        ] + [""]
-        sections.append(("### Roster clogs (dead roster spots)", clog_lines))
-
-    if data.pick_opportunity and data.pick_opportunity.assessments:
-        sections.append(("### Draft capital", _render_pick_opportunity(data.pick_opportunity)))
-
-    economy_lines = _render_league_economy(data.league_economy, data.roster.roster_id)
-    if economy_lines:
-        sections.append(("### League economy", economy_lines))
 
     alert_lines = []
     if data.time_sensitive:
@@ -349,6 +339,21 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     if has_high_alert:
         alert_index = next(i for i, (header, _) in enumerate(sections) if header == "### Time-sensitive")
         sections.insert(0, sections.pop(alert_index))
+
+    # Context sections last: they explain and qualify the moves above
+    # rather than compete with them.
+    if data.roster_clogs:
+        clog_lines = [
+            f"- **{c.entry.name}** ({c.entry.position or '?'}) — {'; '.join(c.reasons)}" for c in data.roster_clogs
+        ] + [""]
+        sections.append(("### Roster clogs (dead roster spots)", clog_lines))
+
+    if data.pick_opportunity and data.pick_opportunity.assessments:
+        sections.append(("### Draft capital", _render_pick_opportunity(data.pick_opportunity)))
+
+    economy_lines = _render_league_economy(data.league_economy, data.roster.roster_id)
+    if economy_lines:
+        sections.append(("### League economy", economy_lines))
 
     for header, body in sections:
         lines.append(header)

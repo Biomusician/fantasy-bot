@@ -42,6 +42,21 @@ def test_weak_aging_unit_is_bottom_three_and_older_than_the_league_median():
     assert not {u.position: u for u in position_units(young_weak, rosters2)}["RB"].weak_aging
 
 
+def test_weak_aging_respects_the_position_veteran_threshold():
+    # RB at 29 vs a 24 median: old for an RB -> weak-aging. A QB unit at 29
+    # vs a 24 median is bottom-three but not old for a QB (threshold 32).
+    mine, rosters = _league(my_rb_age=29, my_rb_pctl=20)
+    assert {u.position: u for u in position_units(mine, rosters)}["RB"].weak_aging
+    for r in rosters.values():
+        qb = next(e for e in r.entries if e.position == "QB")
+        qb.age = 24.0
+    my_qb = next(e for e in mine.entries if e.position == "QB")
+    my_qb.age, my_qb.value.dynasty_positional_percentile = 29.0, 10.0
+    qb_unit = {u.position: u for u in position_units(mine, rosters)}["QB"]
+    assert qb_unit.bottom_three and qb_unit.avg_age > qb_unit.league_median_age
+    assert not qb_unit.weak_aging
+
+
 def test_first_round_pick_is_strategic_for_a_rebuilder_or_a_weak_aging_contender():
     mine, rosters = _league(my_rb_age=29, my_rb_pctl=20)
     assert assess_picks(mine, rosters, [_pick(1)], team_status=CONTENDER).assessments[0].classification == STRATEGIC

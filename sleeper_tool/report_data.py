@@ -87,6 +87,7 @@ class LeagueReportData:
     playoff: PlayoffLeverage | None = None  # standings position vs the playoff cut; None until 3 games are played
     pick_opportunity: PickOpportunity | None = None  # dynasty only: what my 1st/2nd-round picks mean to this roster
     ladders: dict[int, NegotiationLadder] = field(default_factory=dict)  # by proposal index; top two buy-low/pick-target trades
+    waivers_note: str | None = None  # shown in place of waiver targets when they're deliberately suppressed
     error: str | None = None
 
 
@@ -251,11 +252,21 @@ def build_league_report_data(
         else []
     )
     clog_ids = frozenset(c.entry.player_id for c in roster_clogs)
-    waiver_targets = get_waiver_targets(
-        storage, engine, league, my_roster, current_week=current_week, waiver_budget=waiver_budget, clog_ids=clog_ids
-    )
+    # A league still pre-draft on Sleeper (keepers rostered, draft to come)
+    # has no waiver wire yet: every "free agent" is about to be drafted, so
+    # adds and insurance from that pool would be fiction. Trades and lineup
+    # analysis of the kept roster still stand.
+    pre_draft = league_data.get("status") in ("pre_draft", "drafting")
+    waivers_note = None
+    if pre_draft:
+        waiver_targets: list[WaiverTarget] = []
+        waivers_note = "League is still pre-draft on Sleeper — waiver and insurance targets are suppressed until the draft."
+    else:
+        waiver_targets = get_waiver_targets(
+            storage, engine, league, my_roster, current_week=current_week, waiver_budget=waiver_budget, clog_ids=clog_ids
+        )
     insurance: list[InsuranceRecommendation] = []
-    if status_result.status == CONTENDER and lineup is not None:
+    if status_result.status == CONTENDER and lineup is not None and not pre_draft:
         free_agents = free_agent_candidates(storage, engine, league, my_roster)
         insurance = identify_fragile_starters(my_roster, free_agents, team_status=status_result.status, lineup=lineup)
         trade_deadline = (league_data.get("settings") or {}).get("trade_deadline")
@@ -309,6 +320,7 @@ def build_league_report_data(
     ladders = build_ladders(
         proposals, my_roster, rosters, (valued_picks or {}).get(my_roster.roster_id, []),
         my_status=status_result.status, status_of=counterparty_status,
+        my_starter_ids=lineup.starter_ids if lineup is not None else (),
     )
     if valued_picks is not None and lineup is not None:
         pick_opportunity = assess_picks(
@@ -360,6 +372,7 @@ def build_league_report_data(
         playoff=playoff,
         pick_opportunity=pick_opportunity,
         ladders=ladders,
+        waivers_note=waivers_note,
     )
 
 

@@ -29,7 +29,8 @@ be the wrong tool.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from collections.abc import Collection
+from dataclasses import dataclass, field, replace
 from itertools import combinations
 
 from sleeper_tool.draft_picks import OwnedPick
@@ -71,6 +72,15 @@ class LadderStep:
     ratio: float  # outgoing / baseline
     acceptance: str
     reasons: list[str]
+    starters_given: list[str] = field(default_factory=list)  # names of my optimized-lineup starters in this package
+
+    @property
+    def starter_note(self) -> str | None:
+        """The ladder ranks packages by value, not lineup cost — a step that
+        spends a current starter says so rather than looking "cheap"."""
+        if not self.starters_given:
+            return None
+        return f"includes your current starter{'s' if len(self.starters_given) > 1 else ''} {', '.join(self.starters_given)}"
 
     @property
     def asset_names(self) -> str:
@@ -124,9 +134,11 @@ def build_negotiation_ladder(
     *,
     my_status: str,
     their_status: str,
+    my_starter_ids: Collection[str] = (),
 ) -> NegotiationLadder | None:
     if proposal.trade_type not in LADDERED_TRADE_TYPES:
         return None
+    starter_ids = set(my_starter_ids)
     baseline = proposal.their_value_total
     if not baseline:
         return None
@@ -154,7 +166,8 @@ def build_negotiation_ladder(
             piece_count=len(players) + len(picks),
         )
         rating, reasons = rate_acceptance(fit, ratio, profile, give=players)
-        steps.append(LadderStep("", players, picks, outgoing, ratio, rating, reasons))
+        starters_given = [e.name for e in players if e.player_id in starter_ids]
+        steps.append(LadderStep("", players, picks, outgoing, ratio, rating, reasons, starters_given))
     if not steps:
         return None
 
@@ -207,10 +220,12 @@ def build_ladders(
     *,
     my_status: str,
     status_of: dict[int, str],
+    my_starter_ids: Collection[str] = (),
 ) -> dict[int, NegotiationLadder]:
     """Ladders for the league's top LADDERS_PER_LEAGUE ladder-able
     proposals, keyed by proposal index. `status_of` maps roster_id to the
-    counterparty's contender/middling/rebuild status."""
+    counterparty's contender/middling/rebuild status; `my_starter_ids` is
+    my optimized lineup, so steps that spend a starter can say so."""
     ladders: dict[int, NegotiationLadder] = {}
     by_username = {r.owner_username: r for r in rosters.values() if r.owner_username}
     for i, p in enumerate(proposals):
@@ -220,7 +235,8 @@ def build_ladders(
         if their is None:
             continue
         ladder = build_negotiation_ladder(
-            p, my_roster, their, my_picks, my_status=my_status, their_status=status_of.get(their.roster_id, "middling")
+            p, my_roster, their, my_picks, my_status=my_status, their_status=status_of.get(their.roster_id, "middling"),
+            my_starter_ids=my_starter_ids,
         )
         if ladder is not None:
             ladders[i] = ladder

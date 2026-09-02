@@ -18,8 +18,13 @@ A player is a Roster Clog only when every one of these holds:
   - Not among Sleeper's current trending adds (the waiver engine is already
     treating those as live assets, and a trending player is buzz, not
     dead weight).
-  - Dynasty only: not a rookie (years_exp 0, or unknown) — a rookie's value
-    is his upside, which rank/projection data captures poorly in year one.
+  - Dynasty only: not a developmental player — years_exp at most
+    DEVELOPMENTAL_MAX_YEARS_EXP (or unknown) and no older than his
+    position's young-player age (team_status.AGE_THRESHOLDS). A young
+    player's value is his upside, which rank/projection data captures
+    poorly in his first seasons; a 23-year-old second-year WR at KTC 160
+    is contingent value, not dead weight. (The spec said rookies only;
+    the first real run flagged exactly that case, so it was widened.)
 Uncorroborated or unranked players are skipped rather than flagged: a
 name-matching miss looks exactly like a worthless player, and the
 established discipline everywhere else in the tool is to never recommend
@@ -35,13 +40,14 @@ from dataclasses import dataclass
 
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup, projection_of
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
+from sleeper_tool.team_status import young_max_age
 from sleeper_tool.trade_engine import DYNASTY_CURRENCY, value_currency
 from sleeper_tool.valuation import composite_overall_rank
 
 DYNASTY_CLOG_RANK_CUTOFF = 150  # outside the top-N reconciled overall dynasty rank
 REDRAFT_CLOG_RANK_CUTOFF = 120  # outside the top-N FantasyPros rest-of-season rank
 MAX_CLOGS_PER_ROSTER = 3
-ROOKIE_MAX_YEARS_EXP = 0
+DEVELOPMENTAL_MAX_YEARS_EXP = 2  # dynasty: a player this early in his career is upside, not a clog
 
 
 @dataclass
@@ -51,8 +57,12 @@ class RosterClog:
     composite_rank: float
 
 
-def _is_dynasty_rookie(entry: RosterEntry, currency: str) -> bool:
-    return currency == DYNASTY_CURRENCY and (entry.years_exp is None or entry.years_exp <= ROOKIE_MAX_YEARS_EXP)
+def _is_dynasty_developmental(entry: RosterEntry, currency: str) -> bool:
+    if currency != DYNASTY_CURRENCY:
+        return False
+    if entry.years_exp is None or entry.years_exp <= DEVELOPMENTAL_MAX_YEARS_EXP:
+        return entry.age is None or entry.age <= young_max_age(entry.position)
+    return False
 
 
 def identify_roster_clogs(
@@ -85,7 +95,7 @@ def identify_roster_clogs(
             continue
         if entry.is_reserve or entry.is_taxi or entry.injury_status == "IR":
             continue
-        if _is_dynasty_rookie(entry, currency) or not entry.value.is_corroborated:
+        if _is_dynasty_developmental(entry, currency) or not entry.value.is_corroborated:
             continue
         if entry.value.proj_points is None:
             continue  # no projection: "projects below everyone" would be a data gap, not a finding

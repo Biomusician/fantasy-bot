@@ -54,9 +54,17 @@ def test_the_primary_backup_is_depth_not_a_clog():
     assert identify_roster_clogs(_roster(entries)) == []
 
 
-def test_dynasty_rookies_are_exempt_but_redraft_uses_its_own_cutoff():
+def test_dynasty_developmental_players_are_exempt_but_redraft_uses_its_own_cutoff():
     rookie = _p("rookie", "RB", 40, dyn_rank=260, ecr=200, years_exp=0)
     assert identify_roster_clogs(_roster(_base_entries() + [rookie], kind="dynasty")) == []
+    # A 23-year-old second-year WR is contingent value, not dead weight...
+    soph = dataclasses.replace(_p("soph", "WR", 40, dyn_rank=200, years_exp=1), age=23.0)
+    assert identify_roster_clogs(_roster(_base_entries() + [soph], kind="dynasty")) == []
+    # ...but a 28-year-old with two years' experience (late bloomer) isn't developmental.
+    old_soph = dataclasses.replace(_p("old_soph", "WR", 40, dyn_rank=200, years_exp=1), age=28.0)
+    wr_backup = _p("wr4", "WR", 60)  # a real primary backup ahead of him
+    clogs = identify_roster_clogs(_roster(_base_entries() + [wr_backup, old_soph], kind="dynasty"))
+    assert [c.entry.player_id for c in clogs] == ["old_soph"]
     # Redraft currency: rank test is the rest-of-season ECR (120), rookie status irrelevant.
     clogs = identify_roster_clogs(_roster(_base_entries() + [rookie], kind="redraft"))
     assert [c.entry.player_id for c in clogs] == ["rookie"]

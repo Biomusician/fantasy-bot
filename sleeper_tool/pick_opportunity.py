@@ -7,7 +7,9 @@ Dynasty leagues, first- and second-round picks only. For each of
 QB/RB/WR/TE the position unit is measured from the shared optimized
 starting lineup:
   - the team's starter-group average age, vs the league-wide median of
-    the same number
+    the same number — and vs the position's own veteran threshold, so a
+    31-year-old QB unit (young for QB) is never "aging" just for being
+    older than the median
   - the team's positional strength (mean within-position percentile of
     those starters, the same reconciled metric the trade engine's need
     detection uses), ranked in-league; bottom BOTTOM_UNITS is "weak"
@@ -36,7 +38,7 @@ from sleeper_tool.draft_picks import OwnedPick
 from sleeper_tool.formatting import ordinal
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup
 from sleeper_tool.roster_analysis import ValuedRoster
-from sleeper_tool.team_status import REBUILD, _avg_percentile
+from sleeper_tool.team_status import REBUILD, _avg_percentile, veteran_min_age
 from sleeper_tool.trade_engine import DYNASTY_CURRENCY, _pick_key, value_currency
 from sleeper_tool.valuation import CORE_SKILL_POSITIONS
 
@@ -63,11 +65,16 @@ class PositionUnit:
 
     @property
     def weak_aging(self) -> bool:
+        """Bottom-three AND older than the league median AND actually old for
+        the position (team_status.veteran_min_age: QB 32, RB 27, WR/TE 29).
+        The median alone would call a 31-year-old QB unit "aging" — QBs
+        aren't — while a 27-year-old RB unit genuinely is."""
         return (
             self.bottom_three
             and self.avg_age is not None
             and self.league_median_age is not None
             and self.avg_age > self.league_median_age
+            and self.avg_age >= veteran_min_age(self.position)
         )
 
     def describe(self) -> str:

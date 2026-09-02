@@ -89,6 +89,20 @@ def test_walk_away_is_the_most_expensive_still_acceptable_package_and_never_a_re
             assert ladder.walk_away.key() != ladder.fallback.key()
 
 
+def test_a_step_that_spends_a_current_starter_says_so():
+    mine, theirs, proposal = _setup()
+    ladder = build_negotiation_ladder(
+        proposal, mine, theirs, [], my_status="contender", their_status="contender", my_starter_ids={"wr_c", "wr_b"}
+    )
+    steps = [s for s in (ladder.opening, ladder.fallback, ladder.walk_away) if s]
+    for s in steps:
+        names = {e.name for e in s.players}
+        if names & {"wr_c", "wr_b"}:
+            assert s.starter_note is not None and s.starter_note.startswith("includes your current starter")
+        else:
+            assert s.starter_note is None
+
+
 def test_duplicate_pick_names_render_with_a_count():
     from sleeper_tool.draft_picks import OwnedPick
     from sleeper_tool.negotiation_ladder import LadderStep

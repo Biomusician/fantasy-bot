@@ -184,10 +184,11 @@ def _ladder_block(ladder: NegotiationLadder | None) -> str:
         return ""
 
     def step(s) -> str:
+        note = f' <span class="muted">— {esc(s.starter_note)}</span>' if s.starter_note else ""
         return (
             f"<strong>{esc(s.asset_names)}</strong> "
             f'<span class="tabular muted">{s.outgoing_value:.0f} · {s.ratio:.0%} of what you get</span> '
-            f"{_chip('Acceptance: ' + s.acceptance, _ACCEPTANCE_CHIP_KIND.get(s.acceptance, 'neutral'))}"
+            f"{_chip('Acceptance: ' + s.acceptance, _ACCEPTANCE_CHIP_KIND.get(s.acceptance, 'neutral'))}{note}"
         )
 
     lowball = ' <span class="muted">— deliberately below value, expect a counter</span>' if ladder.opening.lowball else ""
@@ -476,6 +477,9 @@ def _league_panel(data: LeagueReportData) -> str:
           {_alerts_list(data.time_sensitive)}
         </section>
         """
+        waivers_html = (
+            f'<p class="empty-note">{esc(data.waivers_note)}</p>' if data.waivers_note else _waiver_table(data.waiver_targets, data.waiver_impacts)
+        )
         trades_and_waivers = f"""
         <section class="panel-block">
           <h3>Trade offers</h3>
@@ -485,13 +489,22 @@ def _league_panel(data: LeagueReportData) -> str:
         </section>
         <section class="panel-block">
           <h3>Waiver targets</h3>
-          {_waiver_table(data.waiver_targets, data.waiver_impacts)}
+          {waivers_html}
         </section>
         {_drop_candidates_section(data.drop_candidates)}
-        {_roster_clogs_section(data.roster_clogs)}
-        {_pick_opportunity_section(data.pick_opportunity)}
-        {_league_economy_section(data.league_economy, data.roster.roster_id)}
         """
+        # Context that explains or qualifies the moves above, collapsed by
+        # default so twelve capabilities don't read as twelve equal panels.
+        context_html = (
+            _roster_clogs_section(data.roster_clogs)
+            + _pick_opportunity_section(data.pick_opportunity)
+            + _league_economy_section(data.league_economy, data.roster.roster_id)
+        )
+        context = (
+            f'<details class="context-details"><summary>Roster context &middot; clogs, draft capital, league economy</summary>{context_html}</details>'
+            if context_html.strip()
+            else ""
+        )
         # A high-severity alert (a long-term injury not yet moved to an
         # IR slot, or a starter's bye) is time-boxed to this week's
         # lineup lock — don't make a scrolling reader pass two sections
@@ -501,6 +514,7 @@ def _league_panel(data: LeagueReportData) -> str:
             _roster_section(data.roster, data.currency)
             + _lineup_leverage_section(data.lineup_leverage, data.currency)
             + "".join(ordered)
+            + context
         )
 
     return f'<div class="panel" id="panel-{slug}" role="tabpanel">{header}{body}</div>'
@@ -867,6 +881,10 @@ tbody tr:last-child td { border-bottom: none; }
 .trade-rationale { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 6px; }
 .trade-rationale ul, .caveats ul { margin: 4px 0 0; padding-left: 18px; font-size: 13px; color: var(--ink-muted); }
 .rationale-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-faint); }
+.context-details { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 12px; }
+.context-details > summary { cursor: pointer; font-family: var(--font-display); font-size: 18px; font-weight: 700; color: var(--ink-muted); list-style: none; padding: 6px 0 14px; }
+.context-details > summary::before { content: "\\25B8"; display: inline-block; margin-right: 8px; color: var(--accent); transition: transform 0.15s; }
+.context-details[open] > summary::before { transform: rotate(90deg); }
 .ladder { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
 .ladder ul { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 .ladder-step { display: inline-block; min-width: 118px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent-ink); }
