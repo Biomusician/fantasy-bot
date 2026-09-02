@@ -55,6 +55,46 @@ notes are hardcoded, not configurable via a UI.
   answer to "what should I actually do today" across all your leagues at
   once, not just a per-league data dump you have to click through to
   assemble yourself.
+- **Decision layer** (each its own module, all built on one shared
+  lineup optimizer that computes the best *legal* lineup for the league's
+  real slot list — exact, not greedy, so Superflex and partial-flex slots
+  are handled correctly):
+  - *Lineup leverage*: every slot's closest bench alternative labelled
+    Clear Start / Lean Start / Toss-Up, plus "bench surplus" — value
+    trapped behind a slightly better starter, i.e. trade material that
+    costs the lineup nothing.
+  - *Move impact preview*: what a recommended trade or Must-Add waiver
+    actually changes — lineup, weekly points, depth needs, team status,
+    roster value, starter age — reported only when material, and
+    explicitly "a value play, not a lineup play" when nothing is.
+  - *Contender insurance*: which single starter injury would crater a
+    contender's lineup, and the free agent who'd soften it, added to the
+    waiver list as an Insurance row.
+  - *Bye collision planner*: a four-week look-ahead for weeks the bench
+    can't legally or adequately cover a bye, surfaced while a cheap
+    waiver fix is still available.
+  - *Roster clogs*: players with no path to the lineup, no market value,
+    and no strategic use — the dead roster spots — preferred as the drop
+    paired with a waiver add.
+  - *Portfolio exposure*: how many of your rosters ride on the same
+    player (and the same starting QB), as a tie-breaker and risk flag on
+    trade/waiver recommendations, never a sell signal.
+  - *League economy*: who actually trades, who's accumulating or selling
+    picks, and who stockpiles a position — from this season's real
+    transaction record, annotating the "why they say yes" side.
+  - *Playoff leverage*: Comfortable / Bubble / Long Shot / Out from the
+    standings and the league's actual playoff format, with a Deadline
+    Window that promotes a bubble team's trades when the deadline is near.
+  - *Pick opportunity cost* (dynasty): whether a 1st/2nd-round pick is
+    Strategic, Useful, or Spendable for *this* roster — a replacement
+    path for a weak, aging unit vs. pure market value.
+  - *Negotiation ladder*: for the top buy-low trades, an opening (the
+    cheapest package that still rates acceptable), a fallback after a
+    counter, and a walk-away line — all rated with the engine's own
+    acceptance rubric.
+  - *Decision delta*: "since last run" — only what changed vs. the last
+    complete daily run (statuses, recommendation lists, roster moves,
+    15%+ value swings).
 
 ## Setup
 
@@ -148,13 +188,25 @@ sleeper_tool/
   trade_engine.py            Buy-low/sell-high + trade proposal generation
   waiver_engine.py             Trending-add waiver targeting + alerts
   draft_picks.py                 Traded-pick ownership + KTC pick valuation
+  lineup_optimizer.py             Best legal lineup for the league's real slot list (shared)
+  lineup_leverage.py               Start/sit closeness + bench surplus
+  move_impact.py                    Post-move roster preview (material deltas only)
+  contender_insurance.py             Fragile-starter detection + free-agent cover
+  bye_collision.py                    Four-week bye look-ahead
+  roster_clog.py                       Dead roster spots
+  portfolio_exposure.py                 Cross-league player concentration
+  league_economy.py                      Per-manager trade/pick/position tendencies
+  playoff_leverage.py                     Standings vs the playoff cut + deadline window
+  pick_opportunity.py                      Strategic/Useful/Spendable pick classification
+  negotiation_ladder.py                     Opening / fallback / walk-away per top trade
+  decision_delta.py                          "Since last run" snapshot diffing
   report_data.py                  Shared data layer for both report formats
   report.py                        Markdown renderer
   html_report.py                    HTML dashboard renderer
 
 scripts/            Weekly-run entry points (see above)
-tests/               pytest suite for the valuation/trade-matching logic
-data/                 SQLite DB, cached rankings, generated reports (gitignored-equivalent — not meant to be committed)
+tests/               pytest suite (synthetic, offline) for every module above
+data/                 SQLite DB, cached rankings, generated reports, run snapshots (gitignored — not meant to be committed)
 ```
 
 ## Testing
@@ -201,3 +253,34 @@ deterministic.
   setting** — most of this tool's leagues don't use FAAB, so
   `suggested_faab_pct` is `None` for them by design, not a missing feature.
 - **Yahoo integration** is not yet live (see above).
+- **The lineup optimizer is structural, not this-week.** The lineup that
+  leverage, insurance, bye planning, clogs and previews build on excludes
+  season-long designations (IR/PUP/Sus/Inactive) but deliberately keeps a
+  player tagged `Out` for this week — a one-week absence shouldn't rewrite
+  the roster's shape for the next month. A this-week lineup is available
+  (`exclude_game_day_out=True`) but nothing renders it yet. Players with no
+  projection (K/DEF, deep bench) start at 0.0 rather than being benched, so
+  a required slot is filled by somebody.
+- **Playoff leverage is standings arithmetic only.** No Monte Carlo, no
+  schedule strength, no invented playoff probability; elimination is
+  called only when enough teams already hold more wins than this team can
+  still reach, and a possible end-of-season tie never eliminates.
+- **Move-impact previews don't see draft picks.** Pick ownership lives in
+  Sleeper's traded_picks, not on the roster object, so a pick-heavy
+  trade's preview is player-only (the trade card still shows the picks).
+  Team status in a preview is classified on optimizer-flagged starters
+  for both sides, so its "before" can differ from the headline status; a
+  status change is only reported with a 10-point strength move.
+- **Thresholds are named constants, not calibrated.** Contender insurance
+  (65% / 15%), bench surplus (90%), Toss-Up (5%) / Lean Start (15%),
+  bye-hole cover (70%), exposure (4 / 6 leagues, 3 starting-QB leagues),
+  roster-clog rank cutoffs (150 dynasty / 120 redraft), league-economy
+  labels (3 trades, ±1 pick, 1.5× median) and the negotiation ladder's
+  110% ceiling are all first-guess values chosen to be easy to tune, not
+  fitted to outcomes.
+- **League economy is current-season only** (no `previous_league_id`
+  traversal); trader-activity labels are suppressed under three completed
+  league trades, so a quiet August says nothing about anyone.
+- **Bye cover is by position, not by simulation.** A waiver target is
+  tagged as covering a bye hole when he plays the displaced starter's
+  position, not by re-running the optimizer with him added.

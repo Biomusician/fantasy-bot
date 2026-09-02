@@ -20,7 +20,7 @@ Individual stages: `scripts/pull_data.py` (sync only), `scripts/generate_report.
 .venv/Scripts/python.exe -m pytest tests/ -q
 ```
 
-184 tests, well under a second, fully synthetic — no network. Keep it that way.
+278 tests, well under a second, fully synthetic — no network. Keep it that way.
 
 ## Conventions
 
@@ -40,6 +40,14 @@ Individual stages: `scripts/pull_data.py` (sync only), `scripts/generate_report.
 hard part) and `waiver_engine.py`. `report_data.py` is the shared layer both renderers
 read from — put new derived data there, not in a renderer.
 
+`lineup_optimizer.py` is the single owner of "best legal starting lineup" (exact DP over
+the league's real slot list). Everything lineup-aware consumes it rather than deciding
+who starts on its own: `lineup_leverage.py`, `contender_insurance.py`, `bye_collision.py`,
+`move_impact.py`, `roster_clog.py`, `pick_opportunity.py`. The other decision modules
+(`portfolio_exposure.py`, `league_economy.py`, `playoff_leverage.py`,
+`negotiation_ladder.py`, `decision_delta.py`) are each one isolated file whose computation
+never lives in `trade_engine.py`/`waiver_engine.py` — those two only get thin hooks.
+
 ## Constraints
 
 - **Never hardcode a league setting the Sleeper API can report.** Scoring type, superflex,
@@ -51,6 +59,9 @@ read from — put new derived data there, not in a renderer.
   "fixing" something that's a deliberate approximation.
 - `data/` holds generated output and one genuinely sensitive file
   (`data/yahoo_token.json`). Never read, print, or commit it.
+- `data/run_snapshots/` is the "since last run" baseline (one JSON per UTC day, last two
+  kept), written only by `scripts/daily_run.py` after a fully complete run. The report
+  scripts read it but never write it.
 
 ## Don't
 
