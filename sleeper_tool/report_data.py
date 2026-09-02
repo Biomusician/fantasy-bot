@@ -10,6 +10,8 @@ import logging
 from dataclasses import dataclass, field
 
 from sleeper_tool.config import LEAGUES, LeagueInfo, MY_USER_ID
+from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup
+from sleeper_tool.portfolio_exposure import PortfolioExposure, acquisition_exposure_note, build_portfolio_exposure
 from sleeper_tool.rankings.ff_dynasty_pass import ff_dynasty_status
 from sleeper_tool.roster_analysis import ValuedRoster, build_all_valued_rosters
 from sleeper_tool.roster_clog import RosterClog, identify_roster_clogs
@@ -54,6 +56,7 @@ class LeagueReportData:
     time_sensitive: list[TimeSensitiveNote] = field(default_factory=list)
     drop_candidates: list[DropCandidate] = field(default_factory=list)
     roster_clogs: list[RosterClog] = field(default_factory=list)  # excludes players already listed as drop candidates
+    lineup: LineupResult | None = None  # my best legal lineup (structural: no bye-week exclusions)
     error: str | None = None
 
 
@@ -79,6 +82,7 @@ class WeeklyReportData:
     ff_status: str
     leagues: list[LeagueReportData]
     priority_actions: list[PriorityAction] = field(default_factory=list)
+    portfolio: PortfolioExposure | None = None  # cross-league player concentration
 
 
 _ACTION_KIND_ORDER = {"alert": 0, "trade": 1, "waiver": 2, "roster": 3}
@@ -196,7 +200,10 @@ def build_league_report_data(
     # away for value and cut for nothing in the same report.
     proposed_give_ids = frozenset(e.player_id for p in proposals for e in p.give)
     trending_add_ids = {row["player_id"] for row in storage.get_trending("add")}
-    roster_clogs = identify_roster_clogs(my_roster, trending_add_ids=trending_add_ids, exclude_ids=proposed_give_ids)
+    lineup = optimize_lineup(my_roster)
+    roster_clogs = identify_roster_clogs(
+        my_roster, trending_add_ids=trending_add_ids, exclude_ids=proposed_give_ids, lineup=lineup
+    )
     clog_ids = frozenset(c.entry.player_id for c in roster_clogs)
     waiver_targets = get_waiver_targets(
         storage, engine, league, my_roster, current_week=current_week, waiver_budget=waiver_budget, clog_ids=clog_ids
@@ -220,6 +227,7 @@ def build_league_report_data(
         time_sensitive=time_sensitive,
         drop_candidates=drop_candidates,
         roster_clogs=roster_clogs,
+        lineup=lineup,
     )
 
 
@@ -248,6 +256,10 @@ def build_weekly_report_data(
     current_week = int(current_week_raw) if current_week_raw else None
 
     league_data = [_safe_build_league_report_data(storage, engine, league, current_week) for league in leagues]
+    portfolio = build_portfolio_exposure(
+        (ld.league.name, ld.roster, ld.lineup) for ld in league_data if ld.drafted and ld.roster is not None
+    )
+    _annotate_recommendations_with_exposure(league_data, portfolio)
 
     return WeeklyReportData(
         generated_at=now,
@@ -256,4 +268,25 @@ def build_weekly_report_data(
         ff_status=ff_dynasty_status(),
         leagues=league_data,
         priority_actions=build_priority_actions(league_data),
+        portfolio=portfolio,
     )
+
+
+def _annotate_recommendations_with_exposure(leagues: list[LeagueReportData], portfolio: PortfolioExposure) -> None:
+    """Cross-league pass: a trade target or waiver add that would push a
+    player across an exposure threshold gets a note on that
+    recommendation. Has to run after every league is built — no single
+    league knows what the others hold.
+    """
+    for ld in leagues:
+        if ld.error or not ld.drafted:
+            continue
+        for p in ld.proposals:
+            for e in p.receive:
+                note = acquisition_exposure_note(portfolio, e.player_id, position=e.position)
+                if note:
+                    p.caveats.append(note)
+        for t in ld.waiver_targets:
+            note = acquisition_exposure_note(portfolio, t.player_id, position=t.position, compact=True)
+            if note:
+                t.reason = f"{t.reason}; {note}"

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from sleeper_tool.config import LEAGUES, LeagueInfo
 from sleeper_tool.formatting import age_str, ordinal_pct
+from sleeper_tool.portfolio_exposure import PortfolioExposure
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
 from sleeper_tool.roster_analysis import ValuedRoster
 from sleeper_tool.storage import Storage
@@ -24,6 +25,21 @@ def _render_priority_actions(actions: list[PriorityAction]) -> list[str]:
     kind_label = {"alert": "ALERT", "trade": "TRADE", "waiver": "WAIVER"}
     for a in actions:
         lines.append(f"- **[{kind_label.get(a.kind, a.kind.upper())}]** {a.headline} — _{a.detail}_")
+    lines.append("")
+    return lines
+
+
+def _render_portfolio_exposure(portfolio: PortfolioExposure | None) -> list[str]:
+    if portfolio is None or not portfolio.players:
+        return []
+    lines = [f"## Portfolio exposure (across {portfolio.total_leagues} leagues)", ""]
+    lines.append("Players you hold on several rosters at once — one injury hits all of them. A risk flag and tie-breaker, not a sell signal.")
+    lines.append("")
+    for p in portfolio.players:
+        flags = [f for f in (p.level, "Starting QB in 3+ leagues" if p.qb_start_flag else None) if f]
+        flag_str = f" — **{', '.join(flags)}**" if flags else ""
+        started = f", starting in {len(p.started_in)}" if p.started_in else ""
+        lines.append(f"- **{p.name}** ({p.position or '?'}, {p.team or '-'}) — {p.count} of {portfolio.total_leagues} leagues{started}{flag_str}")
     lines.append("")
     return lines
 
@@ -210,6 +226,7 @@ def render_weekly_report(report: WeeklyReportData) -> str:
         "",
     ]
     lines.extend(_render_priority_actions(report.priority_actions))
+    lines.extend(_render_portfolio_exposure(report.portfolio))
     lines.append("## Data freshness")
     lines.append("")
     for source, age in report.source_freshness.items():

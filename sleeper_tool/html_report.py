@@ -10,6 +10,7 @@ from __future__ import annotations
 from html import escape as esc
 
 from sleeper_tool.formatting import age_str
+from sleeper_tool.portfolio_exposure import VERY_HIGH, PortfolioExposure
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
 from sleeper_tool.roster_clog import RosterClog
@@ -405,6 +406,38 @@ def _priority_actions_section(actions: list[PriorityAction]) -> str:
     """
 
 
+def _portfolio_section(portfolio: PortfolioExposure | None) -> str:
+    if portfolio is None or not portfolio.players:
+        return ""
+    rows = []
+    for p in portfolio.players:
+        flags = ""
+        if p.level:
+            flags += _chip(p.level, "negative" if p.level == VERY_HIGH else "caution")
+        if p.qb_start_flag:
+            flags += _chip("Starting QB x" + str(len(p.started_in)), "caution")
+        rows.append(
+            "<tr>"
+            f'<td class="player-cell">{esc(p.name)}</td>'
+            f'<td>{esc(p.position or "?")}</td>'
+            f'<td>{esc(p.team or "-")}</td>'
+            f'<td class="tabular">{p.count} / {portfolio.total_leagues}</td>'
+            f'<td class="tabular">{len(p.started_in)}</td>'
+            f"<td>{flags}</td>"
+            "</tr>"
+        )
+    return f"""
+    <section class="panel-block">
+      <h3>Portfolio exposure <span class="muted">&middot; same player, several rosters</span></h3>
+      <p class="roster-note">One injury hits every team holding him. A risk flag and tie-breaker, not a sell signal.</p>
+      <div class="table-scroll"><table>
+        <thead><tr><th>Player</th><th>Pos</th><th>Team</th><th>Leagues</th><th>Starting in</th><th>Flag</th></tr></thead>
+        <tbody>{"".join(rows)}</tbody>
+      </table></div>
+    </section>
+    """
+
+
 def _overview_panel(report: WeeklyReportData) -> str:
     rows = "".join(_overview_row(d) for d in report.leagues)
     freshness_chips = "".join(
@@ -418,6 +451,7 @@ def _overview_panel(report: WeeklyReportData) -> str:
         <p class="muted">Generated {report.generated_at.strftime('%b %d, %Y &middot; %H:%M UTC')}</p>
       </header>
       {_priority_actions_section(report.priority_actions)}
+      {_portfolio_section(report.portfolio)}
       <section class="panel-block">
         <h3>Leagues</h3>
         <div class="overview-grid">{rows}</div>
