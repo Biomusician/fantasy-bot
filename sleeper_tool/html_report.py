@@ -13,6 +13,7 @@ from sleeper_tool.decision_delta import DecisionDelta
 from sleeper_tool.formatting import age_str
 from sleeper_tool.league_economy import LeagueEconomy
 from sleeper_tool.lineup_leverage import LineupLeverage
+from sleeper_tool.move_impact import MoveImpact
 from sleeper_tool.portfolio_exposure import VERY_HIGH, PortfolioExposure
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
@@ -167,7 +168,17 @@ def _asset_chip(name: str, *, is_pick: bool) -> str:
     return f'<span class="asset">{tag}{esc(name)}</span>'
 
 
-def _trade_card(p: TradeProposal, index: int) -> str:
+def _impact_block(impact: MoveImpact | None) -> str:
+    if impact is None:
+        return ""
+    deltas = impact.material_deltas()
+    items = "".join(f"<li>{esc(d)}</li>" for d in deltas) if deltas else (
+        "<li>nothing material &mdash; lineup, depth, status, and roster value all hold; a value play, not a lineup play</li>"
+    )
+    return f'<div class="impact-block"><span class="rationale-label">What actually changes</span><ul>{items}</ul></div>'
+
+
+def _trade_card(p: TradeProposal, index: int, impact: MoveImpact | None = None) -> str:
     give_chips = "".join(
         [*(_asset_chip(e.name, is_pick=False) for e in p.give), *(_asset_chip(pk.name, is_pick=True) for pk in p.give_picks)]
     )
@@ -211,6 +222,7 @@ def _trade_card(p: TradeProposal, index: int) -> str:
         {_chip('Confidence: ' + esc(p.confidence), _CONFIDENCE_CHIP_KIND.get(p.confidence, 'neutral'))}
       </div>
       <p class="trade-target">To <strong>{target}</strong> &middot; {esc(value_label)}: {p.my_value_total:.0f} vs {p.their_value_total:.0f}</p>
+      {_impact_block(impact)}
       {message_block}
       <details class="trade-details">
         <summary>Why this trade</summary>
@@ -225,9 +237,10 @@ def _trade_card(p: TradeProposal, index: int) -> str:
     """
 
 
-def _waiver_table(targets: list[WaiverTarget]) -> str:
+def _waiver_table(targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | None = None) -> str:
     if not targets:
         return '<p class="empty-note">No standout waiver targets this week.</p>'
+    impacts = impacts or {}
     # "positive" (green), not "negative" (red) -- Must Add is a GOOD thing
     # to see, matching the green used for waiver actions in the "Best
     # moves right now" section (_ACTION_KIND_META). "negative" is reserved
@@ -243,6 +256,13 @@ def _waiver_table(targets: list[WaiverTarget]) -> str:
         tier_chip = _chip(t.priority_tier, _TIER_CHIP_KIND.get(t.priority_tier, "neutral"))
         drop = esc(t.drop_candidate.name) if t.drop_candidate else '<span class="muted">—</span>'
         faab = f"{t.suggested_faab_pct}%" if t.suggested_faab_pct is not None else "—"
+        impact_html = ""
+        impact = impacts.get(t.player_id)
+        if impact is not None:
+            deltas = impact.material_deltas()
+            impact_html = '<div class="impact-inline"><b>Impact:</b> ' + (
+                esc("; ".join(deltas)) if deltas else "no lineup change &mdash; depth only"
+            ) + "</div>"
         rows.append(
             "<tr>"
             f"<td>{tier_chip}</td>"
@@ -251,7 +271,7 @@ def _waiver_table(targets: list[WaiverTarget]) -> str:
             f'<td>{drop}</td>'
             f'<td>{_chip(t.horizon, "neutral")}</td>'
             f'<td class="tabular">{faab}</td>'
-            f'<td class="waiver-reason">{esc(t.reason)}</td>'
+            f'<td class="waiver-reason">{esc(t.reason)}{impact_html}</td>'
             "</tr>"
         )
     return (
@@ -390,12 +410,12 @@ def _league_panel(data: LeagueReportData) -> str:
         <section class="panel-block">
           <h3>Trade offers</h3>
           <div class="trade-grid">
-            {"".join(_trade_card(p, i) for i, p in enumerate(data.proposals, start=1)) if data.proposals else '<p class="empty-note">No trade offers cleared the value-match bar this week.</p>'}
+            {"".join(_trade_card(p, i, data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None) for i, p in enumerate(data.proposals, start=1)) if data.proposals else '<p class="empty-note">No trade offers cleared the value-match bar this week.</p>'}
           </div>
         </section>
         <section class="panel-block">
           <h3>Waiver targets</h3>
-          {_waiver_table(data.waiver_targets)}
+          {_waiver_table(data.waiver_targets, data.waiver_impacts)}
         </section>
         {_drop_candidates_section(data.drop_candidates)}
         {_roster_clogs_section(data.roster_clogs)}
@@ -767,6 +787,9 @@ tbody tr:last-child td { border-bottom: none; }
 .pick-tag { display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: 0.04em; color: var(--accent-ink); background: color-mix(in srgb, var(--accent) 18%, transparent); border-radius: 4px; padding: 1px 4px; margin-right: 5px; vertical-align: 1px; }
 .trade-signals { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .trade-target { font-size: 13px; color: var(--ink-muted); margin: 0 0 4px; font-variant-numeric: tabular-nums; }
+.impact-block { margin: 6px 0 4px; padding: 8px 12px; border-left: 3px solid var(--accent); background: var(--surface-raised); border-radius: 0 8px 8px 0; }
+.impact-block ul { margin: 4px 0 0; padding-left: 18px; font-size: 13px; color: var(--ink); }
+.impact-inline { margin-top: 4px; font-size: 12px; color: var(--ink); }
 .trade-message { margin: 8px 0 4px; padding: 10px 12px; background: var(--neutral-bg); border-radius: 8px; }
 .trade-message-text { margin: 4px 0 0; font-size: 13px; color: var(--ink); font-style: italic; }
 .trade-details summary { cursor: pointer; font-size: 13px; font-weight: 700; color: var(--accent-ink); padding: 6px 0; }

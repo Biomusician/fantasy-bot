@@ -8,6 +8,7 @@ from sleeper_tool.decision_delta import DecisionDelta
 from sleeper_tool.formatting import age_str, ordinal_pct
 from sleeper_tool.league_economy import LeagueEconomy
 from sleeper_tool.lineup_leverage import LineupLeverage
+from sleeper_tool.move_impact import MoveImpact
 from sleeper_tool.portfolio_exposure import PortfolioExposure
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
 from sleeper_tool.roster_analysis import ValuedRoster
@@ -130,13 +131,21 @@ def _render_lineup_leverage(lev: LineupLeverage | None, currency: str) -> list[s
     return lines
 
 
-def _render_trade_proposal(p: TradeProposal, index: int) -> list[str]:
+def _render_trade_proposal(p: TradeProposal, index: int, impact: MoveImpact | None = None) -> list[str]:
     lines = [f"**Offer {index} ({p.trade_type_label}): {p.summary_line()}**", ""]
     lines.append(
         f"*{value_label_for_currency(p.currency)}: {p.my_value_total:.0f} vs {p.their_value_total:.0f} "
         f"({p.balance_label.lower()}) · Acceptance: {p.acceptance_rating} · Confidence: {p.confidence}*"
     )
     lines.append("")
+    if impact is not None:
+        deltas = impact.material_deltas()
+        lines.append("What actually changes:")
+        if deltas:
+            lines.extend(f"- {d}" for d in deltas)
+        else:
+            lines.append("- nothing material — lineup, depth, status, and roster value all hold; this is a value play, not a lineup play")
+        lines.append("")
     lines.append("Why it works for me:")
     for r in p.rationale_for_me:
         lines.append(f"- {r}")
@@ -162,17 +171,23 @@ def _render_trade_proposal(p: TradeProposal, index: int) -> list[str]:
 _TIER_MARK = {"Must Add": "🔴", "Strong Add": "🟠", "Moderate": "🟡", "Speculative": "⚪", "Monitor": "⚪", "Insurance": "🛡️"}
 
 
-def _render_waiver_targets(targets: list[WaiverTarget]) -> list[str]:
+def _render_waiver_targets(targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | None = None) -> list[str]:
     if not targets:
         return ["No standout waiver targets this week."]
+    impacts = impacts or {}
     lines = ["| Priority | Player | Pos | Team | Drop | Horizon | FAAB | Why |", "|---|---|---|---|---|---|---|---|"]
     for t in targets:  # already capped by the engine; insurance rows ride along after the cap
         mark = _TIER_MARK.get(t.priority_tier, "")
         drop = t.drop_candidate.name if t.drop_candidate else "—"
         faab = f"{t.suggested_faab_pct}%" if t.suggested_faab_pct is not None else "—"
+        reason = t.reason
+        impact = impacts.get(t.player_id)
+        if impact is not None:
+            deltas = impact.material_deltas()
+            reason += " · **Impact:** " + ("; ".join(deltas) if deltas else "no lineup change — depth only")
         lines.append(
             f"| {mark} {t.priority_tier} | {t.name} | {t.position or '?'} | {t.team or '-'} | {drop} | "
-            f"{t.horizon} | {faab} | {t.reason} |"
+            f"{t.horizon} | {faab} | {reason} |"
         )
     return lines
 
@@ -246,14 +261,15 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     trade_lines = []
     if data.proposals:
         for i, p in enumerate(data.proposals, start=1):
-            trade_lines.extend(_render_trade_proposal(p, i))
+            impact = data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None
+            trade_lines.extend(_render_trade_proposal(p, i, impact))
             trade_lines.append("")
     else:
         trade_lines.append("No trade offers cleared the value-match bar this week.")
         trade_lines.append("")
     sections.append(("### Trade offers", trade_lines))
 
-    waiver_lines = _render_waiver_targets(data.waiver_targets) + [""]
+    waiver_lines = _render_waiver_targets(data.waiver_targets, data.waiver_impacts) + [""]
     sections.append(("### Waiver targets", waiver_lines))
 
     if data.drop_candidates:

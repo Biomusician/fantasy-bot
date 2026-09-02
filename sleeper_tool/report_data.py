@@ -21,9 +21,10 @@ from sleeper_tool.decision_delta import DecisionDelta, build_snapshot, compute_d
 from sleeper_tool.league_economy import LeagueEconomy, build_league_economy
 from sleeper_tool.lineup_leverage import LineupLeverage, build_lineup_leverage
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup
+from sleeper_tool.move_impact import PREVIEWED_WAIVER_TIERS, MoveImpact, preview_add_drop, preview_trade, snapshot_roster
 from sleeper_tool.portfolio_exposure import PortfolioExposure, acquisition_exposure_note, build_portfolio_exposure
 from sleeper_tool.rankings.ff_dynasty_pass import ff_dynasty_status
-from sleeper_tool.roster_analysis import ValuedRoster, build_all_valued_rosters
+from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster, build_all_valued_rosters
 from sleeper_tool.roster_clog import RosterClog, identify_roster_clogs
 from sleeper_tool.storage import Storage
 from sleeper_tool.team_status import CONTENDER, TeamStatusResult, classify_team_status
@@ -71,6 +72,8 @@ class LeagueReportData:
     insurance: list[InsuranceRecommendation] = field(default_factory=list)  # contenders only; also merged into waiver_targets
     bye_collision: ByeCollision | None = None  # earliest look-ahead week with a Bye Hole; also a time_sensitive note
     league_economy: LeagueEconomy | None = None  # per-manager trade/pick/position tendencies, current season
+    trade_impacts: list[MoveImpact | None] = field(default_factory=list)  # parallel to proposals; None = below preview bar
+    waiver_impacts: dict[str, MoveImpact] = field(default_factory=dict)  # by waiver target player_id (Must Add only)
     error: str | None = None
 
 
@@ -261,6 +264,29 @@ def build_league_report_data(
     )
     _annotate_proposals_with_league_economy(proposals, league_economy, rosters)
 
+    before = snapshot_roster(
+        my_roster, rosters, current_week=current_week, storage=storage, engine=engine, lineup=lineup, status=status_result.status
+    )
+    trade_impacts = [
+        preview_trade(p, my_roster, rosters, before, current_week=current_week, storage=storage, engine=engine) for p in proposals
+    ]
+    waiver_impacts: dict[str, MoveImpact] = {}
+    all_players = storage.get_all_players()
+    for t in waiver_targets:
+        if t.priority_tier not in PREVIEWED_WAIVER_TIERS:
+            continue
+        pdata = all_players.get(t.player_id) or {}
+        add_entry = RosterEntry(
+            player_id=t.player_id, name=t.name, position=t.position, team=t.team, age=pdata.get("age"),
+            years_exp=pdata.get("years_exp"), injury_status=pdata.get("injury_status"), status=pdata.get("status"),
+            is_starter=False, is_taxi=False, is_reserve=False, value=t.value,
+        )
+        drop_id = t.drop_candidate.player_id if t.drop_candidate else None
+        label = f"Add {t.name}" + (f", drop {t.drop_candidate.name}" if t.drop_candidate else "")
+        waiver_impacts[t.player_id] = preview_add_drop(
+            label, add_entry, drop_id, my_roster, rosters, before, current_week=current_week, storage=storage, engine=engine
+        )
+
     return LeagueReportData(
         league=league,
         fmt_desc=fmt_desc,
@@ -278,6 +304,8 @@ def build_league_report_data(
         insurance=insurance,
         bye_collision=bye_collision,
         league_economy=league_economy,
+        trade_impacts=trade_impacts,
+        waiver_impacts=waiver_impacts,
     )
 
 

@@ -239,6 +239,19 @@ def optimize_lineup(
     )
 
 
+def roster_after_moves(
+    roster: ValuedRoster, *, add_entries: Iterable[RosterEntry] = (), remove_player_ids: Collection[str] = ()
+) -> ValuedRoster:
+    """A hypothetical roster after a trade or add/drop. The caller's roster
+    is never mutated; added entries are flagged as bench so slot-based
+    availability rules (IR/taxi) don't carry over from their old team.
+    """
+    removed = set(remove_player_ids)
+    kept = [e for e in roster.entries if e.player_id not in removed]
+    added = [replace(e, is_starter=False, is_taxi=False, is_reserve=False) for e in add_entries]
+    return replace(roster, entries=kept + added)
+
+
 def optimize_lineup_after_moves(
     roster: ValuedRoster,
     *,
@@ -247,14 +260,9 @@ def optimize_lineup_after_moves(
     nfl_week: int | None = None,
     excluded_player_ids: Collection[str] = (),
 ) -> LineupResult:
-    """The lineup after a hypothetical roster change (a trade, an add/drop).
-    Builds a temporary roster and delegates to optimize_lineup — there is
-    deliberately no second optimization path. The caller's roster is never
-    mutated; the added entries are flagged as bench so slot-based
-    availability rules (IR/taxi) don't carry over from their old team.
+    """The lineup after a hypothetical roster change. Builds the temporary
+    roster (roster_after_moves) and delegates to optimize_lineup — there
+    is deliberately no second optimization path.
     """
-    removed = set(remove_player_ids)
-    kept = [e for e in roster.entries if e.player_id not in removed]
-    added = [replace(e, is_starter=False, is_taxi=False, is_reserve=False) for e in add_entries]
-    hypothetical = replace(roster, entries=kept + added)
+    hypothetical = roster_after_moves(roster, add_entries=add_entries, remove_player_ids=remove_player_ids)
     return optimize_lineup(hypothetical, nfl_week=nfl_week, excluded_player_ids=excluded_player_ids)
