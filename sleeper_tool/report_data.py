@@ -9,6 +9,7 @@ import datetime as dt
 import logging
 from dataclasses import dataclass, field
 
+from sleeper_tool.bye_collision import ByeCollision, describe_bye_collision, plan_bye_collisions, positions_covering
 from sleeper_tool.config import LEAGUES, LeagueInfo, MY_USER_ID
 from sleeper_tool.contender_insurance import (
     InsuranceRecommendation,
@@ -66,6 +67,7 @@ class LeagueReportData:
     lineup: LineupResult | None = None  # my best legal lineup (structural: no bye-week exclusions)
     lineup_leverage: LineupLeverage | None = None
     insurance: list[InsuranceRecommendation] = field(default_factory=list)  # contenders only; also merged into waiver_targets
+    bye_collision: ByeCollision | None = None  # earliest look-ahead week with a Bye Hole; also a time_sensitive note
     error: str | None = None
 
 
@@ -227,6 +229,17 @@ def build_league_report_data(
             waiver_targets, insurance, my_roster, current_week=current_week, deadline_passed=deadline_passed, clog_ids=clog_ids
         )
     time_sensitive = get_time_sensitive_notes(storage, my_roster, current_week=current_week)
+    bye_collision = plan_bye_collisions(my_roster, current_week=current_week, lineup=lineup)
+    if bye_collision is not None:
+        # Next week's hole is this week's waiver move; further out is a heads-up.
+        severity = "medium" if bye_collision.week == (current_week or 0) + 1 else "low"
+        time_sensitive.append(
+            TimeSensitiveNote(f"Week {bye_collision.week} bye hole", describe_bye_collision(bye_collision), severity=severity)
+        )
+        covering = positions_covering(bye_collision)
+        for t in waiver_targets:
+            if t.position in covering:
+                t.reason = f"{t.reason}; would also cover your week {bye_collision.week} bye hole"
     drop_candidates = identify_drop_candidates(my_roster, status_result.status, exclude_ids=proposed_give_ids)
     # A clog that's already a drop candidate is surfaced there; listing him
     # twice under two headings is noise, not extra information.
@@ -252,6 +265,7 @@ def build_league_report_data(
         lineup=lineup,
         lineup_leverage=lineup_leverage,
         insurance=insurance,
+        bye_collision=bye_collision,
     )
 
 
