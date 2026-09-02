@@ -232,9 +232,12 @@ def _waiver_table(targets: list[WaiverTarget]) -> str:
     # for genuinely bad outcomes (a lopsided trade, a high-severity
     # injury) elsewhere on the page; reusing it here read as if the
     # tool's own top waiver pick were a warning.
-    _TIER_CHIP_KIND = {"Must Add": "positive", "Strong Add": "accent", "Moderate": "neutral", "Speculative": "neutral", "Monitor": "neutral"}
+    _TIER_CHIP_KIND = {
+        "Must Add": "positive", "Strong Add": "accent", "Moderate": "neutral", "Speculative": "neutral",
+        "Monitor": "neutral", "Insurance": "caution",
+    }
     rows = []
-    for t in targets[:8]:
+    for t in targets:  # already capped by the engine; insurance rows ride along after the cap
         tier_chip = _chip(t.priority_tier, _TIER_CHIP_KIND.get(t.priority_tier, "neutral"))
         drop = esc(t.drop_candidate.name) if t.drop_candidate else '<span class="muted">—</span>'
         faab = f"{t.suggested_faab_pct}%" if t.suggested_faab_pct is not None else "—"

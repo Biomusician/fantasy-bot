@@ -10,6 +10,12 @@ import logging
 from dataclasses import dataclass, field
 
 from sleeper_tool.config import LEAGUES, LeagueInfo, MY_USER_ID
+from sleeper_tool.contender_insurance import (
+    InsuranceRecommendation,
+    free_agent_candidates,
+    identify_fragile_starters,
+    merge_insurance_into_waiver_targets,
+)
 from sleeper_tool.lineup_leverage import LineupLeverage, build_lineup_leverage
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup
 from sleeper_tool.portfolio_exposure import PortfolioExposure, acquisition_exposure_note, build_portfolio_exposure
@@ -17,7 +23,7 @@ from sleeper_tool.rankings.ff_dynasty_pass import ff_dynasty_status
 from sleeper_tool.roster_analysis import ValuedRoster, build_all_valued_rosters
 from sleeper_tool.roster_clog import RosterClog, identify_roster_clogs
 from sleeper_tool.storage import Storage
-from sleeper_tool.team_status import TeamStatusResult, classify_team_status
+from sleeper_tool.team_status import CONTENDER, TeamStatusResult, classify_team_status
 from sleeper_tool.trade_engine import DropCandidate, TradeProposal, generate_trade_proposals, identify_drop_candidates, value_currency
 from sleeper_tool.valuation import LeagueFormat, ValuationEngine
 from sleeper_tool.waiver_engine import TimeSensitiveNote, WaiverTarget, get_time_sensitive_notes, get_waiver_targets
@@ -59,6 +65,7 @@ class LeagueReportData:
     roster_clogs: list[RosterClog] = field(default_factory=list)  # excludes players already listed as drop candidates
     lineup: LineupResult | None = None  # my best legal lineup (structural: no bye-week exclusions)
     lineup_leverage: LineupLeverage | None = None
+    insurance: list[InsuranceRecommendation] = field(default_factory=list)  # contenders only; also merged into waiver_targets
     error: str | None = None
 
 
@@ -210,6 +217,15 @@ def build_league_report_data(
     waiver_targets = get_waiver_targets(
         storage, engine, league, my_roster, current_week=current_week, waiver_budget=waiver_budget, clog_ids=clog_ids
     )
+    insurance: list[InsuranceRecommendation] = []
+    if status_result.status == CONTENDER:
+        free_agents = free_agent_candidates(storage, engine, league, my_roster)
+        insurance = identify_fragile_starters(my_roster, free_agents, team_status=status_result.status, lineup=lineup)
+        trade_deadline = (league_data.get("settings") or {}).get("trade_deadline")
+        deadline_passed = bool(trade_deadline) and current_week is not None and current_week > int(trade_deadline)
+        waiver_targets = merge_insurance_into_waiver_targets(
+            waiver_targets, insurance, my_roster, current_week=current_week, deadline_passed=deadline_passed, clog_ids=clog_ids
+        )
     time_sensitive = get_time_sensitive_notes(storage, my_roster, current_week=current_week)
     drop_candidates = identify_drop_candidates(my_roster, status_result.status, exclude_ids=proposed_give_ids)
     # A clog that's already a drop candidate is surfaced there; listing him
@@ -235,6 +251,7 @@ def build_league_report_data(
         roster_clogs=roster_clogs,
         lineup=lineup,
         lineup_leverage=lineup_leverage,
+        insurance=insurance,
     )
 
 

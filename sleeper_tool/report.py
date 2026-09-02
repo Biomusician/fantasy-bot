@@ -134,14 +134,14 @@ def _render_trade_proposal(p: TradeProposal, index: int) -> list[str]:
     return lines
 
 
-_TIER_MARK = {"Must Add": "🔴", "Strong Add": "🟠", "Moderate": "🟡", "Speculative": "⚪", "Monitor": "⚪"}
+_TIER_MARK = {"Must Add": "🔴", "Strong Add": "🟠", "Moderate": "🟡", "Speculative": "⚪", "Monitor": "⚪", "Insurance": "🛡️"}
 
 
 def _render_waiver_targets(targets: list[WaiverTarget]) -> list[str]:
     if not targets:
         return ["No standout waiver targets this week."]
     lines = ["| Priority | Player | Pos | Team | Drop | Horizon | FAAB | Why |", "|---|---|---|---|---|---|---|---|"]
-    for t in targets[:8]:
+    for t in targets:  # already capped by the engine; insurance rows ride along after the cap
         mark = _TIER_MARK.get(t.priority_tier, "")
         drop = t.drop_candidate.name if t.drop_candidate else "—"
         faab = f"{t.suggested_faab_pct}%" if t.suggested_faab_pct is not None else "—"
