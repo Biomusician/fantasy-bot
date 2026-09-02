@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from sleeper_tool.config import LEAGUES, LeagueInfo
 from sleeper_tool.formatting import age_str, ordinal_pct
+from sleeper_tool.lineup_leverage import LineupLeverage
 from sleeper_tool.portfolio_exposure import PortfolioExposure
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
 from sleeper_tool.roster_analysis import ValuedRoster
@@ -76,6 +77,31 @@ def _render_roster_snapshot(roster: ValuedRoster, currency: str) -> list[str]:
             "(missing from the player cache) — this snapshot may be incomplete._"
         )
 
+    return lines
+
+
+_DECISION_MARK = {"Toss-Up": "🟡", "Lean Start": "⚪"}
+
+
+def _render_lineup_leverage(lev: LineupLeverage | None, currency: str) -> list[str]:
+    if lev is None or (not lev.close_calls and not lev.bench_surplus):
+        return []
+    g = lev.games_left
+    lines = [f"**Lineup leverage** — best legal lineup projects ~{lev.weekly_starter_points:.0f} pts/week", ""]
+    for d in lev.close_calls:
+        lines.append(
+            f"- {_DECISION_MARK.get(d.label, '')} **{d.label}** at {d.slot}: {d.starter.name} "
+            f"({d.starter_projection / g:.1f}/wk) over {d.alternative.name} ({d.alternative_projection / g:.1f}/wk)"
+            + (" — close enough that matchup should decide" if d.label == "Toss-Up" else "")
+        )
+    for s in lev.bench_surplus:
+        pctl = ordinal_pct(s.value_percentile) if s.value_percentile is not None else "unranked"
+        lines.append(
+            f"- **Bench surplus:** {s.entry.name} ({s.entry.position or '?'}, {pctl} {value_label_for_currency(currency)}) "
+            f"projects at {s.ratio:.0%} of {s.displaced_starter.name} ({s.displaced_slot}) but sits — "
+            "value that could be traded for a starter without costing lineup points"
+        )
+    lines.append("")
     return lines
 
 
@@ -163,6 +189,7 @@ def render_league_section(data: LeagueReportData) -> list[str]:
 
     lines.extend(_render_roster_snapshot(data.roster, data.currency))
     lines.append("")
+    lines.extend(_render_lineup_leverage(data.lineup_leverage, data.currency))
 
     # Time-sensitive alerts lead when there's a high-severity one — a
     # scrolling reader shouldn't have to pass two possibly-empty sections

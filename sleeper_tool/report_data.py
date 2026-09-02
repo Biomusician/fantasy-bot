@@ -10,6 +10,7 @@ import logging
 from dataclasses import dataclass, field
 
 from sleeper_tool.config import LEAGUES, LeagueInfo, MY_USER_ID
+from sleeper_tool.lineup_leverage import LineupLeverage, build_lineup_leverage
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup
 from sleeper_tool.portfolio_exposure import PortfolioExposure, acquisition_exposure_note, build_portfolio_exposure
 from sleeper_tool.rankings.ff_dynasty_pass import ff_dynasty_status
@@ -57,6 +58,7 @@ class LeagueReportData:
     drop_candidates: list[DropCandidate] = field(default_factory=list)
     roster_clogs: list[RosterClog] = field(default_factory=list)  # excludes players already listed as drop candidates
     lineup: LineupResult | None = None  # my best legal lineup (structural: no bye-week exclusions)
+    lineup_leverage: LineupLeverage | None = None
     error: str | None = None
 
 
@@ -215,6 +217,10 @@ def build_league_report_data(
     drop_ids = {d.entry.player_id for d in drop_candidates}
     roster_clogs = [c for c in roster_clogs if c.entry.player_id not in drop_ids]
 
+    lineup_leverage = build_lineup_leverage(my_roster, lineup=lineup, current_week=current_week)
+    if lineup_leverage is not None:
+        _annotate_proposals_with_bench_surplus(proposals, lineup_leverage)
+
     return LeagueReportData(
         league=league,
         fmt_desc=fmt_desc,
@@ -228,7 +234,24 @@ def build_league_report_data(
         drop_candidates=drop_candidates,
         roster_clogs=roster_clogs,
         lineup=lineup,
+        lineup_leverage=lineup_leverage,
     )
+
+
+def _annotate_proposals_with_bench_surplus(proposals: list[TradeProposal], leverage: LineupLeverage) -> None:
+    """A give-piece that's bench surplus is the best kind of give: it
+    costs the starting lineup nothing. Say so on the proposal."""
+    surplus_by_id = {s.entry.player_id: s for s in leverage.bench_surplus}
+    for p in proposals:
+        for e in p.give:
+            s = surplus_by_id.get(e.player_id)
+            if s is None:
+                continue
+            p.rationale_for_me.append(
+                f"Converts bench surplus: {e.name} projects at {s.ratio:.0%} of your weakest eligible starter "
+                f"({s.displaced_starter.name}, {s.displaced_slot}) but can't crack the lineup, so moving him "
+                "costs you no starting production."
+            )
 
 
 def _safe_build_league_report_data(

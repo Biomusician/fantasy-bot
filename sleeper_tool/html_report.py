@@ -10,6 +10,7 @@ from __future__ import annotations
 from html import escape as esc
 
 from sleeper_tool.formatting import age_str
+from sleeper_tool.lineup_leverage import LineupLeverage
 from sleeper_tool.portfolio_exposure import VERY_HIGH, PortfolioExposure
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
@@ -121,6 +122,38 @@ def _roster_section(roster: ValuedRoster, currency: str) -> str:
         html.append(f'<p class="roster-note"><strong>IR/Reserve:</strong> {esc(", ".join(e.name for e in reserve))}</p>')
     html.append("</section>")
     return "".join(html)
+
+
+_DECISION_CHIP_KIND = {"Toss-Up": "caution", "Lean Start": "neutral"}
+
+
+def _lineup_leverage_section(lev: LineupLeverage | None, currency: str) -> str:
+    if lev is None or (not lev.close_calls and not lev.bench_surplus):
+        return ""
+    g = lev.games_left
+    items = []
+    for d in lev.close_calls:
+        hint = " &middot; close enough that matchup should decide" if d.label == "Toss-Up" else ""
+        items.append(
+            f'<li class="alert-item alert-{_DECISION_CHIP_KIND.get(d.label, "neutral")}">'
+            f'{_chip(d.label, _DECISION_CHIP_KIND.get(d.label, "neutral"))} <strong>{esc(d.slot)}</strong>: '
+            f"{esc(d.starter.name)} <span class=\"tabular\">{d.starter_projection / g:.1f}</span>/wk over "
+            f"{esc(d.alternative.name)} <span class=\"tabular\">{d.alternative_projection / g:.1f}</span>/wk{hint}</li>"
+        )
+    for s in lev.bench_surplus:
+        pctl = f"{s.value_percentile:.0f}{_ordsuffix(s.value_percentile)} pctl" if s.value_percentile is not None else "unranked"
+        items.append(
+            f'<li class="alert-item">{_chip("Bench surplus", "accent")} <strong>{esc(s.entry.name)}</strong> '
+            f"({esc(s.entry.position or '?')}, {pctl} {esc(value_label_for_currency(currency))}) projects at "
+            f"{s.ratio:.0%} of {esc(s.displaced_starter.name)} ({esc(s.displaced_slot)}) but sits "
+            '<div class="drop-reasons">Value that could be traded for a starter without costing lineup points</div></li>'
+        )
+    return f"""
+    <section class="panel-block">
+      <h3>Lineup leverage <span class="muted">&middot; best legal lineup ~{lev.weekly_starter_points:.0f} pts/week</span></h3>
+      <ul class="alert-list">{"".join(items)}</ul>
+    </section>
+    """
 
 
 _ACCEPTANCE_CHIP_KIND = {"High": "positive", "Good": "positive", "Moderate": "neutral", "Low": "caution", "Very Low": "negative"}
@@ -329,7 +362,11 @@ def _league_panel(data: LeagueReportData) -> str:
         # lineup lock — don't make a scrolling reader pass two sections
         # that may both be empty-state ("no trades this week") to reach it.
         ordered = [alerts_section, trades_and_waivers] if has_high_alert else [trades_and_waivers, alerts_section]
-        body = _roster_section(data.roster, data.currency) + "".join(ordered)
+        body = (
+            _roster_section(data.roster, data.currency)
+            + _lineup_leverage_section(data.lineup_leverage, data.currency)
+            + "".join(ordered)
+        )
 
     return f'<div class="panel" id="panel-{slug}" role="tabpanel">{header}{body}</div>'
 
