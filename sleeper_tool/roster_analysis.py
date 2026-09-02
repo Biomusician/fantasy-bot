@@ -48,6 +48,7 @@ class ValuedRoster:
     wins: int = 0
     losses: int = 0
     ties: int = 0
+    points_for: float = 0.0  # season points scored (Sleeper's fpts + fpts_decimal/100) — the default standings tiebreak
     waiver_budget_used: int = 0  # FAAB spent so far this season, from Sleeper roster.settings
     skipped_player_count: int = 0  # roster player_ids not found in the player cache this run (see build_valued_roster)
 
@@ -143,6 +144,7 @@ def build_valued_roster(
         wins=settings.get("wins", 0) or 0,
         losses=settings.get("losses", 0) or 0,
         ties=settings.get("ties", 0) or 0,
+        points_for=(settings.get("fpts", 0) or 0) + (settings.get("fpts_decimal", 0) or 0) / 100,
     )
 
 

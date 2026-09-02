@@ -1,5 +1,8 @@
 from conftest import make_entry, make_league_info
 
+from sleeper_tool.html_report import _league_panel
+from sleeper_tool.playoff_leverage import PlayoffLeverage
+from sleeper_tool.report import render_league_section
 from sleeper_tool.report_data import LeagueReportData, _safe_build_league_report_data, build_priority_actions
 from sleeper_tool.trade_engine import DropCandidate, TradeProposal
 from sleeper_tool.waiver_engine import TimeSensitiveNote, WaiverTarget
@@ -115,6 +118,43 @@ def test_build_priority_actions_ranks_by_quality_not_league_order():
     headlines = [a.headline for a in actions]
     assert any("BestRival" in h for h in headlines), "the objectively best trade must survive the cap regardless of league order"
     assert actions[0].headline == next(h for h in headlines if "BestRival" in h)  # and it should rank first
+
+
+def _playoff(label, *, deadline_window):
+    return PlayoffLeverage(
+        label=label, wins=4, losses=4, ties=0, games_remaining=6, seed=5, playoff_teams=4, cut_wins=4,
+        deadline_window=deadline_window, trade_deadline_week=11, reason="4-4, seed 5 of 8",
+    )
+
+
+def test_deadline_window_bubble_team_trades_lead_the_trade_list_and_say_why():
+    calm = _league_data(league=make_league_info(name="Calm League"), proposals=[_trade("rivalA", "High", "High")])
+    urgent = _league_data(
+        league=make_league_info(name="Urgent League"),
+        proposals=[_trade("rivalB", "Good", "Medium")],  # objectively weaker than Calm's High/High
+        playoff=_playoff("Bubble", deadline_window=True),
+    )
+    actions = build_priority_actions([calm, urgent])
+    assert actions[0].league_name == "Urgent League"
+    assert actions[0].detail.startswith("Deadline Window (Bubble, deadline week 11)")
+    # Comfortable teams get no boost even inside the window.
+    comfortable = _league_data(
+        league=make_league_info(name="Comfy League"), proposals=[_trade("rivalC", "Good", "Medium")],
+        playoff=_playoff("Comfortable", deadline_window=True),
+    )
+    actions = build_priority_actions([calm, comfortable])
+    assert actions[0].league_name == "Calm League"
+
+
+def test_playoff_picture_renders_in_both_outputs_only_when_present():
+    # drafted=False: the status/playoff header lines render before the
+    # roster sections, which is all this checks.
+    ld = _league_data(playoff=_playoff("Long Shot", deadline_window=True), drafted=False)
+    md = "\n".join(render_league_section(ld))
+    assert "**Playoff picture: Long Shot** · **Deadline Window** — 4-4, seed 5 of 8" in md
+    html = _league_panel(ld)
+    assert "Playoffs: Long Shot" in html and "Deadline Window" in html
+    assert "Playoff" not in "\n".join(render_league_section(_league_data(drafted=False)))
 
 
 def test_build_priority_actions_reserves_slots_for_waivers_and_drops_even_when_trades_fill_the_cap():

@@ -22,6 +22,7 @@ from sleeper_tool.league_economy import LeagueEconomy, build_league_economy
 from sleeper_tool.lineup_leverage import LineupLeverage, build_lineup_leverage
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup
 from sleeper_tool.move_impact import PREVIEWED_WAIVER_TIERS, MoveImpact, preview_add_drop, preview_trade, snapshot_roster
+from sleeper_tool.playoff_leverage import PlayoffLeverage, classify_playoff_leverage
 from sleeper_tool.portfolio_exposure import PortfolioExposure, acquisition_exposure_note, build_portfolio_exposure
 from sleeper_tool.rankings.ff_dynasty_pass import ff_dynasty_status
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster, build_all_valued_rosters
@@ -74,6 +75,7 @@ class LeagueReportData:
     league_economy: LeagueEconomy | None = None  # per-manager trade/pick/position tendencies, current season
     trade_impacts: list[MoveImpact | None] = field(default_factory=list)  # parallel to proposals; None = below preview bar
     waiver_impacts: dict[str, MoveImpact] = field(default_factory=dict)  # by waiver target player_id (Must Add only)
+    playoff: PlayoffLeverage | None = None  # standings position vs the playoff cut; None until 3 games are played
     error: str | None = None
 
 
@@ -117,6 +119,7 @@ _CONFIDENCE_RANK = {"High": 0, "Medium": 1, "Low": 2}
 # floor: alerts are already sorted first, and trades routinely fill the
 # rest of the budget on their own.
 _KIND_FLOOR = {"waiver": 2, "roster": 2}
+DEADLINE_WINDOW_RANK_BOOST = 100  # sorts a deadline-window team's trades ahead of every other trade action
 
 
 def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int = 8) -> list[PriorityAction]:
@@ -147,16 +150,19 @@ def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int 
                     headline=f"{note.player_name} — {note.note}",
                     detail=f"{ld.league.name} — check before this week's lineup locks.",
                 ))
+        # A Bubble / Long Shot team inside its trade deadline window: the
+        # trades already generated for it are the time-boxed ones — they
+        # lead the trade list and say why. Nothing new is generated.
+        deadline_urgent = ld.playoff is not None and ld.playoff.urgent
         for p in ld.proposals:
             if p.acceptance_rating in ("High", "Good") and p.confidence in ("High", "Medium"):
                 tier_rank = 0 if p.acceptance_rating == "High" else 1
-                actions.append(PriorityAction(
-                    league_name=ld.league.name, kind="trade",
-                    headline=p.summary_line(),
-                    detail=f"{ld.league.name} — {p.acceptance_rating.lower()} acceptance likelihood, "
-                    f"{p.trade_type.replace('_', ' ')}.",
-                    rank=tier_rank * 10 + _CONFIDENCE_RANK.get(p.confidence, 2),
-                ))
+                detail = f"{ld.league.name} — {p.acceptance_rating.lower()} acceptance likelihood, {p.trade_type.replace('_', ' ')}."
+                rank = tier_rank * 10 + _CONFIDENCE_RANK.get(p.confidence, 2)
+                if deadline_urgent:
+                    detail = f"Deadline Window ({ld.playoff.label}, deadline week {ld.playoff.trade_deadline_week}) — {detail}"
+                    rank -= DEADLINE_WINDOW_RANK_BOOST
+                actions.append(PriorityAction(league_name=ld.league.name, kind="trade", headline=p.summary_line(), detail=detail, rank=rank))
         for t in ld.waiver_targets:
             if t.priority_tier == "Must Add":
                 drop_note = f", drop {t.drop_candidate.name}" if t.drop_candidate else ""
@@ -264,6 +270,13 @@ def build_league_report_data(
     )
     _annotate_proposals_with_league_economy(proposals, league_economy, rosters)
 
+    settings = league_data.get("settings") or {}
+    playoff = classify_playoff_leverage(
+        my_roster.roster_id, rosters,
+        playoff_teams=settings.get("playoff_teams"), playoff_week_start=settings.get("playoff_week_start"),
+        trade_deadline=settings.get("trade_deadline"), current_week=current_week,
+    )
+
     before = snapshot_roster(
         my_roster, rosters, current_week=current_week, storage=storage, engine=engine, lineup=lineup, status=status_result.status
     )
@@ -306,6 +319,7 @@ def build_league_report_data(
         league_economy=league_economy,
         trade_impacts=trade_impacts,
         waiver_impacts=waiver_impacts,
+        playoff=playoff,
     )
 
 

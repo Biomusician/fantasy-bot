@@ -241,6 +241,10 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     if data.team_status:
         lines.append(f"**Team status: {data.team_status.status.upper()}** — {data.team_status.reason}")
         lines.append("")
+    if data.playoff:
+        window = " · **Deadline Window**" if data.playoff.deadline_window else ""
+        lines.append(f"**Playoff picture: {data.playoff.label}**{window} — {data.playoff.reason}")
+        lines.append("")
 
     if not data.drafted:
         lines.append("**Not drafted yet this season** — check back after your draft for roster/trade/waiver analysis.")

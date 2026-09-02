@@ -128,6 +128,7 @@ def make_roster(
     wins: int = 0,
     losses: int = 0,
     ties: int = 0,
+    points_for: float = 0.0,
 ) -> ValuedRoster:
     return ValuedRoster(
         league=league if league is not None else make_league_info(),
@@ -140,4 +141,5 @@ def make_roster(
         wins=wins,
         losses=losses,
         ties=ties,
+        points_for=points_for,
     )

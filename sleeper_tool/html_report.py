@@ -375,6 +375,7 @@ def _alerts_list(notes: list[TimeSensitiveNote]) -> str:
 
 
 _STATUS_CHIP_KIND = {"contender": "positive", "middling": "neutral", "rebuild": "caution"}
+_PLAYOFF_CHIP_KIND = {"Comfortable": "positive", "Bubble": "caution", "Long Shot": "caution", "Out": "negative"}
 
 
 def _league_panel(data: LeagueReportData) -> str:
@@ -385,12 +386,19 @@ def _league_panel(data: LeagueReportData) -> str:
         kind = _STATUS_CHIP_KIND.get(data.team_status.status, "neutral")
         status_chip = _chip(data.team_status.status.upper(), kind)
         status_reason = f'<p class="muted status-reason">{esc(data.team_status.reason)}</p>'
+    playoff_chip = ""
+    playoff_reason = ""
+    if data.playoff:
+        playoff_chip = _chip("Playoffs: " + data.playoff.label, _PLAYOFF_CHIP_KIND.get(data.playoff.label, "neutral"))
+        if data.playoff.deadline_window:
+            playoff_chip += _chip("Deadline Window", "accent")
+        playoff_reason = f'<p class="muted status-reason">{esc(data.playoff.reason)}</p>'
     header = f"""
     <header class="panel-header">
       <h2>{esc(data.league.name)}</h2>
-      <div class="panel-tags">{_chip(data.league.kind.capitalize(), "accent")}{_chip(data.fmt_desc, "neutral") if data.fmt_desc else ""}{status_chip}</div>
+      <div class="panel-tags">{_chip(data.league.kind.capitalize(), "accent")}{_chip(data.fmt_desc, "neutral") if data.fmt_desc else ""}{status_chip}{playoff_chip}</div>
     </header>
-    {status_reason}
+    {status_reason}{playoff_reason}
     """
 
     if data.error:
