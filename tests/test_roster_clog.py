@@ -75,10 +75,11 @@ def test_ir_taxi_trending_and_excluded_players_are_skipped():
     assert clogs == []
 
 
-def test_unranked_or_single_source_players_are_not_flagged_off_a_data_gap():
+def test_unranked_unprojected_or_single_source_players_are_not_flagged_off_a_data_gap():
     entries = _base_entries() + [
         _p("unranked", "RB", 40, dyn_rank=None),
         _p("single", "RB", 40, dyn_rank=260, sources=["ktc"]),
+        _p("unprojected", "RB", None, dyn_rank=260),  # 0.0 would "project below everyone"
     ]
     assert identify_roster_clogs(_roster(entries)) == []
 

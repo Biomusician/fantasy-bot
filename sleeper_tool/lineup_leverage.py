@@ -48,7 +48,15 @@ class StartSitDecision:
     alternative: RosterEntry | None
     alternative_projection: float
     label: str
-    gap_ratio: float | None  # (starter - alternative) / starter; None when there's no alternative
+    games_left: int  # divisor for the per-week numbers renderers show
+
+    @property
+    def starter_weekly(self) -> float:
+        return self.starter_projection / self.games_left
+
+    @property
+    def alternative_weekly(self) -> float:
+        return self.alternative_projection / self.games_left
 
 
 @dataclass
@@ -96,6 +104,7 @@ def build_lineup_leverage(
     by_id = {e.player_id: e for e in roster.entries}
     currency = value_currency(roster)
     bench = [by_id[pid] for pid in lineup.bench_player_ids]
+    games_left = games_remaining(current_week)
 
     decisions: list[StartSitDecision] = []
     for a in lineup.assignments:
@@ -105,13 +114,12 @@ def build_lineup_leverage(
         if a.projection <= 0 and not any(projection_of(e) > 0 for e in alternatives):
             continue  # no projection data on either side — nothing honest to say
         if not alternatives:
-            decisions.append(StartSitDecision(a.slot, starter, a.projection, None, 0.0, CLEAR_START, None))
+            decisions.append(StartSitDecision(a.slot, starter, a.projection, None, 0.0, CLEAR_START, games_left))
             continue
         best_alt = max(alternatives, key=projection_of)
         alt_proj = projection_of(best_alt)
-        gap = (a.projection - alt_proj) / a.projection if a.projection > 0 else None
         decisions.append(
-            StartSitDecision(a.slot, starter, a.projection, best_alt, alt_proj, decision_label(a.projection, alt_proj), gap)
+            StartSitDecision(a.slot, starter, a.projection, best_alt, alt_proj, decision_label(a.projection, alt_proj), games_left)
         )
 
     surplus: list[BenchSurplus] = []
@@ -140,7 +148,6 @@ def build_lineup_leverage(
             )
     surplus.sort(key=lambda s: (-(s.value_percentile or 0), -s.ratio))
 
-    games_left = games_remaining(current_week)
     return LineupLeverage(
         lineup=lineup,
         decisions=decisions,

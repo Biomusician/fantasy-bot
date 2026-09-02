@@ -83,7 +83,8 @@ def _holes_for_week(
         filler = entrants[i]
         if filler.projection < BYE_HOLE_REPLACEMENT_RATIO * a.projection:
             holes.append(ByeHole(week, a.slot, starter, a.projection, by_id[filler.player_id], filler.projection))
-    holes.sort(key=lambda h: baseline.slot_by_player[h.normal_starter.player_id])  # stable, slot-labelled order
+    slot_index = {a.player_id: a.slot_index for a in baseline.assignments}
+    holes.sort(key=lambda h: slot_index[h.normal_starter.player_id])  # the league's slot order
     return holes, [by_id[a.player_id] for a in displaced]
 
 

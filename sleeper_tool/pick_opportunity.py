@@ -33,10 +33,11 @@ from dataclasses import dataclass, field
 from statistics import median
 
 from sleeper_tool.draft_picks import OwnedPick
+from sleeper_tool.formatting import ordinal
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup
 from sleeper_tool.roster_analysis import ValuedRoster
-from sleeper_tool.team_status import REBUILD
-from sleeper_tool.trade_engine import DYNASTY_CURRENCY, _need_percentile, value_currency
+from sleeper_tool.team_status import REBUILD, _avg_percentile
+from sleeper_tool.trade_engine import DYNASTY_CURRENCY, _pick_key, value_currency
 from sleeper_tool.valuation import CORE_SKILL_POSITIONS
 
 BOTTOM_UNITS = 3
@@ -73,13 +74,7 @@ class PositionUnit:
         if self.starters == 0:
             return f"{self.position}: no eligible starter"
         age = f"avg age {self.avg_age:.1f} vs league {self.league_median_age:.1f}" if self.avg_age is not None and self.league_median_age is not None else "age n/a"
-        return f"{self.position}: {self.strength_rank}{_ord(self.strength_rank)} of {self.teams} in strength, {age}"
-
-
-def _ord(n: int) -> str:
-    if 10 <= n % 100 <= 20:
-        return "th"
-    return {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+        return f"{self.position}: {ordinal(self.strength_rank)} of {self.teams} in strength, {age}"
 
 
 @dataclass
@@ -100,33 +95,38 @@ class PickOpportunity:
     assessments: list[PickAssessment]
     weak_aging_positions: list[str] = field(default_factory=list)
 
+    def assessment_for(self, pick: OwnedPick) -> PickAssessment | None:
+        return next((a for a in self.assessments if _pick_key(a.pick) == _pick_key(pick)), None)
+
     def classification_for(self, pick: OwnedPick) -> str | None:
-        return next(
-            (a.classification for a in self.assessments if (a.pick.season, a.pick.round, a.pick.original_roster_id) == (pick.season, pick.round, pick.original_roster_id)),
-            None,
-        )
+        a = self.assessment_for(pick)
+        return a.classification if a else None
 
 
 def _unit_stats(roster: ValuedRoster, lineup: LineupResult, position: str, currency: str) -> tuple[int, float | None, float | None]:
     starters = [e for e in roster.entries if e.position == position and e.player_id in lineup.starter_ids]
     ages = [e.age for e in starters if e.age is not None]
-    pctls = [p for p in (_need_percentile(e.value, currency) for e in starters) if p is not None]
-    return len(starters), (sum(ages) / len(ages) if ages else None), (sum(pctls) / len(pctls) if pctls else None)
+    # Same mean-of-within-position-percentile that team_status ranks
+    # roster strength on, so "bottom-three unit" and "weak roster" agree.
+    return len(starters), (sum(ages) / len(ages) if ages else None), _avg_percentile(starters, currency)
 
 
 def position_units(
-    my_roster: ValuedRoster, rosters: dict[int, ValuedRoster], *, lineups: dict[int, LineupResult] | None = None
+    my_roster: ValuedRoster, rosters: dict[int, ValuedRoster], *, my_lineup: LineupResult | None = None
 ) -> list[PositionUnit]:
     currency = value_currency(my_roster)
-    lineups = lineups or {}
+    lineups: dict[int, LineupResult] = {}
+    if my_lineup is not None:
+        lineups[my_roster.roster_id] = my_lineup
     units: list[PositionUnit] = []
     for pos in CORE_SKILL_POSITIONS:
         stats: dict[int, tuple[int, float | None, float | None]] = {}
         for rid, r in rosters.items():
             if not r.entries:
                 continue
-            lineup = lineups.get(rid) or optimize_lineup(r)
-            lineups[rid] = lineup
+            lineup = lineups.get(rid)
+            if lineup is None:
+                lineup = lineups[rid] = optimize_lineup(r)
             stats[rid] = _unit_stats(r, lineup, pos, currency)
         ages = [a for _, a, _ in stats.values() if a is not None]
         league_median_age = median(ages) if ages else None
@@ -144,11 +144,11 @@ def assess_picks(
     my_picks: list[OwnedPick],
     *,
     team_status: str,
-    lineups: dict[int, LineupResult] | None = None,
+    my_lineup: LineupResult | None = None,
 ) -> PickOpportunity | None:
     if value_currency(my_roster) != DYNASTY_CURRENCY or not my_picks:
         return None
-    units = position_units(my_roster, rosters, lineups=lineups)
+    units = position_units(my_roster, rosters, my_lineup=my_lineup)
     weak_aging = [u.position for u in units if u.weak_aging]
     bottom = [u.position for u in units if u.bottom_three]
     assessments: list[PickAssessment] = []

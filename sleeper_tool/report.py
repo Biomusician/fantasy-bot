@@ -114,12 +114,11 @@ _DECISION_MARK = {"Toss-Up": "🟡", "Lean Start": "⚪"}
 def _render_lineup_leverage(lev: LineupLeverage | None, currency: str) -> list[str]:
     if lev is None or (not lev.close_calls and not lev.bench_surplus):
         return []
-    g = lev.games_left
     lines = [f"**Lineup leverage** — best legal lineup projects ~{lev.weekly_starter_points:.0f} pts/week", ""]
     for d in lev.close_calls:
         lines.append(
             f"- {_DECISION_MARK.get(d.label, '')} **{d.label}** at {d.slot}: {d.starter.name} "
-            f"({d.starter_projection / g:.1f}/wk) over {d.alternative.name} ({d.alternative_projection / g:.1f}/wk)"
+            f"({d.starter_weekly:.1f}/wk) over {d.alternative.name} ({d.alternative_weekly:.1f}/wk)"
             + (" — close enough that matchup should decide" if d.label == "Toss-Up" else "")
         )
     for s in lev.bench_surplus:

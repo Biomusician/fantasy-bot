@@ -29,10 +29,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from sleeper_tool.valuation import weekly_projection
+
 logger = logging.getLogger(__name__)
 
 VALUATION_DELTA_RATIO = 0.15
 SNAPSHOTS_KEPT = 2
+# Bump when the snapshot's meaning changes (e.g. what "value" is); an
+# older-schema baseline is ignored rather than diffed into nonsense.
+SNAPSHOT_SCHEMA = 2
 DEFAULT_SNAPSHOT_DIR = Path(__file__).resolve().parent.parent / "data" / "run_snapshots"
 
 STATUS = "status"
@@ -70,6 +75,17 @@ class DecisionDelta:
 # }
 
 
+def _stable_value(pv, currency: str, current_week: int | None) -> float | None:
+    """A value that means the same thing on two different days. Dynasty
+    value is a stable number; redraft's proj_points is a rest-of-season
+    total that shrinks every week by construction (a week-13 vs week-12
+    comparison is -17% for every player), so redraft uses the per-game
+    projection instead."""
+    if currency == "dynasty":
+        return pv.dynasty_value
+    return weekly_projection(pv, current_week)
+
+
 def build_snapshot(report) -> dict[str, Any]:
     """`report` is a WeeklyReportData (duck-typed to avoid importing
     report_data here — report_data imports this module)."""
@@ -77,18 +93,18 @@ def build_snapshot(report) -> dict[str, Any]:
     for ld in report.leagues:
         if ld.error or not ld.drafted or ld.roster is None:
             continue
-        from sleeper_tool.trade_engine import value_for_currency  # local: keeps this module import-light
-
         leagues[ld.league.league_id] = {
             "name": ld.league.name,
             "team_status": ld.team_status.status if ld.team_status else None,
             "trade_targets": {e.player_id: e.name for p in ld.proposals for e in p.receive},
             "waiver_targets": {t.player_id: t.name for t in ld.waiver_targets},
             "roster": {
-                e.player_id: {"name": e.name, "value": value_for_currency(e.value, ld.currency)} for e in ld.roster.entries
+                e.player_id: {"name": e.name, "value": _stable_value(e.value, ld.currency, report.current_week)}
+                for e in ld.roster.entries
             },
         }
     return {
+        "schema": SNAPSHOT_SCHEMA,
         "generated_at": report.generated_at.isoformat(),
         "current_week": report.current_week,
         "leagues": leagues,
@@ -97,30 +113,48 @@ def build_snapshot(report) -> dict[str, Any]:
 
 
 def is_complete_run(report, sync_failures: int = 0) -> bool:
-    return sync_failures == 0 and not any(ld.error for ld in report.leagues)
+    """Every league synced, none errored, and no roster was built with a
+    player missing from the player cache — a roster short one player
+    would make the next delta report him as 'joined your roster'."""
+    if sync_failures or any(ld.error for ld in report.leagues):
+        return False
+    return not any(ld.roster is not None and ld.roster.skipped_player_count for ld in report.leagues)
+
+
+def _snapshot_date(snapshot: dict[str, Any]) -> str:
+    return snapshot["generated_at"][:10]  # YYYY-MM-DD
 
 
 def save_snapshot(snapshot: dict[str, Any], snapshot_dir: Path = DEFAULT_SNAPSHOT_DIR) -> Path:
+    """One file per UTC day, overwritten by a same-day re-run — so running
+    the pipeline twice in a morning is idempotent and never unlinks the
+    previous day's baseline. Only the SNAPSHOTS_KEPT newest days survive."""
     snapshot_dir.mkdir(parents=True, exist_ok=True)
-    stamp = snapshot["generated_at"].replace(":", "").replace("-", "").replace("+", "_")
-    path = snapshot_dir / f"{stamp}.json"
+    path = snapshot_dir / f"{_snapshot_date(snapshot).replace('-', '')}.json"
     path.write_text(json.dumps(snapshot, indent=1), encoding="utf-8")
     for old in sorted(snapshot_dir.glob("*.json"))[:-SNAPSHOTS_KEPT]:
         old.unlink()
     return path
 
 
-def load_latest_snapshot(snapshot_dir: Path = DEFAULT_SNAPSHOT_DIR) -> dict[str, Any] | None:
+def load_latest_snapshot(snapshot_dir: Path = DEFAULT_SNAPSHOT_DIR, *, before_date: str | None = None) -> dict[str, Any] | None:
+    """The newest snapshot, skipping any from `before_date` (YYYY-MM-DD) —
+    pass today so a same-day re-run still diffs against yesterday."""
     if not snapshot_dir.exists():
         return None
-    paths = sorted(snapshot_dir.glob("*.json"))
-    if not paths:
-        return None
-    try:
-        return json.loads(paths[-1].read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        logger.warning("Ignoring unreadable snapshot %s: %s", paths[-1], exc)
-        return None
+    for path in sorted(snapshot_dir.glob("*.json"), reverse=True):
+        if before_date is not None and path.stem == before_date.replace("-", ""):
+            continue
+        try:
+            snapshot = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning("Ignoring unreadable snapshot %s: %s", path, exc)
+            return None
+        if snapshot.get("schema") != SNAPSHOT_SCHEMA:
+            logger.warning("Ignoring snapshot %s: schema %s, expected %s", path, snapshot.get("schema"), SNAPSHOT_SCHEMA)
+            return None
+        return snapshot
+    return None
 
 
 def _relative_move(old: float | None, new: float | None) -> float | None:

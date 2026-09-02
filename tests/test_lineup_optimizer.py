@@ -80,14 +80,14 @@ def test_bye_week_exclusion_only_applies_when_a_week_is_given():
     assert optimize_lineup(r, nfl_week=8).slot_by_player == {"rb1": "RB"}
 
 
-def test_ir_taxi_out_and_suspended_players_are_unavailable_but_questionable_is_not():
+def test_ir_taxi_inactive_and_suspended_players_are_unavailable_but_questionable_is_not():
     r = _roster(
         [
             _player("ir", "RB", 300, is_reserve=True),
             _player("taxi", "RB", 290, is_taxi=True),
-            _player("out", "RB", 280, injury_status="Out"),
             _player("sus", "RB", 270, injury_status="Sus"),
             _player("nfi", "RB", 260, status="Non Football Injury"),
+            _player("holdout", "RB", 250, status="Inactive"),
             _player("q", "RB", 100, injury_status="Questionable"),
         ],
         positions=("RB", "BN"),
@@ -97,10 +97,27 @@ def test_ir_taxi_out_and_suspended_players_are_unavailable_but_questionable_is_n
     assert result.unavailable == {
         "ir": "in an IR/reserve slot",
         "taxi": "on the taxi squad",
-        "out": "injury status Out",
         "sus": "injury status Sus",
         "nfi": "roster status Non Football Injury",
+        "holdout": "roster status Inactive",
     }
+
+
+def test_game_day_out_only_excludes_from_a_this_week_lineup():
+    # "Out" is a one-week tag: the structural lineup (what bye planning,
+    # insurance and leverage build on) keeps him; a this-week lineup drops him.
+    r = _roster([_player("out", "RB", 280, injury_status="Out"), _player("rb2", "RB", 100)], positions=("RB", "BN"))
+    assert optimize_lineup(r).slot_by_player == {"out": "RB"}
+    this_week = optimize_lineup(r, exclude_game_day_out=True)
+    assert this_week.slot_by_player == {"rb2": "RB"}
+    assert this_week.unavailable == {"out": "ruled out this week"}
+
+
+def test_empty_roster_positions_is_refused_not_silently_a_zero_slot_lineup():
+    r = _roster([_player("rb1", "RB", 200)], positions=())
+    with pytest.raises(UnsupportedSlotError):
+        optimize_lineup(r)
+    assert starter_slots_for(_roster([], positions=("RB", None, "BN"))) == ["RB"]  # a null entry is skipped
 
 
 def test_unprojected_player_fills_a_required_slot_but_loses_to_any_projected_player():

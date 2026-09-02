@@ -13,29 +13,49 @@ the waiver pool has thinned. The test, per projected starter:
      produces, the slot is fragile.
   3. Fragile only matters if it's fixable from waivers: the best free
      agent who, added to the roster-without-him, restores at least
-     INSURANCE_MIN_IMPROVEMENT (15%) of the replacement production. The
-     top few free agents by projection at his position are tried — the
-     best one dominates in practice, the rest guard against an
-     eligibility edge case.
+     INSURANCE_MIN_IMPROVEMENT (15%) of the replacement production. Free
+     agents at his position are tried best-projection-first and the loop
+     stops as soon as the next one's projection can't beat the best
+     restoration found (adding a player can raise the lineup by at most
+     his own projection).
+
+Free agents carry their real Sleeper injury/status fields, so the
+optimizer's own availability rules apply to them — an IR/PUP player who
+still shows status "Active" can't be recommended as cover.
 
 Output is capped at MAX_INSURANCE_PER_TEAM, most fragile first, and fed
-into the waiver list as "Insurance" targets, ranked below the normal
-high-upside adds unless the league's trade deadline has passed (at
-which point depth can no longer be bought by trade). Contenders only —
-a rebuild should be spending roster spots on upside, not on backups.
+into the waiver list as INSURANCE-tier targets (one row per candidate,
+with a FAAB suggestion in FAAB leagues), ranked below the normal
+high-upside adds unless the league's trade deadline has passed (at which
+point depth can no longer be bought by trade). Contenders only — a
+rebuild should be spending roster spots on upside, not on backups.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from sleeper_tool.config import LeagueInfo
-from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup, optimize_lineup_after_moves, projection_of
+from sleeper_tool.lineup_optimizer import (
+    LONG_TERM_INJURY_STATUSES,
+    LineupResult,
+    optimize_lineup,
+    optimize_lineup_after_moves,
+    projection_of,
+    unavailability_reason,
+)
 from sleeper_tool.roster_analysis import SKILL_POSITIONS, RosterEntry, ValuedRoster, player_name
 from sleeper_tool.storage import Storage
 from sleeper_tool.team_status import CONTENDER
 from sleeper_tool.trade_engine import identify_needs, value_currency
-from sleeper_tool.valuation import PlayerValue, ValuationEngine, games_remaining
-from sleeper_tool.waiver_engine import STASH, WaiverTarget, _find_drop_candidate, get_rostered_player_ids
+from sleeper_tool.valuation import ValuationEngine, games_remaining
+from sleeper_tool.waiver_engine import (
+    INSURANCE,
+    STASH,
+    WaiverTarget,
+    _find_drop_candidate,
+    _suggested_faab_pct,
+    get_rostered_player_ids,
+)
 
 FRAGILE_REPLACEMENT_RATIO = 0.65  # effective replacement / starter projection under this = Fragile
 INSURANCE_MIN_IMPROVEMENT = 0.15  # free agent must restore at least this fraction of the replacement production
@@ -43,24 +63,6 @@ MAX_INSURANCE_PER_TEAM = 2
 FREE_AGENTS_TRIED_PER_POSITION = 5
 
 FRAGILE = "Fragile"
-INSURANCE_TIER = "Insurance"  # a WaiverTarget.priority_tier value alongside waiver_engine's own tiers
-
-
-@dataclass
-class FreeAgent:
-    player_id: str
-    name: str
-    position: str | None
-    team: str | None
-    years_exp: int | None
-    value: PlayerValue
-
-    def as_entry(self) -> RosterEntry:
-        return RosterEntry(
-            player_id=self.player_id, name=self.name, position=self.position, team=self.team, age=None,
-            years_exp=self.years_exp, injury_status=None, status="Active",
-            is_starter=False, is_taxi=False, is_reserve=False, value=self.value,
-        )
 
 
 @dataclass
@@ -69,37 +71,43 @@ class InsuranceRecommendation:
     slot: str
     starter_projection: float
     replacement_projection: float  # effective, after re-optimizing without him
-    candidate: FreeAgent
+    candidate: RosterEntry  # the free agent, as a bench-flagged entry
     restored_projection: float  # effective replacement with the candidate added
-    label: str = FRAGILE
 
     @property
     def replacement_ratio(self) -> float:
         return self.replacement_projection / self.starter_projection if self.starter_projection else 0.0
 
 
-def free_agent_candidates(storage: Storage, engine: ValuationEngine, league: LeagueInfo, roster: ValuedRoster) -> list[FreeAgent]:
-    """Every unrostered, active, NFL-employed skill-position player with a
-    projection in this league's format. A few hundred value lookups per
-    league — cheap, and no network."""
+def free_agent_candidates(storage: Storage, engine: ValuationEngine, league: LeagueInfo, roster: ValuedRoster) -> list[RosterEntry]:
+    """Every unrostered, startable, NFL-employed skill-position player with a
+    projection in this league's format, as bench-flagged RosterEntries so
+    the optimizer treats them exactly like rostered players. A few hundred
+    cached lookups per league — no network."""
     rostered = get_rostered_player_ids(storage, league)
-    pool: list[FreeAgent] = []
+    pool: list[RosterEntry] = []
     for pid, pdata in storage.get_all_players().items():
         if pid in rostered or pdata.get("position") not in SKILL_POSITIONS or not pdata.get("team"):
             continue
-        if pdata.get("status") not in (None, "Active"):
+        if pdata.get("status") not in (None, "Active") or pdata.get("injury_status") in LONG_TERM_INJURY_STATUSES:
             continue
         name = player_name(pdata)
         value = engine.value_player(name, roster.fmt, pdata.get("position"))
         if value.proj_points is None:
             continue
-        pool.append(FreeAgent(pid, name, pdata.get("position"), pdata.get("team"), pdata.get("years_exp"), value))
+        entry = RosterEntry(
+            player_id=pid, name=name, position=pdata.get("position"), team=pdata.get("team"), age=pdata.get("age"),
+            years_exp=pdata.get("years_exp"), injury_status=pdata.get("injury_status"), status=pdata.get("status"),
+            is_starter=False, is_taxi=False, is_reserve=False, value=value,
+        )
+        if unavailability_reason(entry, None) is None:
+            pool.append(entry)
     return pool
 
 
 def identify_fragile_starters(
     roster: ValuedRoster,
-    free_agents: list[FreeAgent],
+    free_agents: list[RosterEntry],
     *,
     team_status: str,
     lineup: LineupResult | None = None,
@@ -110,8 +118,8 @@ def identify_fragile_starters(
     lineup = lineup if lineup is not None else optimize_lineup(roster)
     by_id = {e.player_id: e for e in roster.entries}
     baseline = lineup.total_projected_points
-    fa_by_position: dict[str, list[FreeAgent]] = {}
-    for fa in sorted(free_agents, key=lambda f: -projection_of(f.as_entry())):
+    fa_by_position: dict[str, list[RosterEntry]] = {}
+    for fa in sorted(free_agents, key=lambda f: -projection_of(f)):
         fa_by_position.setdefault(fa.position or "", []).append(fa)
 
     found: list[InsuranceRecommendation] = []
@@ -123,9 +131,11 @@ def identify_fragile_starters(
         if replacement >= FRAGILE_REPLACEMENT_RATIO * a.projection:
             continue
 
-        best: tuple[float, FreeAgent] | None = None
+        best: tuple[float, RosterEntry] | None = None
         for fa in fa_by_position.get(a.position or "", [])[:FREE_AGENTS_TRIED_PER_POSITION]:
-            with_fa = optimize_lineup_after_moves(roster, add_entries=[fa.as_entry()], excluded_player_ids={a.player_id})
+            if best is not None and replacement + projection_of(fa) <= best[0]:
+                break  # can't beat what's already found: adding him lifts the lineup by at most his projection
+            with_fa = optimize_lineup_after_moves(roster, add_entries=[fa], excluded_player_ids={a.player_id})
             restored = a.projection - (baseline - with_fa.total_projected_points)
             if best is None or restored > best[0]:
                 best = (restored, fa)
@@ -154,14 +164,16 @@ def merge_insurance_into_waiver_targets(
     *,
     current_week: int | None,
     deadline_passed: bool,
+    waiver_budget: int | None = None,
     clog_ids=(),
 ) -> list[WaiverTarget]:
     """The thin hook into the waiver list. Each insurance candidate becomes
-    an "Insurance"-tier WaiverTarget with its own paired drop; a candidate
-    who is ALREADY a trending target just gets the insurance note added
-    to that row instead of a duplicate. Insurance ranks below the normal
-    high-upside adds — unless the trade deadline has passed, when depth
-    can no longer be bought and the fragility is the more urgent item.
+    an INSURANCE-tier WaiverTarget with its own paired drop (and FAAB
+    suggestion where the league bids); a candidate who is ALREADY a
+    trending target just gets the insurance note added to that row instead
+    of a duplicate. Insurance ranks below the normal high-upside adds —
+    unless the trade deadline has passed, when depth can no longer be
+    bought and the fragility is the more urgent item.
     """
     if not recommendations:
         return targets
@@ -198,7 +210,8 @@ def merge_insurance_into_waiver_targets(
             WaiverTarget(
                 player_id=candidate.player_id, name=candidate.name, position=candidate.position,
                 team=candidate.team, trend_count=0, value=candidate.value, fills_need=False, need_rank=None,
-                reason=note[0].upper() + note[1:], priority_tier=INSURANCE_TIER, horizon=STASH, drop_candidate=drop,
+                reason=note[0].upper() + note[1:], priority_tier=INSURANCE, horizon=STASH, drop_candidate=drop,
+                suggested_faab_pct=_suggested_faab_pct(INSURANCE, waiver_budget, my_roster.waiver_budget_used),
             )
         )
     return insurance_rows + targets if deadline_passed else targets + insurance_rows

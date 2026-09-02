@@ -20,8 +20,15 @@ from sleeper_tool.contender_insurance import (
 from sleeper_tool.decision_delta import DecisionDelta, build_snapshot, compute_delta, load_latest_snapshot
 from sleeper_tool.league_economy import LeagueEconomy, build_league_economy
 from sleeper_tool.lineup_leverage import LineupLeverage, build_lineup_leverage
-from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup
-from sleeper_tool.move_impact import PREVIEWED_WAIVER_TIERS, MoveImpact, preview_add_drop, preview_trade, snapshot_roster
+from sleeper_tool.lineup_optimizer import LineupResult, UnsupportedSlotError, optimize_lineup
+from sleeper_tool.move_impact import (
+    PREVIEWED_WAIVER_TIERS,
+    MoveImpact,
+    PreviewContext,
+    preview_add_drop,
+    preview_trade,
+    snapshot_roster,
+)
 from sleeper_tool.negotiation_ladder import NegotiationLadder, build_ladders
 from sleeper_tool.pick_opportunity import SPENDABLE, STRATEGIC, PickOpportunity, assess_picks
 from sleeper_tool.playoff_leverage import PlayoffLeverage, classify_playoff_leverage
@@ -229,25 +236,36 @@ def build_league_report_data(
     # away for value and cut for nothing in the same report.
     proposed_give_ids = frozenset(e.player_id for p in proposals for e in p.give)
     trending_add_ids = {row["player_id"] for row in storage.get_trending("add")}
-    lineup = optimize_lineup(my_roster)
-    roster_clogs = identify_roster_clogs(
-        my_roster, trending_add_ids=trending_add_ids, exclude_ids=proposed_give_ids, lineup=lineup
+    # Every lineup-based feature below is optional: a league whose slot
+    # list this optimizer can't model (an unknown slot type, an empty
+    # roster_positions payload) keeps its trades, waivers, alerts and
+    # status — none of which need a lineup — and skips the rest.
+    try:
+        lineup: LineupResult | None = optimize_lineup(my_roster)
+    except UnsupportedSlotError as exc:
+        logger.warning("%s: lineup-based features skipped — %s", league.name, exc)
+        lineup = None
+    roster_clogs = (
+        identify_roster_clogs(my_roster, trending_add_ids=trending_add_ids, exclude_ids=proposed_give_ids, lineup=lineup)
+        if lineup is not None
+        else []
     )
     clog_ids = frozenset(c.entry.player_id for c in roster_clogs)
     waiver_targets = get_waiver_targets(
         storage, engine, league, my_roster, current_week=current_week, waiver_budget=waiver_budget, clog_ids=clog_ids
     )
     insurance: list[InsuranceRecommendation] = []
-    if status_result.status == CONTENDER:
+    if status_result.status == CONTENDER and lineup is not None:
         free_agents = free_agent_candidates(storage, engine, league, my_roster)
         insurance = identify_fragile_starters(my_roster, free_agents, team_status=status_result.status, lineup=lineup)
         trade_deadline = (league_data.get("settings") or {}).get("trade_deadline")
         deadline_passed = bool(trade_deadline) and current_week is not None and current_week > int(trade_deadline)
         waiver_targets = merge_insurance_into_waiver_targets(
-            waiver_targets, insurance, my_roster, current_week=current_week, deadline_passed=deadline_passed, clog_ids=clog_ids
+            waiver_targets, insurance, my_roster, current_week=current_week, deadline_passed=deadline_passed,
+            waiver_budget=waiver_budget, clog_ids=clog_ids,
         )
     time_sensitive = get_time_sensitive_notes(storage, my_roster, current_week=current_week)
-    bye_collision = plan_bye_collisions(my_roster, current_week=current_week, lineup=lineup)
+    bye_collision = plan_bye_collisions(my_roster, current_week=current_week, lineup=lineup) if lineup is not None else None
     if bye_collision is not None:
         # Next week's hole is this week's waiver move; further out is a heads-up.
         severity = "medium" if bye_collision.week == (current_week or 0) + 1 else "low"
@@ -264,7 +282,7 @@ def build_league_report_data(
     drop_ids = {d.entry.player_id for d in drop_candidates}
     roster_clogs = [c for c in roster_clogs if c.entry.player_id not in drop_ids]
 
-    lineup_leverage = build_lineup_leverage(my_roster, lineup=lineup, current_week=current_week)
+    lineup_leverage = build_lineup_leverage(my_roster, lineup=lineup, current_week=current_week) if lineup is not None else None
     if lineup_leverage is not None:
         _annotate_proposals_with_bench_surplus(proposals, lineup_leverage)
 
@@ -292,36 +310,33 @@ def build_league_report_data(
         proposals, my_roster, rosters, (valued_picks or {}).get(my_roster.roster_id, []),
         my_status=status_result.status, status_of=counterparty_status,
     )
-    if valued_picks is not None:
+    if valued_picks is not None and lineup is not None:
         pick_opportunity = assess_picks(
             my_roster, rosters, valued_picks.get(my_roster.roster_id, []),
-            team_status=status_result.status, lineups={my_roster.roster_id: lineup},
+            team_status=status_result.status, my_lineup=lineup,
         )
         if pick_opportunity is not None:
             _annotate_proposals_with_pick_opportunity(proposals, pick_opportunity)
 
-    before = snapshot_roster(
-        my_roster, rosters, current_week=current_week, storage=storage, engine=engine, lineup=lineup, status=status_result.status
-    )
-    trade_impacts = [
-        preview_trade(p, my_roster, rosters, before, current_week=current_week, storage=storage, engine=engine) for p in proposals
-    ]
+    trade_impacts: list[MoveImpact | None] = [None] * len(proposals)
     waiver_impacts: dict[str, MoveImpact] = {}
-    all_players = storage.get_all_players()
-    for t in waiver_targets:
-        if t.priority_tier not in PREVIEWED_WAIVER_TIERS:
-            continue
-        pdata = all_players.get(t.player_id) or {}
-        add_entry = RosterEntry(
-            player_id=t.player_id, name=t.name, position=t.position, team=t.team, age=pdata.get("age"),
-            years_exp=pdata.get("years_exp"), injury_status=pdata.get("injury_status"), status=pdata.get("status"),
-            is_starter=False, is_taxi=False, is_reserve=False, value=t.value,
-        )
-        drop_id = t.drop_candidate.player_id if t.drop_candidate else None
-        label = f"Add {t.name}" + (f", drop {t.drop_candidate.name}" if t.drop_candidate else "")
-        waiver_impacts[t.player_id] = preview_add_drop(
-            label, add_entry, drop_id, my_roster, rosters, before, current_week=current_week, storage=storage, engine=engine
-        )
+    if lineup is not None:
+        ctx = PreviewContext.build(rosters, current_week=current_week, storage=storage, engine=engine)
+        before = snapshot_roster(my_roster, ctx, lineup=lineup, displayed_status=status_result.status)
+        trade_impacts = [preview_trade(p, my_roster, before, ctx) for p in proposals]
+        all_players = storage.get_all_players()
+        for t in waiver_targets:
+            if t.priority_tier not in PREVIEWED_WAIVER_TIERS:
+                continue
+            pdata = all_players.get(t.player_id) or {}
+            add_entry = RosterEntry(
+                player_id=t.player_id, name=t.name, position=t.position, team=t.team, age=pdata.get("age"),
+                years_exp=pdata.get("years_exp"), injury_status=pdata.get("injury_status"), status=pdata.get("status"),
+                is_starter=False, is_taxi=False, is_reserve=False, value=t.value,
+            )
+            drop_id = t.drop_candidate.player_id if t.drop_candidate else None
+            label = f"Add {t.name}" + (f", drop {t.drop_candidate.name}" if t.drop_candidate else "")
+            waiver_impacts[t.player_id] = preview_add_drop(label, add_entry, drop_id, my_roster, before, ctx)
 
     return LeagueReportData(
         league=league,
@@ -354,8 +369,7 @@ def _annotate_proposals_with_pick_opportunity(proposals: list[TradeProposal], op
     favour. Never a veto."""
     for p in proposals:
         for pick in p.give_picks:
-            a = next((x for x in opportunity.assessments if x.pick.round == pick.round and x.pick.season == pick.season
-                      and x.pick.original_roster_id == pick.original_roster_id), None)
+            a = opportunity.assessment_for(pick)
             if a is None:
                 continue
             if a.classification == STRATEGIC:
@@ -434,7 +448,10 @@ def build_weekly_report_data(
         portfolio=portfolio,
     )
     report.snapshot = build_snapshot(report)
-    report.delta = compute_delta(load_latest_snapshot(), report.snapshot)
+    # Skip today's own snapshot so a same-day re-run still diffs against
+    # the previous day (daily_run overwrites today's file, keeping runs
+    # idempotent).
+    report.delta = compute_delta(load_latest_snapshot(before_date=now.date().isoformat()), report.snapshot)
     return report
 
 

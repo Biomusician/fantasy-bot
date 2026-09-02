@@ -87,6 +87,8 @@ def identify_roster_clogs(
             continue
         if _is_dynasty_rookie(entry, currency) or not entry.value.is_corroborated:
             continue
+        if entry.value.proj_points is None:
+            continue  # no projection: "projects below everyone" would be a data gap, not a finding
         rank = composite_overall_rank(entry.value, currency)
         if rank is None or rank <= cutoff:
             continue

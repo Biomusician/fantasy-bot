@@ -135,15 +135,14 @@ _DECISION_CHIP_KIND = {"Toss-Up": "caution", "Lean Start": "neutral"}
 def _lineup_leverage_section(lev: LineupLeverage | None, currency: str) -> str:
     if lev is None or (not lev.close_calls and not lev.bench_surplus):
         return ""
-    g = lev.games_left
     items = []
     for d in lev.close_calls:
         hint = " &middot; close enough that matchup should decide" if d.label == "Toss-Up" else ""
         items.append(
             f'<li class="alert-item alert-{_DECISION_CHIP_KIND.get(d.label, "neutral")}">'
             f'{_chip(d.label, _DECISION_CHIP_KIND.get(d.label, "neutral"))} <strong>{esc(d.slot)}</strong>: '
-            f"{esc(d.starter.name)} <span class=\"tabular\">{d.starter_projection / g:.1f}</span>/wk over "
-            f"{esc(d.alternative.name)} <span class=\"tabular\">{d.alternative_projection / g:.1f}</span>/wk{hint}</li>"
+            f"{esc(d.starter.name)} <span class=\"tabular\">{d.starter_weekly:.1f}</span>/wk over "
+            f"{esc(d.alternative.name)} <span class=\"tabular\">{d.alternative_weekly:.1f}</span>/wk{hint}</li>"
         )
     for s in lev.bench_surplus:
         pctl = f"{s.value_percentile:.0f}{_ordsuffix(s.value_percentile)} pctl" if s.value_percentile is not None else "unranked"

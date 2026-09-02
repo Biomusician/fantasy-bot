@@ -1,13 +1,9 @@
 import pytest
 from conftest import make_entry, make_format, make_league_info, make_roster, make_value
 
-from sleeper_tool.contender_insurance import (
-    INSURANCE_TIER,
-    FreeAgent,
-    identify_fragile_starters,
-    merge_insurance_into_waiver_targets,
-)
+from sleeper_tool.contender_insurance import identify_fragile_starters, merge_insurance_into_waiver_targets
 from sleeper_tool.team_status import CONTENDER, MIDDLING
+from sleeper_tool.waiver_engine import INSURANCE as INSURANCE_TIER
 from sleeper_tool.waiver_engine import WaiverTarget
 
 
@@ -19,7 +15,8 @@ def _p(pid, pos, proj, *, is_starter=False):
 
 
 def _fa(pid, pos, proj):
-    return FreeAgent(pid, pid, pos, "FA", 2, make_value(name=pid, position=pos, proj_points=proj))
+    return make_entry(player_id=pid, name=pid, position=pos, team="FA", is_starter=False,
+                      value=make_value(name=pid, position=pos, proj_points=proj))
 
 
 def _roster(entries, positions=("QB", "RB", "RB", "WR", "BN", "BN")):
@@ -79,12 +76,15 @@ def test_merge_makes_one_waiver_row_per_candidate_and_ranks_it_after_normal_adds
     assert {x.starter.player_id for x in recs} == {"rb1", "rb2"}  # same free agent covers both
     normal = WaiverTarget(player_id="hot", name="Hot Add", position="WR", team="KC", trend_count=9, value=None,
                           fills_need=True, need_rank=0, reason="trending", priority_tier="Must Add")
-    merged = merge_insurance_into_waiver_targets([normal], recs, r, current_week=1, deadline_passed=False)
+    merged = merge_insurance_into_waiver_targets([normal], recs, r, current_week=1, deadline_passed=False, waiver_budget=100)
     assert [t.player_id for t in merged] == ["hot", "fa_rb"]
     row = merged[1]
     assert row.priority_tier == INSURANCE_TIER
     assert "rb1" in row.reason and "rb2" in row.reason and row.reason.startswith("Insurance for")
     assert row.drop_candidate.player_id == "rb3"  # the paired cut is the bench body he'd replace
+    assert row.suggested_faab_pct == 10  # a FAAB league gets a bid, not the "not a FAAB league" None
+    no_faab = merge_insurance_into_waiver_targets([normal], recs, r, current_week=1, deadline_passed=False)
+    assert no_faab[1].suggested_faab_pct is None
     # After the trade deadline, insurance is the more urgent row.
     merged = merge_insurance_into_waiver_targets([normal], recs, r, current_week=1, deadline_passed=True)
     assert [t.player_id for t in merged] == ["fa_rb", "hot"]

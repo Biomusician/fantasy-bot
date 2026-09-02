@@ -17,12 +17,17 @@ need one.
 Availability rules (applied before optimizing, and reported per player in
 LineupResult.unavailable so consumers can explain a hole):
   - In an IR/reserve or taxi slot: cannot start under Sleeper's own rules.
-  - injury_status IR / PUP / Sus / Out, or a season-long Sleeper `status`
-    (Injured Reserve, NFI, PUP): out this week. Questionable/Doubtful are
-    normal game-day tags and are included as-is — consumers may annotate
-    the risk separately, this module does not.
+  - injury_status IR / PUP / Sus, or a Sleeper `status` that means he
+    isn't on an active NFL roster (Injured Reserve, NFI, PUP, Inactive):
+    out for the foreseeable future, excluded from every lineup.
+  - injury_status Out is a THIS-WEEK game-day tag: excluded only when the
+    caller passes exclude_game_day_out=True (a this-week lineup). The
+    structural lineup that bye planning, insurance, clog detection and
+    leverage build on ignores it — a one-week absence shouldn't rewrite
+    the roster's shape for the next month. Questionable/Doubtful are
+    always included; consumers may annotate the risk, this module doesn't.
   - On bye in the evaluated week (`nfl_week`). nfl_week=None means "don't
-    apply bye exclusions" — the injury/slot rules still apply.
+    apply bye exclusions" — the other rules still apply.
 A player with no projection is treated as 0.0, not benched: a legally
 required slot (K/DEF have no projection source here) is better filled with
 an unprojected body than left empty, and any projected player still beats
@@ -38,6 +43,7 @@ from collections.abc import Collection, Iterable
 from dataclasses import dataclass, replace
 
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
+from sleeper_tool.trade_engine import value_currency
 from sleeper_tool.valuation import composite_overall_rank
 
 NON_STARTER_SLOTS = frozenset({"BN", "IR", "TAXI"})
@@ -54,8 +60,18 @@ DEDICATED_POSITIONS = frozenset({"QB", "RB", "WR", "TE", "K", "DEF", "DL", "LB",
 # almost certainly means a malformed roster_positions payload.
 MAX_STARTER_SLOTS = 18
 
-UNAVAILABLE_INJURY_STATUSES = frozenset({"IR", "PUP", "Sus", "Out"})
-UNAVAILABLE_SLEEPER_STATUSES = frozenset({"Injured Reserve", "Non Football Injury", "Physically Unable to Perform"})
+# Sleeper's real vocabularies, checked against cached player data
+# (2026-08-20): injury_status is one of {COV, DNR, Doubtful, IR, NA, Out,
+# PUP, Questionable, Sus}; `status` is one of {Active, Inactive, Injured
+# Reserve, Non Football Injury, Physically Unable to Perform, Practice
+# Squad}. The LONG_TERM sets are the season/multi-week designations (shared
+# with waiver_engine's "move him to IR" alert); the optimizer additionally
+# treats Inactive (holdout/unsigned, still attached to a team) as unable to
+# start, and Out as a this-week exclusion only.
+LONG_TERM_INJURY_STATUSES = frozenset({"IR", "PUP", "Sus"})
+LONG_TERM_SLEEPER_STATUSES = frozenset({"Injured Reserve", "Non Football Injury", "Physically Unable to Perform"})
+UNAVAILABLE_SLEEPER_STATUSES = LONG_TERM_SLEEPER_STATUSES | {"Inactive"}
+GAME_DAY_OUT = "Out"
 _EPS = 1e-9  # float-noise guard when comparing lineup totals for ties
 
 
@@ -84,6 +100,7 @@ class LineupResult:
     unfilled_slots: list[str]
     bench_player_ids: list[str]  # available but not started
     unavailable: dict[str, str]  # player_id -> reason he couldn't be started
+    nfl_week: int | None = None  # the week this lineup models; None = structural (no bye exclusions)
 
     @property
     def slot_by_player(self) -> dict[str, str]:
@@ -109,7 +126,12 @@ def starter_slots_for(roster: ValuedRoster) -> list[str]:
     """The league's starting slots in Sleeper's order, validated. Raises
     UnsupportedSlotError for a slot type this module can't fill.
     """
-    slots = [s for s in roster.fmt.roster_positions if s not in NON_STARTER_SLOTS]
+    slots = [s for s in roster.fmt.roster_positions if s and s not in NON_STARTER_SLOTS]
+    if not slots:
+        # An empty/null roster_positions payload would otherwise produce a
+        # zero-slot "best lineup" that every consumer then reports on as if
+        # the roster were empty. Refuse loudly; report_data degrades.
+        raise UnsupportedSlotError("league reports no starting slots (roster_positions empty or missing)")
     for s in slots:
         slot_eligibility(s)
     if len(slots) > MAX_STARTER_SLOTS:
@@ -117,13 +139,15 @@ def starter_slots_for(roster: ValuedRoster) -> list[str]:
     return slots
 
 
-def unavailability_reason(entry: RosterEntry, nfl_week: int | None) -> str | None:
+def unavailability_reason(entry: RosterEntry, nfl_week: int | None, *, exclude_game_day_out: bool = False) -> str | None:
     if entry.is_reserve:
         return "in an IR/reserve slot"
     if entry.is_taxi:
         return "on the taxi squad"
-    if entry.injury_status in UNAVAILABLE_INJURY_STATUSES:
+    if entry.injury_status in LONG_TERM_INJURY_STATUSES:
         return f"injury status {entry.injury_status}"
+    if exclude_game_day_out and entry.injury_status == GAME_DAY_OUT:
+        return "ruled out this week"
     if entry.status in UNAVAILABLE_SLEEPER_STATUSES:
         return f"roster status {entry.status}"
     if nfl_week is not None and entry.value.bye_week == nfl_week:
@@ -150,14 +174,16 @@ def optimize_lineup(
     *,
     nfl_week: int | None = None,
     excluded_player_ids: Collection[str] = (),
+    exclude_game_day_out: bool = False,
 ) -> LineupResult:
     """Best legal lineup for `roster` under its league's real slot list.
     `excluded_player_ids` are hypothetical removals ("what if he were
     hurt?") — reported as unavailable with reason "excluded".
+    `exclude_game_day_out` is for a THIS-WEEK lineup (see module docstring).
     """
     slots = starter_slots_for(roster)
     eligibility = [slot_eligibility(s) for s in slots]
-    currency = "dynasty" if roster.league.kind == "dynasty" else "redraft"
+    currency = value_currency(roster)
     excluded = set(excluded_player_ids)
 
     unavailable: dict[str, str] = {}
@@ -166,7 +192,7 @@ def optimize_lineup(
         if entry.player_id in excluded:
             unavailable[entry.player_id] = "excluded"
             continue
-        reason = unavailability_reason(entry, nfl_week)
+        reason = unavailability_reason(entry, nfl_week, exclude_game_day_out=exclude_game_day_out)
         if reason is not None:
             unavailable[entry.player_id] = reason
             continue
@@ -236,7 +262,19 @@ def optimize_lineup(
         unfilled_slots=[s for i, s in enumerate(slots) if not best_mask & (1 << i)],
         bench_player_ids=[e.player_id for e in available if e.player_id not in started],
         unavailable=unavailable,
+        nfl_week=nfl_week,
     )
+
+
+def with_optimized_starters(roster: ValuedRoster, lineup: LineupResult | None = None) -> ValuedRoster:
+    """A copy of `roster` whose is_starter flags follow the optimizer's
+    lineup instead of whatever Sleeper has set. team_status ranks roster
+    strength on is_starter, so comparing a hypothetical roster (whose
+    incoming players have no set-lineup flag) against real ones needs
+    every roster on the same footing."""
+    lineup = lineup if lineup is not None else optimize_lineup(roster)
+    starters = lineup.starter_ids
+    return replace(roster, entries=[replace(e, is_starter=e.player_id in starters) for e in roster.entries])
 
 
 def roster_after_moves(
@@ -259,10 +297,13 @@ def optimize_lineup_after_moves(
     remove_player_ids: Collection[str] = (),
     nfl_week: int | None = None,
     excluded_player_ids: Collection[str] = (),
+    exclude_game_day_out: bool = False,
 ) -> LineupResult:
     """The lineup after a hypothetical roster change. Builds the temporary
     roster (roster_after_moves) and delegates to optimize_lineup — there
     is deliberately no second optimization path.
     """
     hypothetical = roster_after_moves(roster, add_entries=add_entries, remove_player_ids=remove_player_ids)
-    return optimize_lineup(hypothetical, nfl_week=nfl_week, excluded_player_ids=excluded_player_ids)
+    return optimize_lineup(
+        hypothetical, nfl_week=nfl_week, excluded_player_ids=excluded_player_ids, exclude_game_day_out=exclude_game_day_out
+    )

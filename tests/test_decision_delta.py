@@ -19,7 +19,7 @@ def _snap(generated="2026-09-01T12:00:00+00:00", **league):
         "roster": {"p1": {"name": "Player One", "value": 100.0}, "p2": {"name": "Player Two", "value": 50.0}},
     }
     base.update(league)
-    return {"generated_at": generated, "current_week": 3, "leagues": {"L1": base}, "best_moves": []}
+    return {"schema": 2, "generated_at": generated, "current_week": 3, "leagues": {"L1": base}, "best_moves": []}
 
 
 def test_no_previous_snapshot_means_no_delta():
@@ -69,16 +69,44 @@ def test_snapshots_persist_and_only_the_latest_two_are_kept(tmp_path):
     for day in (1, 2, 3):
         save_snapshot(_snap(generated=f"2026-09-0{day}T12:00:00+00:00"), tmp_path)
     kept = sorted(p.name for p in tmp_path.glob("*.json"))
-    assert len(kept) == 2
+    assert kept == ["20260902.json", "20260903.json"]
     assert load_latest_snapshot(tmp_path)["generated_at"] == "2026-09-03T12:00:00+00:00"
 
 
-def test_unreadable_latest_snapshot_is_ignored(tmp_path):
+def test_same_day_rerun_overwrites_and_still_diffs_against_the_previous_day(tmp_path):
+    save_snapshot(_snap(generated="2026-09-01T12:00:00+00:00"), tmp_path)
+    save_snapshot(_snap(generated="2026-09-02T09:00:00+00:00"), tmp_path)
+    save_snapshot(_snap(generated="2026-09-02T09:10:00+00:00"), tmp_path)  # re-run ten minutes later
+    assert sorted(p.name for p in tmp_path.glob("*.json")) == ["20260901.json", "20260902.json"]
+    assert load_latest_snapshot(tmp_path)["generated_at"] == "2026-09-02T09:10:00+00:00"
+    baseline = load_latest_snapshot(tmp_path, before_date="2026-09-02")
+    assert baseline["generated_at"] == "2026-09-01T12:00:00+00:00"
+    assert load_latest_snapshot(tmp_path, before_date="2026-09-01") ["generated_at"].startswith("2026-09-02")
+
+
+def test_unreadable_or_older_schema_snapshot_is_ignored(tmp_path):
     (tmp_path / "20260901.json").write_text("{not json", encoding="utf-8")
     assert load_latest_snapshot(tmp_path) is None
     assert load_latest_snapshot(tmp_path / "does-not-exist") is None
+    old = _snap()
+    old["schema"] = 1
+    (tmp_path / "20260901.json").write_text(json.dumps(old), encoding="utf-8")
+    assert load_latest_snapshot(tmp_path) is None
 
 
 def test_saved_snapshot_round_trips(tmp_path):
     path = save_snapshot(_snap(), tmp_path)
     assert json.loads(path.read_text(encoding="utf-8"))["leagues"]["L1"]["name"] == "League A"
+
+
+def test_snapshot_value_is_per_game_for_redraft_so_week_rollover_is_not_a_swing():
+    from conftest import make_value
+
+    from sleeper_tool.decision_delta import _stable_value
+
+    pv = make_value(dynasty_value=4000, proj_points=170.0)  # ROS total as valued at week 1
+    assert _stable_value(pv, "dynasty", 1) == 4000
+    assert _stable_value(pv, "redraft", 1) == 10.0  # 170 over 17 games
+    # The same player a week later, ROS total rescaled to 16 games: same per-game number.
+    later = make_value(dynasty_value=4000, proj_points=160.0)
+    assert _stable_value(later, "redraft", 2) == 10.0

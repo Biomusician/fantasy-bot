@@ -110,6 +110,7 @@ class Storage:
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
         self._conn.commit()
+        self._players_cache: dict[str, dict] | None = None
 
     def close(self) -> None:
         self._conn.close()
@@ -180,14 +181,21 @@ class Storage:
                 rows,
             )
         self.set_meta("players_updated_at", now)
+        self._players_cache = None
 
     def get_player(self, player_id: str) -> dict | None:
         row = self._conn.execute("SELECT data FROM players WHERE player_id = ?", (player_id,)).fetchone()
         return json.loads(row["data"]) if row else None
 
     def get_all_players(self) -> dict[str, dict]:
-        rows = self._conn.execute("SELECT player_id, data FROM players").fetchall()
-        return {r["player_id"]: json.loads(r["data"]) for r in rows}
+        """Memoized per Storage instance: ~12k JSON rows, and a report run
+        asks for it dozens of times (every league's roster build, waiver
+        pass, free-agent pool, and waiver preview). Invalidated by
+        save_players. Callers must treat the dict as read-only."""
+        if self._players_cache is None:
+            rows = self._conn.execute("SELECT player_id, data FROM players").fetchall()
+            self._players_cache = {r["player_id"]: json.loads(r["data"]) for r in rows}
+        return self._players_cache
 
     def player_count(self) -> int:
         return self._conn.execute("SELECT COUNT(*) c FROM players").fetchone()["c"]

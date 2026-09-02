@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from sleeper_tool.config import LeagueInfo
 from sleeper_tool.formatting import ordinal, ordinal_pct
+from sleeper_tool.lineup_optimizer import LONG_TERM_INJURY_STATUSES, LONG_TERM_SLEEPER_STATUSES
 from sleeper_tool.roster_analysis import SKILL_POSITIONS, RosterEntry, ValuedRoster, player_name
 from sleeper_tool.storage import Storage
 from sleeper_tool.trade_engine import (
@@ -34,6 +35,7 @@ STRONG_ADD = "Strong Add"
 MODERATE = "Moderate"
 SPECULATIVE = "Speculative"
 MONITOR = "Monitor"
+INSURANCE = "Insurance"  # contender_insurance's rows: cover for a fragile starter, not a trending add
 
 # -- Horizon: how long you'd expect to hold the player -----------------------
 BREAKOUT = "Breakout"  # young, trending up -- worth a long-term dynasty stash
@@ -51,7 +53,10 @@ TOP_TREND_RANK_CUTOFF = 15  # top-N-of-fetched-batch counts as "real buzz" for t
 # Suggested FAAB bid as (low, high) % of TOTAL season budget, before scaling
 # down for how much budget is already spent. A heuristic bucketed by
 # priority, not a market-clearing prediction.
-_FAAB_PCT_BY_TIER = {MUST_ADD: (15, 35), STRONG_ADD: (8, 20), MODERATE: (3, 10), SPECULATIVE: (1, 5), MONITOR: (0, 2)}
+_FAAB_PCT_BY_TIER = {
+    MUST_ADD: (15, 35), STRONG_ADD: (8, 20), MODERATE: (3, 10), SPECULATIVE: (1, 5), MONITOR: (0, 2),
+    INSURANCE: (3, 10),  # a backup you want, not a breakout you must win
+}
 
 
 @dataclass
@@ -372,9 +377,11 @@ class TimeSensitiveNote:
 # non-football-injury designations instead live in the separate `status`
 # field ({Active, Inactive, Injured Reserve, Non Football Injury,
 # Physically Unable to Perform, Practice Squad}), which this used to never
-# read at all. Both fields are checked now.
-_LONG_TERM_INJURY_STATUSES = {"IR", "PUP", "Sus"}
-_LONG_TERM_SLEEPER_STATUSES = {"Injured Reserve", "Non Football Injury", "Physically Unable to Perform"}
+# read at all. Both fields are checked now. The sets themselves live in
+# lineup_optimizer (one definition for "can't start him" and "move him to
+# IR") — imported at module top.
+_LONG_TERM_INJURY_STATUSES = LONG_TERM_INJURY_STATUSES
+_LONG_TERM_SLEEPER_STATUSES = LONG_TERM_SLEEPER_STATUSES
 
 
 def get_time_sensitive_notes(
