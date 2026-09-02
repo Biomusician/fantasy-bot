@@ -58,9 +58,14 @@ class RosterClog:
 
 
 def _is_dynasty_developmental(entry: RosterEntry, currency: str) -> bool:
+    """Rookies (or unknown experience) are always exempt; second- and
+    third-year players only while still inside their position's young-
+    player age — a 28-year-old late bloomer with two seasons isn't upside."""
     if currency != DYNASTY_CURRENCY:
         return False
-    if entry.years_exp is None or entry.years_exp <= DEVELOPMENTAL_MAX_YEARS_EXP:
+    if entry.years_exp is None or entry.years_exp == 0:
+        return True
+    if entry.years_exp <= DEVELOPMENTAL_MAX_YEARS_EXP:
         return entry.age is None or entry.age <= young_max_age(entry.position)
     return False
 
