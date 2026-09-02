@@ -8,10 +8,17 @@ Regenerate this file with `/handoff`.
 
 ## Status
 
-**Local `main` is 14 commits ahead of `origin/main` and has NOT been pushed** — the
+**Local `main` is 17 commits ahead of `origin/main` and has NOT been pushed** — the
 overnight feature run (2026-09-01/02) was deliberately kept local so Jonathan can QC
 eleven features' worth of dashboard output before the 9am ET automated run publishes
 them. Pushing is his call. Everything is committed; the tree is clean.
+
+A post-run QC pass (Jonathan's eight-point list: move-impact deltas, SF/multi-flex
+lineups, clogs, insurance, ladders, weak-aging, delta sparsity, dashboard hierarchy)
+produced `9ec78cd` and `b680578`: developmental dynasty players exempt from clog
+detection, weak-aging gated on the position's veteran age, ladder steps that spend a
+current starter say so, pre-draft leagues get no waiver/insurance targets, and the
+dashboard collapses the context sections under one disclosure.
 
 What landed (one commit per feature, then one red-team fix commit):
 `lineup_optimizer.py` (shared), then Roster Clog Detector, Portfolio Exposure, Lineup
@@ -27,13 +34,13 @@ important ones were redraft value swings firing on every week rollover, post-tra
 status computed off stale `is_starter` flags, IR/PUP free agents recommendable as
 insurance, and an unknown slot type blanking a whole league).
 
-Verified 2026-09-02: 278 tests pass in ~0.4s; `scripts/daily_run.py` runs end to end
+Verified 2026-09-02: 280 tests pass in ~0.4s; `scripts/daily_run.py` runs end to end
 against all 9 leagues (~3s offline rebuild after the `get_all_players` memoization).
 
 ## Run and test
 
 ```
-.venv/Scripts/python.exe -m pytest tests/ -q          # 278 tests, no network
+.venv/Scripts/python.exe -m pytest tests/ -q          # 280 tests, no network
 .venv/Scripts/python.exe scripts/daily_run.py         # full sync + both reports + snapshot
 .venv/Scripts/python.exe scripts/generate_report.py   # Markdown from cache, no network
 .venv/Scripts/python.exe scripts/generate_dashboard.py
