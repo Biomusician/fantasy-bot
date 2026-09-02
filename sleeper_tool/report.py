@@ -9,6 +9,7 @@ from sleeper_tool.formatting import age_str, ordinal_pct
 from sleeper_tool.league_economy import LeagueEconomy
 from sleeper_tool.lineup_leverage import LineupLeverage
 from sleeper_tool.move_impact import MoveImpact
+from sleeper_tool.pick_opportunity import PickOpportunity
 from sleeper_tool.portfolio_exposure import PortfolioExposure
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
 from sleeper_tool.roster_analysis import ValuedRoster
@@ -207,6 +208,22 @@ def _render_drop_candidates(candidates: list[DropCandidate]) -> list[str]:
     return lines
 
 
+_PICK_MARK = {"Strategic": "🔒", "Useful": "🟡", "Spendable": "🟢"}
+
+
+def _render_pick_opportunity(opp: PickOpportunity) -> list[str]:
+    lines = ["What your 1st/2nd-round picks mean to this roster (an annotation, never a veto):", ""]
+    for a in opp.assessments:
+        value = f", KTC {a.pick.value:,}" if a.pick.value else ""
+        lines.append(f"- {_PICK_MARK.get(a.classification, '')} **{a.classification}: {a.display_name}**{value} — {a.reason}")
+    lines.append("")
+    weak = [u for u in opp.units if u.bottom_three]
+    if weak:
+        lines.append("Position units driving this: " + "; ".join(u.describe() + (" (weak-aging)" if u.weak_aging else "") for u in weak))
+        lines.append("")
+    return lines
+
+
 def _render_league_economy(economy: LeagueEconomy | None, my_roster_id: int) -> list[str]:
     if economy is None:
         return []
@@ -287,6 +304,9 @@ def render_league_section(data: LeagueReportData) -> list[str]:
             f"- **{c.entry.name}** ({c.entry.position or '?'}) — {'; '.join(c.reasons)}" for c in data.roster_clogs
         ] + [""]
         sections.append(("### Roster clogs (dead roster spots)", clog_lines))
+
+    if data.pick_opportunity and data.pick_opportunity.assessments:
+        sections.append(("### Draft capital", _render_pick_opportunity(data.pick_opportunity)))
 
     economy_lines = _render_league_economy(data.league_economy, data.roster.roster_id)
     if economy_lines:

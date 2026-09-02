@@ -14,6 +14,7 @@ from sleeper_tool.formatting import age_str
 from sleeper_tool.league_economy import LeagueEconomy
 from sleeper_tool.lineup_leverage import LineupLeverage
 from sleeper_tool.move_impact import MoveImpact
+from sleeper_tool.pick_opportunity import PickOpportunity
 from sleeper_tool.portfolio_exposure import VERY_HIGH, PortfolioExposure
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
@@ -323,6 +324,36 @@ def _roster_clogs_section(clogs: list[RosterClog]) -> str:
     """
 
 
+_PICK_CHIP_KIND = {"Strategic": "negative", "Useful": "caution", "Spendable": "positive"}
+
+
+def _pick_opportunity_section(opp: PickOpportunity | None) -> str:
+    if opp is None or not opp.assessments:
+        return ""
+    items = "".join(
+        f'<li class="alert-item">{_chip(a.classification, _PICK_CHIP_KIND.get(a.classification, "neutral"))} '
+        f"<strong>{esc(a.display_name)}</strong>"
+        + (f' <span class="tabular muted">KTC {a.pick.value:,}</span>' if a.pick.value else "")
+        + f'<div class="drop-reasons">{esc(a.reason)}</div></li>'
+        for a in opp.assessments
+    )
+    weak = [u for u in opp.units if u.bottom_three]
+    units_note = (
+        '<p class="roster-note">Position units driving this: '
+        + esc("; ".join(u.describe() + (" (weak-aging)" if u.weak_aging else "") for u in weak))
+        + "</p>"
+        if weak
+        else ""
+    )
+    return f"""
+    <section class="panel-block">
+      <h3>Draft capital <span class="muted">&middot; what your 1st/2nd-round picks mean to this roster</span></h3>
+      <ul class="alert-list">{items}</ul>
+      {units_note}
+    </section>
+    """
+
+
 _ECONOMY_LABEL_KIND = {
     "Frequent Trader": "positive", "Inactive Trader": "caution", "Pick Accumulator": "accent",
     "Pick Seller": "accent", "Position Heavy": "neutral",
@@ -427,6 +458,7 @@ def _league_panel(data: LeagueReportData) -> str:
         </section>
         {_drop_candidates_section(data.drop_candidates)}
         {_roster_clogs_section(data.roster_clogs)}
+        {_pick_opportunity_section(data.pick_opportunity)}
         {_league_economy_section(data.league_economy, data.roster.roster_id)}
         """
         # A high-severity alert (a long-term injury not yet moved to an

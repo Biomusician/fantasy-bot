@@ -22,13 +22,14 @@ from sleeper_tool.league_economy import LeagueEconomy, build_league_economy
 from sleeper_tool.lineup_leverage import LineupLeverage, build_lineup_leverage
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup
 from sleeper_tool.move_impact import PREVIEWED_WAIVER_TIERS, MoveImpact, preview_add_drop, preview_trade, snapshot_roster
+from sleeper_tool.pick_opportunity import SPENDABLE, STRATEGIC, PickOpportunity, assess_picks
 from sleeper_tool.playoff_leverage import PlayoffLeverage, classify_playoff_leverage
 from sleeper_tool.portfolio_exposure import PortfolioExposure, acquisition_exposure_note, build_portfolio_exposure
 from sleeper_tool.rankings.ff_dynasty_pass import ff_dynasty_status
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster, build_all_valued_rosters
 from sleeper_tool.roster_clog import RosterClog, identify_roster_clogs
 from sleeper_tool.storage import Storage
-from sleeper_tool.team_status import CONTENDER, TeamStatusResult, classify_team_status
+from sleeper_tool.team_status import CONTENDER, TeamStatusResult, classify_team_status, get_valued_picks_by_roster
 from sleeper_tool.trade_engine import DropCandidate, TradeProposal, generate_trade_proposals, identify_drop_candidates, value_currency
 from sleeper_tool.valuation import LeagueFormat, ValuationEngine
 from sleeper_tool.waiver_engine import TimeSensitiveNote, WaiverTarget, get_time_sensitive_notes, get_waiver_targets
@@ -76,6 +77,7 @@ class LeagueReportData:
     trade_impacts: list[MoveImpact | None] = field(default_factory=list)  # parallel to proposals; None = below preview bar
     waiver_impacts: dict[str, MoveImpact] = field(default_factory=dict)  # by waiver target player_id (Must Add only)
     playoff: PlayoffLeverage | None = None  # standings position vs the playoff cut; None until 3 games are played
+    pick_opportunity: PickOpportunity | None = None  # dynasty only: what my 1st/2nd-round picks mean to this roster
     error: str | None = None
 
 
@@ -277,6 +279,16 @@ def build_league_report_data(
         trade_deadline=settings.get("trade_deadline"), current_week=current_week,
     )
 
+    pick_opportunity = None
+    valued_picks = get_valued_picks_by_roster(rosters, currency, storage, engine)
+    if valued_picks is not None:
+        pick_opportunity = assess_picks(
+            my_roster, rosters, valued_picks.get(my_roster.roster_id, []),
+            team_status=status_result.status, lineups={my_roster.roster_id: lineup},
+        )
+        if pick_opportunity is not None:
+            _annotate_proposals_with_pick_opportunity(proposals, pick_opportunity)
+
     before = snapshot_roster(
         my_roster, rosters, current_week=current_week, storage=storage, engine=engine, lineup=lineup, status=status_result.status
     )
@@ -320,7 +332,24 @@ def build_league_report_data(
         trade_impacts=trade_impacts,
         waiver_impacts=waiver_impacts,
         playoff=playoff,
+        pick_opportunity=pick_opportunity,
     )
+
+
+def _annotate_proposals_with_pick_opportunity(proposals: list[TradeProposal], opportunity: PickOpportunity) -> None:
+    """A proposal spending one of my picks says what that pick is to my
+    roster: a Strategic pick is a caveat, a Spendable one is a point in
+    favour. Never a veto."""
+    for p in proposals:
+        for pick in p.give_picks:
+            a = next((x for x in opportunity.assessments if x.pick.round == pick.round and x.pick.season == pick.season
+                      and x.pick.original_roster_id == pick.original_roster_id), None)
+            if a is None:
+                continue
+            if a.classification == STRATEGIC:
+                p.caveats.append(f"{pick.name} is Strategic for your roster — {a.reason}. Spend it knowingly, not as a throw-in.")
+            elif a.classification == SPENDABLE:
+                p.rationale_for_me.append(f"{pick.name} is Spendable for your roster — {a.reason}.")
 
 
 def _annotate_proposals_with_league_economy(
