@@ -26,10 +26,21 @@ def make_league_info(*, kind: str = "dynasty", name: str = "Test League", league
 
 
 def make_format(
-    *, qb_format: str = "1QB", ppr: float = 1.0, te_premium_bonus: float = 0.0, rush_100_bonus: float = 0.0, pass_td_pts: float = 4.0
+    *,
+    qb_format: str = "1QB",
+    ppr: float = 1.0,
+    te_premium_bonus: float = 0.0,
+    rush_100_bonus: float = 0.0,
+    pass_td_pts: float = 4.0,
+    roster_positions: tuple[str, ...] = (),
 ) -> LeagueFormat:
     return LeagueFormat(
-        qb_format=qb_format, ppr=ppr, te_premium_bonus=te_premium_bonus, rush_100_bonus=rush_100_bonus, pass_td_pts=pass_td_pts
+        qb_format=qb_format,
+        ppr=ppr,
+        te_premium_bonus=te_premium_bonus,
+        rush_100_bonus=rush_100_bonus,
+        pass_td_pts=pass_td_pts,
+        roster_positions=roster_positions,
     )
 
 

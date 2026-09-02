@@ -84,6 +84,12 @@ class LeagueFormat:
     # aren't attributed to any one position here, so this is a floor on
     # "how many you're guaranteed to need", not the true total demand.
     starter_slots: dict[str, float] = field(default_factory=dict)
+    # The league's literal roster_positions list from Sleeper, in slot order
+    # (including BN/IR/TAXI). starter_slots above is a per-position *count*
+    # approximation for need detection; lineup construction needs the real
+    # slot list (which FLEX variants exist, in what order) — see
+    # lineup_optimizer.py, the one consumer that builds legal lineups.
+    roster_positions: tuple[str, ...] = ()
 
     @property
     def is_superflex(self) -> bool:
@@ -137,6 +143,7 @@ def derive_league_format(league_data: dict) -> LeagueFormat:
         rush_100_bonus=float(scoring.get("bonus_rush_yd_100", 0) or 0),
         pass_td_pts=float(scoring.get("pass_td", 4) or 4),
         starter_slots=starter_slots,
+        roster_positions=tuple(roster_positions),
     )
 
 
@@ -171,6 +178,43 @@ class PlayerValue:
         matching miss or a source's quirk, not a real signal).
         """
         return len(self.sources_used) >= 2
+
+
+def games_remaining(current_week: int | None) -> int:
+    """Regular-season games still to be played from `current_week` on
+    (1-indexed; None/preseason = the full season). Never below 1, so a
+    week-18+ value can't turn a per-game division into a ZeroDivisionError.
+    """
+    if not current_week or current_week <= 1:
+        return NFL_REGULAR_SEASON_WEEKS
+    return max(1, NFL_REGULAR_SEASON_WEEKS - (current_week - 1))
+
+
+def weekly_projection(pv: PlayerValue, current_week: int | None) -> float | None:
+    """Per-game projection. `proj_points` is a rest-of-season total (already
+    scaled by scale_proj_points_for_games_remaining at valuation time), so
+    dividing by the same games-remaining count recovers a per-week number
+    — the unit that lineup/start-sit thresholds are naturally stated in.
+    """
+    if pv.proj_points is None:
+        return None
+    return pv.proj_points / games_remaining(current_week)
+
+
+def composite_overall_rank(pv: PlayerValue, currency: str) -> float | None:
+    """One "where does this player rank overall" number for rules stated in
+    rank terms ("outside the top 150"). Dynasty currency: the mean of the
+    KTC overall rank and the FantasyPros dynasty ECR when both exist,
+    either alone otherwise — the two disagree materially past rank ~150,
+    which is exactly the region such cutoffs operate in, so neither is
+    taken alone when both are available. Redraft currency: the FantasyPros
+    rest-of-season ECR. A rank, not a percentile, on purpose: the
+    percentile helpers already cover within-position comparisons.
+    """
+    if currency == "dynasty":
+        ranks = [r for r in (pv.dynasty_rank, pv.dynasty_ecr_rank) if r]
+        return sum(ranks) / len(ranks) if ranks else None
+    return float(pv.redraft_ecr_rank) if pv.redraft_ecr_rank else None
 
 
 def _ktc_value_for_format(ktc_player: dict, fmt: LeagueFormat) -> tuple[int, int, int]:
