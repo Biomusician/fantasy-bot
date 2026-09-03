@@ -12,19 +12,19 @@ from __future__ import annotations
 from collections.abc import Collection
 from dataclasses import dataclass, field
 
+from sleeper_tool.asset_value import (
+    DYNASTY_CURRENCY,
+    MIN_ROSTERABLE_PERCENTILE,
+    percentile_for_currency,
+    value_currency,
+    value_label_for_currency,
+)
 from sleeper_tool.config import LeagueInfo
 from sleeper_tool.formatting import ordinal, ordinal_pct
 from sleeper_tool.lineup_optimizer import LONG_TERM_INJURY_STATUSES, LONG_TERM_SLEEPER_STATUSES
 from sleeper_tool.roster_analysis import SKILL_POSITIONS, RosterEntry, ValuedRoster, player_name
 from sleeper_tool.storage import Storage
-from sleeper_tool.trade_engine import (
-    DYNASTY_CURRENCY,
-    MIN_ROSTERABLE_PERCENTILE,
-    identify_needs,
-    percentile_for_currency,
-    value_currency,
-    value_label_for_currency,
-)
+from sleeper_tool.trade_engine import identify_needs
 from sleeper_tool.valuation import PlayerValue, ValuationEngine
 
 EARLY_SEASON_WEEK_CUTOFF = 4  # below this week, trending-adds are hype-driven more than usage-driven
@@ -117,7 +117,7 @@ def _roster_impact_note(my_roster: ValuedRoster, position: str | None, new_pctl:
 def _display_percentile(value: PlayerValue, currency: str) -> float | None:
     """WITHIN-POSITION percentile for dynasty currency when available —
     the same metric identify_needs itself uses to decide a position is a
-    need (trade_engine._need_percentile), so the number shown/sorted-by
+    need (asset_value.need_percentile), so the number shown/sorted-by
     here doesn't contradict the reasoning that surfaced this target in the
     first place. Falls back to the pool-wide percentile otherwise (same
     known gap as the rest of the codebase for redraft currency).

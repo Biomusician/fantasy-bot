@@ -29,7 +29,7 @@ from dataclasses import dataclass
 
 from sleeper_tool.move_impact import MoveImpact
 from sleeper_tool.replacement_value import SCARCE, VERY_SCARCE, ReplacementMarket
-from sleeper_tool.trade_engine import TradeProposal
+from sleeper_tool.trade_types import TradeProposal
 
 IMPROVES_MIN = 3.0  # projected weekly starter points
 COSTS_MAX = -2.0

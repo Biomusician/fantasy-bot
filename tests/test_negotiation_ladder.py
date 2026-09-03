@@ -8,7 +8,7 @@ from sleeper_tool.negotiation_ladder import (
     build_ladders,
     build_negotiation_ladder,
 )
-from sleeper_tool.trade_engine import TradeProposal
+from sleeper_tool.trade_types import TradeProposal
 
 POSITIONS = ("QB", "RB", "RB", "WR", "WR", "TE", "BN", "BN", "BN", "BN")
 

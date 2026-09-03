@@ -2,7 +2,7 @@ import pytest
 from conftest import make_entry, make_format, make_league_info, make_roster, make_value
 
 from sleeper_tool.move_impact import PreviewContext, preview_add_drop, preview_trade, snapshot_roster
-from sleeper_tool.trade_engine import TradeProposal
+from sleeper_tool.trade_types import TradeProposal
 
 
 def _before(mine, rosters):

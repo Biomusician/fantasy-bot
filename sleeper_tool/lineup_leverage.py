@@ -25,9 +25,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from sleeper_tool.asset_value import percentile_for_currency, value_currency
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup, projection_of, slot_eligibility
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
-from sleeper_tool.trade_engine import percentile_for_currency, value_currency
 from sleeper_tool.valuation import games_remaining
 
 TOSS_UP_RATIO = 0.05  # abs(a - b) / max(a, b) at or under this is a Toss-Up

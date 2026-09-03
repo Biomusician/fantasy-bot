@@ -30,7 +30,9 @@ source gaps, replacement level ignoring abandoned rosters, conflict rules tighte
 buyer-board scoring, streamer sequences, ~2x faster report build). `docs/DECISIONS.md`
 has the reasoning.
 
-Verified 2026-09-03: 366 tests pass in ~1.5s, `generate_report.py` rebuilds all 9
+Verified 2026-09-03: the suite passes in ~1.5s (the trade-primitive extraction added 23
+characterization tests in `tests/test_trade_primitives.py` that pin the moved functions'
+behaviour byte-for-byte), `generate_report.py` rebuilds all 9
 leagues from cache in ~7s (the memoized consolidation search is the largest new cost),
 dashboard renders with the hierarchy intact (Best Moves → alerts/matchup →
 trades/waivers/streamers/defensive add → collapsed context).
@@ -55,10 +57,18 @@ complete run) — market velocity needs three of them before it says anything.
   from the Sleeper API at runtime, on purpose.
 - `sleeper_tool/valuation.py` — format-aware per-player value; `weekly_projection`,
   `games_remaining`, `composite_overall_rank`, `ValuationEngine.snapshots_for(fmt)`.
-- `sleeper_tool/trade_engine.py` — ~1950 lines. Candidate selection, opponent-fit scoring,
-  acceptance rating, message generation. `roster_consolidation` and `buyer_board` import
-  its private helpers (`_recipient_need_fit`, `_status_fit`, `_piece_fits`,
-  `_tradeable_pool`, `_untouchable_ids`) — the same debt `negotiation_ladder` carries.
+- `sleeper_tool/trade_engine.py` — ~1450 lines. Candidate selection, rationale/clause
+  building, `_build_pick_target_proposal`, `generate_trade_proposals`. The primitives it
+  used to own were extracted on 2026-09-03 into six modules that all sit strictly BELOW
+  it (none imports it), so nothing outside the engine reaches for a private helper any
+  more: `asset_value.py` (currency + `value_for_currency`/`percentile_for_currency`/
+  `need_percentile`/`corroborated`), `trade_types.py` (`TradeProposal`, `DropCandidate`,
+  `OpponentFit`, `proposal_asset_key`), `roster_assets.py` (`untouchable_ids`,
+  `tradeable_pool`, `position_rosterable_count`), `trade_fit.py`
+  (`weakest_rosterable_percentile`, `piece_fits`, `recipient_need_fit`, `status_fit`),
+  `trade_rating.py` (`rate_acceptance`, `player_confidence`, `proposal_confidence`),
+  `trade_messages.py` (`generate_trade_message`). `pick_key` moved to `draft_picks.py`.
+  The engine re-exports what it imports, but every caller now imports from the new home.
 - `sleeper_tool/waiver_engine.py` — waiver targeting; `WaiverTarget.notes` is where every
   decision-layer annotation goes now (reason stays the engine's own sentence).
 - `sleeper_tool/lineup_optimizer.py` — the ONE place that decides who starts. Structural
@@ -87,9 +97,6 @@ Nothing half-implemented, nothing unpushed.
 - `build_league_report_data` is now a very long orchestration function; every capability
   adds a block. A split into named stages (pool → lineup features → trade features →
   cross-annotations) would help the next tranche.
-- `roster_consolidation` and `buyer_board` import private `trade_engine` helpers. A
-  public `rate_package(...)` / `piece_fit(...)` surface in `trade_engine` would remove
-  the drift risk for three callers.
 - Real-data early-season quirks: no Defensive Adds before NFL byes start (correct, but
   the block renders nothing); a Superflex sell-high of a starting QB is a Conflicted Move
   by construction (Very Scarce QB market); the stash board is all "Watch" on full rosters
@@ -117,11 +124,9 @@ Nothing half-implemented, nothing unpushed.
    the new sections should render for every drafted league, and no league should error.
 2. **Watch the first three daily snapshots**: market velocity turns on at the third, and
    "Since last run" should stay sparse.
-3. **Public `rate_package` / fit helpers in `trade_engine`** to stop three modules importing
-   private functions.
-4. **Split `build_league_report_data`** into named stages.
-5. **Ceiling on the stale-cache fallback** in `sleeper_tool/rankings/cache.py`.
-6. Usage/role data source (tracked separately; not part of this tranche by instruction).
+3. **Split `build_league_report_data`** into named stages.
+4. **Ceiling on the stale-cache fallback** in `sleeper_tool/rankings/cache.py`.
+5. Usage/role data source (tracked separately; not part of this tranche by instruction).
 
 ## Gotchas
 

@@ -3,20 +3,18 @@ from conftest import make_entry, make_format, make_league_info, make_roster, mak
 
 from sleeper_tool.config import MY_USER_ID
 from sleeper_tool.roster_analysis import RosterEntry
+from sleeper_tool.asset_value import percentile_for_currency, value_currency, value_for_currency
+from sleeper_tool.roster_assets import tradeable_pool
 from sleeper_tool.trade_engine import (
-    ACCEPTANCE_TIERS,
     CONTENDER,
     MIDDLING,
     REBUILD,
     _find_matching_offer,
-    _tradeable_pool,
     identify_buy_low,
     identify_needs,
     identify_sell_high,
-    percentile_for_currency,
-    value_currency,
-    value_for_currency,
 )
+from sleeper_tool.trade_rating import ACCEPTANCE_TIERS
 
 
 def test_value_currency_dynasty_league_uses_dynasty():
@@ -184,7 +182,7 @@ def test_identify_buy_low_requires_min_rosterable_percentile():
 def test_identify_buy_low_uses_within_position_percentile_not_pool_wide():
     # Regression: the MIN_ROSTERABLE_PERCENTILE eligibility filter (and the
     # ranking sort) compared against the POOL-WIDE percentile, the same
-    # apples-to-oranges mistake _need_percentile's docstring describes for
+    # apples-to-oranges mistake asset_value.need_percentile's docstring describes for
     # identify_needs -- a real starter at a shallow position (e.g. TE) can
     # clear the bar within his own position while sitting well below it
     # pool-wide, purely because pool-wide values skew toward RB/WR. A
@@ -251,14 +249,14 @@ def test_find_matching_offer_returns_none_for_zero_target():
     assert _find_matching_offer([e1], [], target_value=0, currency="dynasty") is None
 
 
-# -- _tradeable_pool: veteran-first ordering for rebuild/middling -----------
+# -- tradeable_pool: veteran-first ordering for rebuild/middling -----------
 
 
 def test_tradeable_pool_sorts_veterans_first_for_rebuild():
     veteran = make_entry(player_id="vet", position="WR", age=30.0, value=make_value(position="WR", dynasty_value=3000))
     youngster = make_entry(player_id="young", position="WR", age=22.0, value=make_value(position="WR", dynasty_value=4000))
     roster = make_roster(entries=[veteran, youngster])
-    pool = _tradeable_pool(roster, REBUILD, exclude_top=0)  # exclude_top=0: isolate sort order from untouchable-exclusion
+    pool = tradeable_pool(roster, REBUILD, exclude_top=0)  # exclude_top=0: isolate sort order from untouchable-exclusion
     assert pool[0].player_id == "vet"  # veteran sorted first despite lower value
 
 
@@ -266,7 +264,7 @@ def test_tradeable_pool_sorts_by_value_only_for_contender():
     veteran = make_entry(player_id="vet", position="WR", age=30.0, value=make_value(position="WR", dynasty_value=3000))
     youngster = make_entry(player_id="young", position="WR", age=22.0, value=make_value(position="WR", dynasty_value=4000))
     roster = make_roster(entries=[veteran, youngster])
-    pool = _tradeable_pool(roster, CONTENDER, exclude_top=0)
+    pool = tradeable_pool(roster, CONTENDER, exclude_top=0)
     assert pool[0].player_id == "young"  # pure value order, no age bias
 
 
@@ -275,7 +273,7 @@ def test_tradeable_pool_excludes_untouchables():
     top2 = make_entry(player_id="top2", value=make_value(dynasty_value=8000))
     depth = make_entry(player_id="depth", value=make_value(dynasty_value=1000))
     roster = make_roster(entries=[top1, top2, depth])
-    pool = _tradeable_pool(roster, CONTENDER)
+    pool = tradeable_pool(roster, CONTENDER)
     ids = {e.player_id for e in pool}
     assert "top1" not in ids and "top2" not in ids
     assert "depth" in ids
@@ -620,14 +618,14 @@ def test_roster_impact_note_excludes_multiple_ids_for_a_two_piece_buy_low_give()
     assert "nobody currently starting" in note
 
 
-# -- _untouchable_ids: starters-only protection, scarce-position protection -
+# -- untouchable_ids: starters-only protection, scarce-position protection -
 
 
 def test_untouchable_ids_never_protects_a_non_starting_backup():
     # A backup QB (is_starter=False) sitting behind a more valuable starter
     # must NOT be locked untradeable just because its raw value ranks top-2
     # overall — it's a bench piece, losing it costs the roster nothing.
-    from sleeper_tool.trade_engine import _untouchable_ids
+    from sleeper_tool.roster_assets import untouchable_ids
 
     starter_qb = make_entry(player_id="qb-starter", position="QB", is_starter=True,
         value=make_value(position="QB", dynasty_value=9500, dynasty_value_percentile=99))
@@ -636,7 +634,7 @@ def test_untouchable_ids_never_protects_a_non_starting_backup():
     other_starter = make_entry(player_id="te1", position="TE", is_starter=True,
         value=make_value(position="TE", dynasty_value=1200, dynasty_value_percentile=15))
     roster = make_roster(entries=[starter_qb, backup_qb, other_starter])
-    ids = _untouchable_ids(roster, "dynasty", exclude_top=2)
+    ids = untouchable_ids(roster, "dynasty", exclude_top=2)
     assert "qb-backup" not in ids
 
 
@@ -644,7 +642,7 @@ def test_untouchable_ids_protects_a_scarce_positions_clear_best_asset():
     # A corroborated TE at the 95th within-position percentile is this
     # team's only real starting TE — protect it even though TE dollar
     # values run low enough that it'd never crack the top-2-overall cut.
-    from sleeper_tool.trade_engine import _untouchable_ids
+    from sleeper_tool.roster_assets import untouchable_ids
 
     rb1 = make_entry(player_id="rb1", position="RB", is_starter=True,
         value=make_value(position="RB", dynasty_value=9500, dynasty_value_percentile=99, dynasty_positional_percentile=99))
@@ -653,12 +651,12 @@ def test_untouchable_ids_protects_a_scarce_positions_clear_best_asset():
     te1 = make_entry(player_id="te1", position="TE", is_starter=True,
         value=make_value(position="TE", dynasty_value=2600, dynasty_value_percentile=70, dynasty_positional_percentile=95))
     roster = make_roster(entries=[rb1, rb2, te1])
-    ids = _untouchable_ids(roster, "dynasty", exclude_top=2)
+    ids = untouchable_ids(roster, "dynasty", exclude_top=2)
     assert "te1" in ids
     assert ids == {"rb1", "rb2", "te1"}
 
 
-# -- _recipient_need_fit: opponent roster-depth awareness -------------------
+# -- recipient_need_fit: opponent roster-depth awareness -------------------
 
 
 def _rosterable_wr(pid: str, pctl: float) -> RosterEntry:
@@ -667,41 +665,41 @@ def _rosterable_wr(pid: str, pctl: float) -> RosterEntry:
 
 
 def test_recipient_need_fit_rejects_a_redundant_piece_into_a_glutted_position():
-    from sleeper_tool.trade_engine import _recipient_need_fit
+    from sleeper_tool.trade_fit import recipient_need_fit
 
     glutted_roster = make_roster(entries=[_rosterable_wr(f"wr{i}", pctl) for i, pctl in enumerate([85, 80, 70, 65, 60])])
     weak_offer = [_rosterable_wr("give-wr", 30.0)]  # below every one of their rosterable WRs
-    any_fit, all_fit, notes = _recipient_need_fit(glutted_roster, weak_offer, "dynasty")
+    any_fit, all_fit, notes = recipient_need_fit(glutted_roster, weak_offer, "dynasty")
     assert any_fit is False
     assert all_fit is False
     assert notes
 
 
 def test_recipient_need_fit_accepts_a_piece_that_beats_their_weakest_starter():
-    from sleeper_tool.trade_engine import _recipient_need_fit
+    from sleeper_tool.trade_fit import recipient_need_fit
 
     roster = make_roster(entries=[_rosterable_wr(f"wr{i}", pctl) for i, pctl in enumerate([85, 60])])
     strong_offer = [_rosterable_wr("give-wr", 75.0)]  # beats their weakest rosterable WR (60)
-    any_fit, all_fit, notes = _recipient_need_fit(roster, strong_offer, "dynasty")
+    any_fit, all_fit, notes = recipient_need_fit(roster, strong_offer, "dynasty")
     assert any_fit is True
     assert all_fit is True
 
 
 def test_recipient_need_fit_accepts_a_piece_at_a_position_theyre_completely_empty_at():
-    from sleeper_tool.trade_engine import _recipient_need_fit
+    from sleeper_tool.trade_fit import recipient_need_fit
 
     roster = make_roster(entries=[_rosterable_wr("wr1", 85.0)])  # no TE at all
     te_offer = [make_entry(player_id="give-te", position="TE", value=make_value(position="TE", dynasty_value_percentile=20.0))]
-    any_fit, all_fit, notes = _recipient_need_fit(roster, te_offer, "dynasty")
+    any_fit, all_fit, notes = recipient_need_fit(roster, te_offer, "dynasty")
     assert any_fit is True
     assert all_fit is True
 
 
 def test_recipient_need_fit_picks_only_always_fits():
-    from sleeper_tool.trade_engine import _recipient_need_fit
+    from sleeper_tool.trade_fit import recipient_need_fit
 
     roster = make_roster(entries=[_rosterable_wr(f"wr{i}", pctl) for i, pctl in enumerate([85, 80, 70])])
-    any_fit, all_fit, notes = _recipient_need_fit(roster, [], "dynasty")
+    any_fit, all_fit, notes = recipient_need_fit(roster, [], "dynasty")
     assert any_fit is True
     assert all_fit is True
     assert notes == []
@@ -712,13 +710,13 @@ def test_recipient_need_fit_any_true_all_false_when_one_piece_is_clutter():
     # distinguishable from one where ALL pieces fit -- any_fit alone
     # (the old return shape) couldn't tell these apart, letting a clutter
     # piece silently ride along a real upgrade with no visible flag.
-    from sleeper_tool.trade_engine import _recipient_need_fit
+    from sleeper_tool.trade_fit import recipient_need_fit
 
     roster = make_roster(entries=[_rosterable_wr("wr1", 60.0), make_entry(
         player_id="te1", position="TE", value=make_value(position="TE", dynasty_value_percentile=70.0))])
     good_wr = _rosterable_wr("give-wr", 75.0)  # beats their weakest WR (60) -- real fit
     clutter_te = make_entry(player_id="give-te", position="TE", value=make_value(position="TE", dynasty_value_percentile=20.0))  # below their TE (70)
-    any_fit, all_fit, notes = _recipient_need_fit(roster, [good_wr, clutter_te], "dynasty")
+    any_fit, all_fit, notes = recipient_need_fit(roster, [good_wr, clutter_te], "dynasty")
     assert any_fit is True
     assert all_fit is False
     assert len(notes) == 1  # only the clutter TE piece gets flagged, not the fitting WR
@@ -729,7 +727,8 @@ def test_recipient_need_fit_any_true_all_false_when_one_piece_is_clutter():
 
 def test_rate_acceptance_penalizes_targeting_a_starter_and_low_roster_fit():
     from sleeper_tool.owner_profiles import DEFAULT_PROFILE
-    from sleeper_tool.trade_engine import OpponentFit, rate_acceptance
+    from sleeper_tool.trade_rating import rate_acceptance
+    from sleeper_tool.trade_types import OpponentFit
 
     good_fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
         opponent_status="middling", status_fit="neutral", piece_count=1)
@@ -737,13 +736,14 @@ def test_rate_acceptance_penalizes_targeting_a_starter_and_low_roster_fit():
         opponent_status="middling", status_fit="mismatch", piece_count=2)
     good_rating, _ = rate_acceptance(good_fit, 1.0, DEFAULT_PROFILE)
     bad_rating, _ = rate_acceptance(bad_fit, 1.0, DEFAULT_PROFILE)
-    from sleeper_tool.trade_engine import ACCEPTANCE_TIERS
+    from sleeper_tool.trade_rating import ACCEPTANCE_TIERS
     assert ACCEPTANCE_TIERS.index(good_rating) > ACCEPTANCE_TIERS.index(bad_rating)
 
 
 def test_rate_acceptance_floors_at_very_low_for_an_inactive_trader():
     from sleeper_tool.owner_profiles import OwnerProfile
-    from sleeper_tool.trade_engine import OpponentFit, rate_acceptance
+    from sleeper_tool.trade_rating import rate_acceptance
+    from sleeper_tool.trade_types import OpponentFit
 
     fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
         opponent_status="middling", status_fit="neutral", piece_count=1)
@@ -760,7 +760,8 @@ def test_rate_acceptance_penalizes_infrequent_traders_not_just_inactive_ones():
     # be rated High with zero penalty even though the same report block
     # separately warns "doesn't complete trades often."
     from sleeper_tool.owner_profiles import OwnerProfile
-    from sleeper_tool.trade_engine import OpponentFit, rate_acceptance
+    from sleeper_tool.trade_rating import rate_acceptance
+    from sleeper_tool.trade_types import OpponentFit
 
     fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
         opponent_status="middling", status_fit="neutral", piece_count=1)
@@ -768,7 +769,7 @@ def test_rate_acceptance_penalizes_infrequent_traders_not_just_inactive_ones():
     unknown_profile = OwnerProfile(username="unknown_trader")
     infrequent_rating, infrequent_reasons = rate_acceptance(fit, 1.0, infrequent_profile)
     unknown_rating, _ = rate_acceptance(fit, 1.0, unknown_profile)
-    from sleeper_tool.trade_engine import ACCEPTANCE_TIERS
+    from sleeper_tool.trade_rating import ACCEPTANCE_TIERS
     assert ACCEPTANCE_TIERS.index(infrequent_rating) < ACCEPTANCE_TIERS.index(unknown_rating)
     assert any("doesn't complete trades often" in r for r in infrequent_reasons)
 
@@ -779,7 +780,8 @@ def test_rate_acceptance_only_penalizes_lowball_direction_not_generous_overpay()
     # scored identically to a lowball (ratio < 0.85) -- a large overpay
     # should never make an offer look LESS likely to be accepted.
     from sleeper_tool.owner_profiles import DEFAULT_PROFILE
-    from sleeper_tool.trade_engine import ACCEPTANCE_TIERS, OpponentFit, rate_acceptance
+    from sleeper_tool.trade_rating import ACCEPTANCE_TIERS, rate_acceptance
+    from sleeper_tool.trade_types import OpponentFit
 
     fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
         opponent_status="middling", status_fit="neutral", piece_count=1)
@@ -800,7 +802,8 @@ def test_rate_acceptance_flags_a_youth_veteran_preference_mismatch():
     # same block's own framing text said "prefers young players" about a
     # veteran-heavy give.
     from sleeper_tool.owner_profiles import OwnerProfile
-    from sleeper_tool.trade_engine import ACCEPTANCE_TIERS, OpponentFit, rate_acceptance
+    from sleeper_tool.trade_rating import ACCEPTANCE_TIERS, rate_acceptance
+    from sleeper_tool.trade_types import OpponentFit
 
     fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
         opponent_status="middling", status_fit="neutral", piece_count=1)
@@ -815,7 +818,7 @@ def test_rate_acceptance_flags_a_youth_veteran_preference_mismatch():
 
 
 def test_proposal_confidence_is_dragged_down_by_the_weakest_valuation():
-    from sleeper_tool.trade_engine import proposal_confidence
+    from sleeper_tool.trade_rating import proposal_confidence
 
     solid = make_value(sources=["ktc", "fantasypros_dynasty"], cross_source_agreement="agree")
     shaky = make_value(sources=["ktc"], cross_source_agreement="insufficient_data")
@@ -828,7 +831,8 @@ def test_proposal_confidence_is_dragged_down_by_the_weakest_valuation():
 
 
 def test_generate_trade_message_is_nonempty_and_not_ai_sounding():
-    from sleeper_tool.trade_engine import TradeProposal, generate_trade_message
+    from sleeper_tool.trade_messages import generate_trade_message
+    from sleeper_tool.trade_types import TradeProposal
 
     proposal = TradeProposal(
         league_name="Test League", currency="dynasty", target_username="rival", target_team_name="Rival Team",
@@ -844,7 +848,8 @@ def test_generate_trade_message_is_nonempty_and_not_ai_sounding():
 
 
 def test_generate_trade_message_uses_the_concrete_benefit_reason_not_generic_filler():
-    from sleeper_tool.trade_engine import TradeProposal, generate_trade_message
+    from sleeper_tool.trade_messages import generate_trade_message
+    from sleeper_tool.trade_types import TradeProposal
 
     proposal = TradeProposal(
         league_name="Test League", currency="dynasty", target_username="rival", target_team_name="Rival Team",
@@ -862,7 +867,8 @@ def test_generate_trade_message_includes_all_four_clauses_when_all_are_available
     # just the surrounding rationale bullets) needs to articulate why it
     # fits the recipient's timeline, any recent buzz, and why *I* want
     # what I'm receiving, not just the bare benefit_reason closer.
-    from sleeper_tool.trade_engine import TradeProposal, generate_trade_message
+    from sleeper_tool.trade_messages import generate_trade_message
+    from sleeper_tool.trade_types import TradeProposal
 
     proposal = TradeProposal(
         league_name="Test League", currency="dynasty", target_username="rival", target_team_name="Rival Team",
@@ -884,7 +890,8 @@ def test_generate_trade_message_includes_all_four_clauses_when_all_are_available
 
 
 def test_generate_trade_message_omits_clauses_that_are_none_without_leaving_gaps():
-    from sleeper_tool.trade_engine import TradeProposal, generate_trade_message
+    from sleeper_tool.trade_messages import generate_trade_message
+    from sleeper_tool.trade_types import TradeProposal
 
     proposal = TradeProposal(
         league_name="Test League", currency="dynasty", target_username="rival", target_team_name="Rival Team",
@@ -906,9 +913,10 @@ def test_generate_trade_message_never_uses_em_dash_yo_or_you_guys():
     # reintroduce the banned style.
     from sleeper_tool.team_status import CONTENDER, REBUILD
     from sleeper_tool.trade_engine import (
-        OpponentFit, TradeProposal, _benefit_reason, _buzz_clause_buy_low, _buzz_clause_sell_high,
-        _timeline_clause, generate_trade_message,
+        _benefit_reason, _buzz_clause_buy_low, _buzz_clause_sell_high, _timeline_clause,
     )
+    from sleeper_tool.trade_messages import generate_trade_message
+    from sleeper_tool.trade_types import OpponentFit, TradeProposal
 
     down_entry = make_entry(name="Down Guy", value=make_value(dynasty_value_percentile=70.0, redraft_ecr_percentile=40.0, trend="down"))
     up_entry = make_entry(name="Up Guy", value=make_value(dynasty_value_percentile=85.0, dynasty_ecr_percentile=60.0, trend="rising"))
@@ -952,7 +960,8 @@ def test_generate_trade_message_never_uses_em_dash_yo_or_you_guys():
 
 def test_timeline_clause_only_fires_on_a_genuine_good_fit():
     from sleeper_tool.team_status import CONTENDER, REBUILD
-    from sleeper_tool.trade_engine import OpponentFit, _timeline_clause
+    from sleeper_tool.trade_engine import _timeline_clause
+    from sleeper_tool.trade_types import OpponentFit
 
     rebuild_fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
         opponent_status=REBUILD, status_fit="good_fit", piece_count=1)
@@ -1064,7 +1073,8 @@ def test_benefit_reason_defers_to_fit_when_offer_does_not_cleanly_upgrade():
     # highest-value piece, so a multi-piece offer with a non-fitting
     # secondary piece could still get a confident "clean upgrade" closer
     # that contradicted the same proposal's own acceptance_rating/caveats.
-    from sleeper_tool.trade_engine import OpponentFit, _benefit_reason
+    from sleeper_tool.trade_engine import _benefit_reason
+    from sleeper_tool.trade_types import OpponentFit
 
     starter = make_entry(player_id="s1", name="Starter", position="WR", is_starter=True,
         value=make_value(position="WR", dynasty_value_percentile=20.0))
@@ -1237,7 +1247,8 @@ def test_consolidation_note_never_fires_for_a_single_piece():
 
 def test_rate_acceptance_penalizes_multi_piece_harder_for_an_owner_who_dislikes_it():
     from sleeper_tool.owner_profiles import OwnerProfile
-    from sleeper_tool.trade_engine import ACCEPTANCE_TIERS, OpponentFit, rate_acceptance
+    from sleeper_tool.trade_rating import ACCEPTANCE_TIERS, rate_acceptance
+    from sleeper_tool.trade_types import OpponentFit
 
     fit = OpponentFit(target_is_starter=False, would_upgrade_their_roster=True, fit_notes=[],
         opponent_status="middling", status_fit="neutral", piece_count=2)

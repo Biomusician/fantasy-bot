@@ -39,9 +39,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from sleeper_tool.asset_value import value_currency, value_for_currency
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup, projection_of, slot_eligibility, starter_slots_for
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
-from sleeper_tool.trade_engine import value_currency, value_for_currency
 from sleeper_tool.valuation import CORE_SKILL_POSITIONS, composite_overall_rank, games_remaining
 
 ABUNDANT_MAX_GAP = 0.10

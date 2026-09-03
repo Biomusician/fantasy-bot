@@ -39,6 +39,15 @@ class OwnedPick:
     value: int | None
 
 
+def pick_key(pick: OwnedPick) -> tuple:
+    """Identity of a pick for de-duplication across proposals. Deliberately
+    NOT the tier or display name: the tier is an estimate that moves as the
+    season plays out, so two reads of the same pick can disagree on it while
+    still being the same asset.
+    """
+    return (pick.season, pick.round, pick.original_roster_id)
+
+
 def estimate_tier(original_team_strength_percentile: float) -> str:
     """A weak team (low percentile) is more likely to pick early in the
     round; a strong team, late. Percentile here is 0-100, 100 = strongest.

@@ -9,6 +9,7 @@ import datetime as dt
 import logging
 from dataclasses import dataclass, field
 
+from sleeper_tool.asset_value import value_currency
 from sleeper_tool.buyer_board import BuyerBoard, annotate_sell_high_proposals, build_buyer_boards, sell_high_candidates
 from sleeper_tool.bye_collision import ByeCollision, describe_bye_collision, plan_bye_collisions, positions_covering
 from sleeper_tool.config import LEAGUES, LeagueInfo, MY_USER_ID
@@ -68,8 +69,9 @@ from sleeper_tool.stash_board import StashCandidate, build_stash_board
 from sleeper_tool.storage import Storage
 from sleeper_tool.streamer_planner import StreamPlan, plan_streams
 from sleeper_tool.team_status import CONTENDER, TeamStatusResult, classify_team_status, get_valued_picks_by_roster
-from sleeper_tool.trade_engine import DropCandidate, TradeProposal, generate_trade_proposals, identify_drop_candidates, value_currency
+from sleeper_tool.trade_engine import generate_trade_proposals, identify_drop_candidates
 from sleeper_tool.trade_opportunity_cost import MAJOR_LINEUP_COST, TradeEconomics, analyze_trade
+from sleeper_tool.trade_types import DropCandidate, TradeProposal
 from sleeper_tool.valuation import LeagueFormat, ValuationEngine, games_remaining
 from sleeper_tool.waiver_engine import MUST_ADD, STRONG_ADD, TimeSensitiveNote, WaiverTarget, get_time_sensitive_notes, get_waiver_targets
 

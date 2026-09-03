@@ -35,6 +35,7 @@ from __future__ import annotations
 from collections.abc import Collection
 from dataclasses import dataclass
 
+from sleeper_tool.asset_value import value_currency
 from sleeper_tool.config import LeagueInfo
 from sleeper_tool.lineup_optimizer import (
     LONG_TERM_INJURY_STATUSES,
@@ -47,7 +48,7 @@ from sleeper_tool.lineup_optimizer import (
 from sleeper_tool.roster_analysis import SKILL_POSITIONS, RosterEntry, ValuedRoster, player_name
 from sleeper_tool.storage import Storage
 from sleeper_tool.team_status import CONTENDER
-from sleeper_tool.trade_engine import identify_needs, value_currency
+from sleeper_tool.trade_engine import identify_needs
 from sleeper_tool.valuation import ValuationEngine, games_remaining
 from sleeper_tool.waiver_engine import (
     INSURANCE,

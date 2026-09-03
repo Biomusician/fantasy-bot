@@ -38,10 +38,10 @@ from __future__ import annotations
 from collections.abc import Collection
 from dataclasses import dataclass
 
+from sleeper_tool.asset_value import DYNASTY_CURRENCY, value_currency
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup, projection_of
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
 from sleeper_tool.team_status import young_max_age
-from sleeper_tool.trade_engine import DYNASTY_CURRENCY, value_currency
 from sleeper_tool.valuation import composite_overall_rank
 
 DYNASTY_CLOG_RANK_CUTOFF = 150  # outside the top-N reconciled overall dynasty rank

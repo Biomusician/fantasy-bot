@@ -34,12 +34,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from statistics import median
 
+from sleeper_tool.asset_value import DYNASTY_CURRENCY, value_currency
 from sleeper_tool.draft_picks import OwnedPick
 from sleeper_tool.formatting import ordinal
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup
 from sleeper_tool.roster_analysis import ValuedRoster
 from sleeper_tool.team_status import REBUILD, _avg_percentile, veteran_min_age
-from sleeper_tool.trade_engine import DYNASTY_CURRENCY, _pick_key, value_currency
+from sleeper_tool.draft_picks import pick_key
 from sleeper_tool.valuation import CORE_SKILL_POSITIONS
 
 BOTTOM_UNITS = 3
@@ -103,7 +104,7 @@ class PickOpportunity:
     weak_aging_positions: list[str] = field(default_factory=list)
 
     def assessment_for(self, pick: OwnedPick) -> PickAssessment | None:
-        return next((a for a in self.assessments if _pick_key(a.pick) == _pick_key(pick)), None)
+        return next((a for a in self.assessments if pick_key(a.pick) == pick_key(pick)), None)
 
     def classification_for(self, pick: OwnedPick) -> str | None:
         a = self.assessment_for(pick)

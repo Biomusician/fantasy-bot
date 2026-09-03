@@ -20,7 +20,7 @@ from sleeper_tool.report_data import (
 )
 from sleeper_tool.roster_clog import RosterClog
 from sleeper_tool.source_disagreement import MARKET_ABOVE_PROJECTION, SOURCE_DISAGREEMENT, STRONG_CONSENSUS, SourceView
-from sleeper_tool.trade_engine import TradeProposal
+from sleeper_tool.trade_types import TradeProposal
 from sleeper_tool.trade_opportunity_cost import FAVORABLE, MAJOR_LINEUP_COST, MOSTLY_NEUTRAL, ROUGHLY_EVEN, TradeEconomics, analyze_trade
 from sleeper_tool.waiver_engine import WaiverTarget
 

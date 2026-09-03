@@ -42,8 +42,8 @@ from __future__ import annotations
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass, replace
 
+from sleeper_tool.asset_value import value_currency
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
-from sleeper_tool.trade_engine import value_currency
 from sleeper_tool.valuation import composite_overall_rank
 
 NON_STARTER_SLOTS = frozenset({"BN", "IR", "TAXI"})

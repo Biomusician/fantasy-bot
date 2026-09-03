@@ -3,7 +3,7 @@
 The trade engine says what to send. This turns each of a league's top
 LADDERS_PER_LEAGUE buy-low / pick-target proposals into three steps,
 every one of which still fits the other manager's roster (the same
-_recipient_need_fit test the engine applies) and is rated with the same
+recipient_need_fit test the engine applies) and is rated with the same
 rate_acceptance rubric:
 
   Opening    the CHEAPEST package (by my outgoing value) that still rates
@@ -33,22 +33,15 @@ from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from itertools import combinations
 
+from sleeper_tool.asset_value import DYNASTY_CURRENCY, value_for_currency
 from sleeper_tool.draft_picks import OwnedPick
 from sleeper_tool.owner_profiles import get_owner_profile
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
-from sleeper_tool.trade_engine import (
-    ACCEPTANCE_TIERS,
-    DYNASTY_CURRENCY,
-    OpponentFit,
-    TradeProposal,
-    _pick_key,
-    _recipient_need_fit,
-    _status_fit,
-    _tradeable_pool,
-    generate_trade_message,
-    rate_acceptance,
-    value_for_currency,
-)
+from sleeper_tool.roster_assets import tradeable_pool
+from sleeper_tool.trade_fit import recipient_need_fit, status_fit
+from sleeper_tool.trade_messages import generate_trade_message
+from sleeper_tool.trade_rating import ACCEPTANCE_TIERS, rate_acceptance
+from sleeper_tool.trade_types import OpponentFit, TradeProposal, proposal_asset_key
 
 LADDERS_PER_LEAGUE = 2
 MIN_OPENING_ACCEPTANCE = "Moderate"
@@ -98,7 +91,7 @@ class LadderStep:
         return self.ratio < LOWBALL_RATIO
 
     def key(self) -> frozenset:
-        return frozenset([*(("player", e.player_id) for e in self.players), *(("pick", _pick_key(p)) for p in self.picks)])
+        return proposal_asset_key(self.players, self.picks)
 
 
 @dataclass
@@ -146,14 +139,14 @@ def build_negotiation_ladder(
     currency = proposal.currency
     target = proposal.receive[0] if proposal.receive else None
     profile = get_owner_profile(their_roster.owner_username or "", proposal.league_name)
-    pool = _tradeable_pool(my_roster, my_status)
+    pool = tradeable_pool(my_roster, my_status)
 
     steps: list[LadderStep] = []
     for players, picks, outgoing in _packages(pool, my_picks, currency):
         ratio = outgoing / baseline
         if ratio < MIN_OUTGOING_RATIO or ratio > MAX_OUTGOING_RATIO:
             continue
-        any_fit, all_fit, notes = _recipient_need_fit(
+        any_fit, all_fit, notes = recipient_need_fit(
             their_roster, players, currency, exclude_player_id=target.player_id if target else None
         )
         if not any_fit:
@@ -163,7 +156,7 @@ def build_negotiation_ladder(
             would_upgrade_their_roster=all_fit,
             fit_notes=notes,
             opponent_status=their_status,
-            status_fit=_status_fit(players, picks, their_status),
+            status_fit=status_fit(players, picks, their_status),
             piece_count=len(players) + len(picks),
         )
         rating, reasons = rate_acceptance(fit, ratio, profile, give=players)
@@ -172,7 +165,7 @@ def build_negotiation_ladder(
     if not steps:
         return None
 
-    base_key = frozenset([*(("player", e.player_id) for e in proposal.give), *(("pick", _pick_key(p)) for p in proposal.give_picks)])
+    base_key = proposal_asset_key(proposal.give, proposal.give_picks)
     base_step = next((s for s in steps if s.key() == base_key), None)
     openable = [s for s in steps if _tier(s.acceptance) >= _tier(MIN_OPENING_ACCEPTANCE)]
     opening = min(openable, key=lambda s: (s.outgoing_value, -_tier(s.acceptance))) if openable else base_step

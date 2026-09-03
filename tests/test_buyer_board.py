@@ -16,7 +16,7 @@ from sleeper_tool.buyer_board import (
 from sleeper_tool.league_economy import FREQUENT_TRADER, INACTIVE_TRADER, POSITION_HEAVY, LeagueEconomy, ManagerEconomy
 from sleeper_tool.replacement_value import PositionMarket, ReplacementMarket
 from sleeper_tool.team_status import CONTENDER, REBUILD
-from sleeper_tool.trade_engine import TradeProposal
+from sleeper_tool.trade_types import TradeProposal
 
 POSITIONS = ("QB", "RB", "WR", "BN", "BN")
 

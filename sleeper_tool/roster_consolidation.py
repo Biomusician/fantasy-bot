@@ -12,7 +12,7 @@ A consolidation is two of my players for one of theirs where:
   - value is matched with the engine's own numbers, inside
     [VALUE_RATIO_MIN, VALUE_RATIO_MAX] (a 2-for-1 premium is expected);
   - at least one outgoing piece plausibly helps the counterparty
-    (trade_engine._recipient_need_fit).
+    (trade_fit.recipient_need_fit).
 Acceptance is bucketed by the engine's own rate_acceptance with the same
 OpponentFit shape the trade engine builds. If the trade would leave a
 starter Fragile (contender_insurance), the proposal says so. At most
@@ -24,27 +24,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from itertools import combinations
 
+from sleeper_tool.asset_value import corroborated, value_currency, value_for_currency
 from sleeper_tool.config import LeagueInfo
 from sleeper_tool.contender_insurance import identify_fragile_starters
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup, optimize_lineup_after_moves, roster_after_moves
 from sleeper_tool.owner_profiles import get_owner_profile
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
+from sleeper_tool.roster_assets import UNTOUCHABLE_COUNT, untouchable_ids
 from sleeper_tool.team_status import CONTENDER, MIDDLING, TeamStatusResult
-from sleeper_tool.trade_engine import (
-    UNTOUCHABLE_COUNT,
-    OpponentFit,
-    TradeProposal,
-    _corroborated,
-    _recipient_need_fit,
-    _status_fit,
-    _untouchable_ids,
-    generate_trade_message,
-    identify_depth_needs,
-    proposal_confidence,
-    rate_acceptance,
-    value_currency,
-    value_for_currency,
-)
+from sleeper_tool.trade_engine import identify_depth_needs
+from sleeper_tool.trade_fit import recipient_need_fit, status_fit
+from sleeper_tool.trade_messages import generate_trade_message
+from sleeper_tool.trade_rating import proposal_confidence, rate_acceptance
+from sleeper_tool.trade_types import OpponentFit, TradeProposal
 from sleeper_tool.valuation import games_remaining
 
 MIN_WEEKLY_IMPROVEMENT = 3.0
@@ -109,10 +101,10 @@ def find_consolidations(
     currency = value_currency(my_roster)
     per_week = games_remaining(current_week)
     my_starters = set(lineup.starter_ids)
-    untouchable = _untouchable_ids(my_roster, currency, UNTOUCHABLE_COUNT)
+    untouchable = untouchable_ids(my_roster, currency, UNTOUCHABLE_COUNT)
     pool = [
         e for e in my_roster.entries
-        if _corroborated(e, currency) and e.player_id not in untouchable and e.player_id not in exclude_ids
+        if corroborated(e, currency) and e.player_id not in untouchable and e.player_id not in exclude_ids
         and not e.is_taxi and not e.is_reserve and e.value.proj_points is not None
     ]
     non_starters = sorted((e for e in pool if e.player_id not in my_starters), key=lambda e: -(value_for_currency(e.value, currency) or 0))[:MAX_MY_PIECES]
@@ -133,11 +125,11 @@ def find_consolidations(
     for rid, their in rosters.items():
         if rid == my_roster.roster_id or not their.entries:
             continue
-        their_untouchable = _untouchable_ids(their, currency, UNTOUCHABLE_COUNT)
+        their_untouchable = untouchable_ids(their, currency, UNTOUCHABLE_COUNT)
         targets = sorted(
             (
                 e for e in their.entries
-                if _corroborated(e, currency) and e.player_id not in their_untouchable and not e.is_reserve and not e.is_taxi
+                if corroborated(e, currency) and e.player_id not in their_untouchable and not e.is_reserve and not e.is_taxi
                 and e.value.proj_points is not None and _weekly(e, per_week) >= weakest_weekly + MIN_WEEKLY_IMPROVEMENT
             ),
             key=lambda e: (-(e.value.proj_points or 0), e.name),
@@ -167,7 +159,7 @@ def find_consolidations(
                 gain = round((after.total_projected_points - base_points) / per_week, 1)
                 if gain < MIN_WEEKLY_IMPROVEMENT:
                     continue
-                fits_any, fits_all, notes = _recipient_need_fit(their, [a, b], currency, exclude_player_id=t.player_id)
+                fits_any, fits_all, notes = recipient_need_fit(their, [a, b], currency, exclude_player_id=t.player_id)
                 if not fits_any:
                     continue
                 combos.append((gain, -abs(ratio - 1.0), t, (a, b), after, ratio, fits_all, notes))
@@ -197,7 +189,7 @@ def find_consolidations(
             would_upgrade_their_roster=fits_all,
             fit_notes=notes,
             opponent_status=their_status,
-            status_fit=_status_fit([a, b], [], their_status),
+            status_fit=status_fit([a, b], [], their_status),
             piece_count=2,
         )
         profile = get_owner_profile(their.owner_username or "", league.name)

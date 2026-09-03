@@ -20,7 +20,7 @@ from sleeper_tool.market_velocity import (
     classify_velocity,
 )
 from sleeper_tool.report_data import LeagueReportData
-from sleeper_tool.trade_engine import DropCandidate, TradeProposal
+from sleeper_tool.trade_types import DropCandidate, TradeProposal
 from sleeper_tool.waiver_engine import WaiverTarget
 
 

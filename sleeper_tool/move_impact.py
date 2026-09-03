@@ -33,10 +33,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from sleeper_tool.asset_value import value_currency, value_for_currency
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup, roster_after_moves, with_optimized_starters
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
 from sleeper_tool.team_status import classify_team_status
-from sleeper_tool.trade_engine import ACCEPTANCE_TIERS, TradeProposal, identify_depth_needs, value_currency, value_for_currency
+from sleeper_tool.trade_engine import identify_depth_needs
+from sleeper_tool.trade_rating import ACCEPTANCE_TIERS
+from sleeper_tool.trade_types import TradeProposal
 from sleeper_tool.valuation import games_remaining
 
 MATERIAL_WEEKLY_POINTS = 2.0

@@ -2,10 +2,10 @@
 counterparties most likely to actually pay, scored on signals the tool
 already computes (nothing new is estimated):
 
-  need        the piece upgrades their position (trade_engine._piece_fits)
+  need        the piece upgrades their position (trade_fit.piece_fits)
               and/or that position is one of their top needs
   timeline    contender wants proven production, rebuild wants youth
-              (trade_engine._status_fit)
+              (trade_fit.status_fit)
   economy     League Economy labels: a Frequent Trader is a live buyer; an
               Inactive Trader is capped at Possible Fit whatever the need;
               a manager already heavy at the position has less use for him
@@ -27,22 +27,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from sleeper_tool.asset_value import value_currency, value_for_currency
 from sleeper_tool.draft_picks import OwnedPick
 from sleeper_tool.league_economy import FREQUENT_TRADER, INACTIVE_TRADER, POSITION_HEAVY, LeagueEconomy
 from sleeper_tool.replacement_value import SCARCE, VERY_SCARCE, ReplacementMarket
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
+from sleeper_tool.roster_assets import tradeable_pool
 from sleeper_tool.team_status import MIDDLING
+from sleeper_tool.trade_fit import piece_fits, status_fit
+from sleeper_tool.trade_types import TradeProposal
 from sleeper_tool.valuation import CORE_SKILL_POSITIONS
-from sleeper_tool.trade_engine import (
-    TradeProposal,
-    _piece_fits,
-    _status_fit,
-    _tradeable_pool,
-    identify_needs,
-    identify_sell_high,
-    value_currency,
-    value_for_currency,
-)
+from sleeper_tool.trade_engine import identify_needs, identify_sell_high
 
 STRONG_FIT_MIN = 4
 POSSIBLE_FIT_MIN = 2
@@ -106,17 +101,17 @@ def score_buyer(
     reasons: list[str] = []
     pos = piece.position or "?"
     heavy = POSITION_HEAVY in economy_labels and pos in heavy_positions
-    if _piece_fits(their, piece, currency):
+    if piece_fits(their, piece, currency):
         score += 2
         reasons.append(f"upgrades their {pos}")
     if not heavy and pos in identify_needs(their)[:TOP_NEEDS]:
         score += 1
         reasons.append(f"{pos} is a top need")
-    status_fit = _status_fit([piece], [], their_status)
-    if status_fit == "good_fit":
+    timeline_fit = status_fit([piece], [], their_status)
+    if timeline_fit == "good_fit":
         score += 1
         reasons.append(f"fits a {their_status} timeline")
-    elif status_fit == "mismatch":
+    elif timeline_fit == "mismatch":
         score -= 1
         reasons.append(f"cuts against a {their_status} timeline")
     if FREQUENT_TRADER in economy_labels:
@@ -132,7 +127,7 @@ def score_buyer(
         score += 1
         reasons.append(f"{pos} is {scarcity} on waivers")
     price = value_for_currency(piece.value, currency) or 0
-    funds = sum(value_for_currency(e.value, currency) or 0 for e in _tradeable_pool(their, their_status)) + pick_value
+    funds = sum(value_for_currency(e.value, currency) or 0 for e in tradeable_pool(their, their_status)) + pick_value
     if price and funds < price:
         score -= UNFUNDED_PENALTY
         reasons.append("little to pay with")

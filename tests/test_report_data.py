@@ -4,7 +4,7 @@ from sleeper_tool.html_report import _league_panel
 from sleeper_tool.playoff_leverage import PlayoffLeverage
 from sleeper_tool.report import render_league_section
 from sleeper_tool.report_data import LeagueReportData, _safe_build_league_report_data, build_priority_actions
-from sleeper_tool.trade_engine import DropCandidate, TradeProposal
+from sleeper_tool.trade_types import DropCandidate, TradeProposal
 from sleeper_tool.waiver_engine import TimeSensitiveNote, WaiverTarget
 
 

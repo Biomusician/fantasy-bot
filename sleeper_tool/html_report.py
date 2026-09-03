@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from html import escape as esc
 
+from sleeper_tool.asset_value import percentile_for_currency, value_label_for_currency
 from sleeper_tool.decision_delta import DecisionDelta
 from sleeper_tool.formatting import age_str
 from sleeper_tool.league_economy import LeagueEconomy
@@ -24,7 +25,6 @@ from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyRep
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
 from sleeper_tool.roster_clog import RosterClog
 from sleeper_tool.streamer_planner import ADD, HOLD, SEQUENCE, StreamPlan
-from sleeper_tool.trade_engine import DropCandidate, TradeProposal, _player_confidence, percentile_for_currency, value_label_for_currency
 from sleeper_tool.trade_opportunity_cost import (
     COSTS_LINEUP,
     FAVORABLE,
@@ -34,6 +34,8 @@ from sleeper_tool.trade_opportunity_cost import (
     UNFAVORABLE,
     TradeEconomics,
 )
+from sleeper_tool.trade_rating import player_confidence
+from sleeper_tool.trade_types import DropCandidate, TradeProposal
 from sleeper_tool.waiver_engine import TimeSensitiveNote, WaiverTarget
 
 TREND_META = {
@@ -80,13 +82,13 @@ def _confidence_flag(v) -> str:
     """A small marker for a shaky valuation, shown right on the roster
     table instead of only ever surfacing inside a generated trade's
     collapsed caveats (i.e. only when that player happens to be part of a
-    trade offer that week). Reuses trade_engine's own _player_confidence
+    trade offer that week). Reuses trade_rating's own player_confidence
     rubric directly rather than re-deriving a partial copy of it — a
-    previous version checked only 2 of the 4 signals _player_confidence
+    previous version checked only 2 of the 4 signals player_confidence
     considers, so a player who'd show "Confidence: Medium" the moment
     they appeared in a trade card could carry no warning at all here.
     """
-    if _player_confidence(v) == "High":
+    if player_confidence(v) == "High":
         return ""
     title = v.thin_market_caveat or v.panel_disagreement_caveat or (
         "Only one ranking source has this player — treat the value as less reliable"

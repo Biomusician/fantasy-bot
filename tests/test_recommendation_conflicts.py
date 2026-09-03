@@ -7,7 +7,7 @@ from sleeper_tool.portfolio_exposure import VERY_HIGH
 from sleeper_tool.recommendation_conflicts import CONFLICTED, TRADE, WAIVER, conflict_for, detect_conflicts
 from sleeper_tool.replacement_value import PositionMarket, ReplacementMarket
 from sleeper_tool.report_data import LeagueReportData, build_priority_actions
-from sleeper_tool.trade_engine import TradeProposal
+from sleeper_tool.trade_types import TradeProposal
 from sleeper_tool.trade_opportunity_cost import COSTS_LINEUP, FAVORABLE, MAJOR_LINEUP_COST, MOSTLY_NEUTRAL, ROUGHLY_EVEN, TradeEconomics
 from sleeper_tool.waiver_engine import WaiverTarget
 
@@ -95,7 +95,7 @@ def test_waiver_conflicts_developmental_drop_and_exposure():
 
 
 def test_drops_the_tool_itself_recommends_or_that_have_no_value_are_not_conflicts():
-    from sleeper_tool.trade_engine import DropCandidate
+    from sleeper_tool.trade_types import DropCandidate
 
     rookie = _p("rookie", "WR", years_exp=0, age=22.0)
     nobody = _p("nobody", "WR", years_exp=0, age=22.0)

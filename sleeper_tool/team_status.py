@@ -103,15 +103,17 @@ class TeamStatusResult:
 
 
 def _percentile(pv: PlayerValue, currency: str) -> float | None:
-    """Mirrors trade_engine._need_percentile without importing that module
-    (trade_engine imports THIS module to bias trade strategy on team
-    status, so importing back would be circular). Prefers the WITHIN-
-    POSITION percentile for dynasty currency, for the same reason
-    trade_engine's own docstring gives: pool-wide percentile makes a
-    shallow position (TE) look weaker and a deep one (RB/WR) look stronger
-    purely from pool-size, not real roster strength. Redraft currency has
-    no positional percentile plumbed through yet (same known, smaller-
-    impact gap trade_engine documents), so it falls back to pool-wide.
+    """Mirrors asset_value.need_percentile without importing it. Kept
+    duplicated rather than shared because roster_assets/trade_fit import
+    THIS module for the age and status constants, and this file predates
+    the split — the duplication is two lines and the alternative is a
+    dependency edge in the wrong direction. Prefers the WITHIN-POSITION
+    percentile for dynasty currency, for the same reason asset_value's own
+    docstring gives: pool-wide percentile makes a shallow position (TE)
+    look weaker and a deep one (RB/WR) look stronger purely from pool-size,
+    not real roster strength. Redraft currency has no positional percentile
+    plumbed through yet (the same known, smaller-impact gap asset_value
+    documents), so it falls back to pool-wide.
     """
     if currency == "dynasty" and pv.dynasty_positional_percentile is not None:
         return pv.dynasty_positional_percentile

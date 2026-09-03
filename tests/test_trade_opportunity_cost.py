@@ -2,7 +2,7 @@ from conftest import make_entry, make_value
 
 from sleeper_tool.move_impact import MoveImpact, RosterSnapshot
 from sleeper_tool.replacement_value import PositionMarket, ReplacementMarket
-from sleeper_tool.trade_engine import TradeProposal
+from sleeper_tool.trade_types import TradeProposal
 from sleeper_tool.trade_opportunity_cost import (
     COSTS_LINEUP,
     COSTS_MAX,

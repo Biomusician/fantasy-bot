@@ -234,34 +234,40 @@ sleeper_tool/
   roster_analysis.py      Joins Sleeper rosters + valuations
   owner_profiles.py        League-mate trading-tendency notes
   team_status.py            Contender/middling/rebuild classification
-  trade_engine.py            Buy-low/sell-high + trade proposal generation
-  waiver_engine.py             Trending-add waiver targeting + alerts
-  draft_picks.py                 Traded-pick ownership + KTC pick valuation
-  lineup_optimizer.py             Best legal lineup for the league's real slot list (shared)
-  lineup_leverage.py               Start/sit closeness + bench surplus
-  move_impact.py                    Post-move roster preview (material deltas only)
-  contender_insurance.py             Fragile-starter detection + free-agent cover
-  bye_collision.py                    Four-week bye look-ahead
-  roster_clog.py                       Dead roster spots
-  portfolio_exposure.py                 Cross-league player concentration
-  league_economy.py                      Per-manager trade/pick/position tendencies
-  playoff_leverage.py                     Standings vs the playoff cut + deadline window
-  pick_opportunity.py                      Strategic/Useful/Spendable pick classification
-  negotiation_ladder.py                     Opening / fallback / walk-away per top trade
-  decision_delta.py                          "Since last run" snapshot diffing (28 daily files kept)
-  replacement_value.py                        League-relative replacement levels + scarcity labels
-  source_disagreement.py                       KTC/FantasyPros/RotoBaller consensus in rank space
-  trade_opportunity_cost.py                     Asset economics vs roster economics per trade
-  nfl_schedule.py                                nflverse schedule, cached daily (the one non-ranking fetch)
-  streamer_planner.py                             QB/TE/K/DEF one-player vs two-player streaming plans
-  market_velocity.py                               Direction-of-travel labels from snapshot history
-  matchup_leverage.py                               This-week gap vs the real opponent
-  opponent_blocker.py                                At most one Defensive Add per league per week
-  roster_consolidation.py                             2-for-1 proposals for contenders
-  stash_board.py                                       Dynasty/keeper developmental free agents
-  schedule_window.py                                    Next-3 / remaining / playoff windows, tiebreaks only
-  buyer_board.py                                         Likely buyers for each sell-high piece
-  recommendation_conflicts.py                             "Conflicted Move" detection across signals
+  asset_value.py             This league's value currency and the primitives that read it
+  trade_types.py              TradeProposal / DropCandidate / OpponentFit records
+  roster_assets.py             Untouchable cornerstones vs. the tradeable pool
+  trade_fit.py                  Would the receiving roster actually want this?
+  trade_rating.py                Acceptance tier + valuation confidence for a package
+  trade_messages.py               Chat-message assembly from pre-computed clauses
+  trade_engine.py                  Buy-low/sell-high + trade proposal generation
+  waiver_engine.py                   Trending-add waiver targeting + alerts
+  draft_picks.py                       Traded-pick ownership + KTC pick valuation
+  lineup_optimizer.py                   Best legal lineup for the league's real slot list (shared)
+  lineup_leverage.py                     Start/sit closeness + bench surplus
+  move_impact.py                          Post-move roster preview (material deltas only)
+  contender_insurance.py                   Fragile-starter detection + free-agent cover
+  bye_collision.py                          Four-week bye look-ahead
+  roster_clog.py                             Dead roster spots
+  portfolio_exposure.py                       Cross-league player concentration
+  league_economy.py                            Per-manager trade/pick/position tendencies
+  playoff_leverage.py                           Standings vs the playoff cut + deadline window
+  pick_opportunity.py                            Strategic/Useful/Spendable pick classification
+  negotiation_ladder.py                           Opening / fallback / walk-away per top trade
+  decision_delta.py                                "Since last run" snapshot diffing (28 daily files kept)
+  replacement_value.py                              League-relative replacement levels + scarcity labels
+  source_disagreement.py                             KTC/FantasyPros/RotoBaller consensus in rank space
+  trade_opportunity_cost.py                           Asset economics vs roster economics per trade
+  nfl_schedule.py                                      nflverse schedule, cached daily (the one non-ranking fetch)
+  streamer_planner.py                                   QB/TE/K/DEF one-player vs two-player streaming plans
+  market_velocity.py                                     Direction-of-travel labels from snapshot history
+  matchup_leverage.py                                     This-week gap vs the real opponent
+  opponent_blocker.py                                      At most one Defensive Add per league per week
+  roster_consolidation.py                                   2-for-1 proposals for contenders
+  stash_board.py                                             Dynasty/keeper developmental free agents
+  schedule_window.py                                          Next-3 / remaining / playoff windows, tiebreaks only
+  buyer_board.py                                               Likely buyers for each sell-high piece
+  recommendation_conflicts.py                                   "Conflicted Move" detection across signals
   report_data.py                  Shared data layer for both report formats
   report.py                        Markdown renderer
   html_report.py                    HTML dashboard renderer

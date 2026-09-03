@@ -38,9 +38,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from sleeper_tool.asset_value import DYNASTY_CURRENCY
 from sleeper_tool.name_matching import normalize_name
 from sleeper_tool.rankings.cache import RankingSnapshot
-from sleeper_tool.trade_engine import DYNASTY_CURRENCY
 from sleeper_tool.valuation import LeagueFormat, _ktc_value_for_format, is_panel_disagreement
 
 SIGNIFICANT_RANK_GAP = 20  # positional rank places, at the top of a list
