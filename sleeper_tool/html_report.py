@@ -17,10 +17,20 @@ from sleeper_tool.move_impact import MoveImpact
 from sleeper_tool.negotiation_ladder import NegotiationLadder
 from sleeper_tool.pick_opportunity import PickOpportunity
 from sleeper_tool.portfolio_exposure import VERY_HIGH, PortfolioExposure
+from sleeper_tool.replacement_value import SCARCE, VERY_SCARCE, ReplacementMarket
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
 from sleeper_tool.roster_clog import RosterClog
 from sleeper_tool.trade_engine import DropCandidate, TradeProposal, _player_confidence, percentile_for_currency, value_label_for_currency
+from sleeper_tool.trade_opportunity_cost import (
+    COSTS_LINEUP,
+    FAVORABLE,
+    IMPROVES_LINEUP,
+    MAJOR_LINEUP_COST,
+    STRATEGIC_TRADEOFF,
+    UNFAVORABLE,
+    TradeEconomics,
+)
 from sleeper_tool.waiver_engine import TimeSensitiveNote, WaiverTarget
 
 TREND_META = {
@@ -132,9 +142,10 @@ def _roster_section(roster: ValuedRoster, currency: str) -> str:
 _DECISION_CHIP_KIND = {"Toss-Up": "caution", "Lean Start": "neutral"}
 
 
-def _lineup_leverage_section(lev: LineupLeverage | None, currency: str) -> str:
+def _lineup_leverage_section(lev: LineupLeverage | None, currency: str, clauses: dict[str, str] | None = None) -> str:
     if lev is None or (not lev.close_calls and not lev.bench_surplus):
         return ""
+    clauses = clauses or {}
     items = []
     for d in lev.close_calls:
         hint = " &middot; close enough that matchup should decide" if d.label == "Toss-Up" else ""
@@ -150,7 +161,9 @@ def _lineup_leverage_section(lev: LineupLeverage | None, currency: str) -> str:
             f'<li class="alert-item">{_chip("Bench surplus", "accent")} <strong>{esc(s.entry.name)}</strong> '
             f"({esc(s.entry.position or '?')}, {pctl} {esc(value_label_for_currency(currency))}) projects at "
             f"{s.ratio:.0%} of {esc(s.displaced_starter.name)} ({esc(s.displaced_slot)}) but sits "
-            '<div class="drop-reasons">Value that could be traded for a starter without costing lineup points</div></li>'
+            '<div class="drop-reasons">Value that could be traded for a starter without costing lineup points'
+            + (f" &middot; {esc(clauses[s.entry.player_id])}" if s.entry.player_id in clauses else "")
+            + "</div></li>"
         )
     return f"""
     <section class="panel-block">
@@ -185,6 +198,7 @@ def _ladder_block(ladder: NegotiationLadder | None) -> str:
 
     def step(s) -> str:
         note = f' <span class="muted">— {esc(s.starter_note)}</span>' if s.starter_note else ""
+        note += f' <span class="muted">— {esc(s.source_note)}</span>' if s.source_note else ""
         return (
             f"<strong>{esc(s.asset_names)}</strong> "
             f'<span class="tabular muted">{s.outgoing_value:.0f} · {s.ratio:.0%} of what you get</span> '
@@ -210,7 +224,26 @@ def _ladder_block(ladder: NegotiationLadder | None) -> str:
     return f'<div class="ladder"><span class="rationale-label">Negotiation ladder</span><ul>{"".join(rows)}</ul></div>'
 
 
-def _trade_card(p: TradeProposal, index: int, impact: MoveImpact | None = None, ladder: NegotiationLadder | None = None) -> str:
+_ASSET_CHIP_KIND = {FAVORABLE: "positive", UNFAVORABLE: "caution"}
+_ROSTER_CHIP_KIND = {IMPROVES_LINEUP: "positive", COSTS_LINEUP: "caution", MAJOR_LINEUP_COST: "negative"}
+
+
+def _economics_chips(econ: TradeEconomics | None) -> str:
+    if econ is None:
+        return ""
+    chips = _chip("Assets: " + esc(econ.asset_economics), _ASSET_CHIP_KIND.get(econ.asset_economics, "neutral"))
+    if econ.roster_economics:
+        delta = f" ({econ.weekly_delta:+.1f}/wk)" if econ.weekly_delta is not None else ""
+        chips += _chip("Lineup: " + esc(econ.roster_economics) + delta, _ROSTER_CHIP_KIND.get(econ.roster_economics, "neutral"))
+    if econ.strategic_tradeoff:
+        chips += _chip(STRATEGIC_TRADEOFF, "caution")
+    return chips
+
+
+def _trade_card(
+    p: TradeProposal, index: int, impact: MoveImpact | None = None, ladder: NegotiationLadder | None = None,
+    economics: TradeEconomics | None = None,
+) -> str:
     give_chips = "".join(
         [*(_asset_chip(e.name, is_pick=False) for e in p.give), *(_asset_chip(pk.name, is_pick=True) for pk in p.give_picks)]
     )
@@ -252,7 +285,9 @@ def _trade_card(p: TradeProposal, index: int, impact: MoveImpact | None = None, 
       <div class="trade-signals">
         {_chip('Acceptance: ' + esc(p.acceptance_rating), _ACCEPTANCE_CHIP_KIND.get(p.acceptance_rating, 'neutral'))}
         {_chip('Confidence: ' + esc(p.confidence), _CONFIDENCE_CHIP_KIND.get(p.confidence, 'neutral'))}
+        {_economics_chips(economics)}
       </div>
+      {f'<p class="muted status-reason">{esc(economics.scarcity_note)}</p>' if economics is not None and economics.scarcity_note else ""}
       <p class="trade-target">To <strong>{target}</strong> &middot; {esc(value_label)}: {p.my_value_total:.0f} vs {p.their_value_total:.0f}</p>
       {_impact_block(impact)}
       {message_block}
@@ -296,6 +331,7 @@ def _waiver_table(targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | 
             impact_html = '<div class="impact-inline"><b>Impact:</b> ' + (
                 esc("; ".join(deltas)) if deltas else "no lineup change &mdash; depth only"
             ) + "</div>"
+        notes_html = "".join(f'<div class="impact-inline">{esc(n)}</div>' for n in t.notes)
         rows.append(
             "<tr>"
             f"<td>{tier_chip}</td>"
@@ -304,7 +340,7 @@ def _waiver_table(targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | 
             f'<td>{drop}</td>'
             f'<td>{_chip(t.horizon, "neutral")}</td>'
             f'<td class="tabular">{faab}</td>'
-            f'<td class="waiver-reason">{esc(t.reason)}{impact_html}</td>'
+            f'<td class="waiver-reason">{esc(t.reason)}{impact_html}{notes_html}</td>'
             "</tr>"
         )
     return (
@@ -359,7 +395,7 @@ def _roster_clogs_section(clogs: list[RosterClog]) -> str:
 _PICK_CHIP_KIND = {"Strategic": "negative", "Useful": "caution", "Spendable": "positive"}
 
 
-def _pick_opportunity_section(opp: PickOpportunity | None) -> str:
+def _pick_opportunity_section(opp: PickOpportunity | None, market: ReplacementMarket | None = None) -> str:
     if opp is None or not opp.assessments:
         return ""
     items = "".join(
@@ -372,7 +408,7 @@ def _pick_opportunity_section(opp: PickOpportunity | None) -> str:
     weak = [u for u in opp.units if u.bottom_three]
     units_note = (
         '<p class="roster-note">Position units driving this: '
-        + esc("; ".join(u.describe() + (" (weak-aging)" if u.weak_aging else "") for u in weak))
+        + esc("; ".join(_unit_text(u, market) for u in weak))
         + "</p>"
         if weak
         else ""
@@ -382,6 +418,38 @@ def _pick_opportunity_section(opp: PickOpportunity | None) -> str:
       <h3>Draft capital <span class="muted">&middot; what your 1st/2nd-round picks mean to this roster</span></h3>
       <ul class="alert-list">{items}</ul>
       {units_note}
+    </section>
+    """
+
+
+def _unit_text(u, market: ReplacementMarket | None) -> str:
+    text = u.describe() + (" (weak-aging)" if u.weak_aging else "")
+    scarcity = market.scarcity_of(u.position) if market is not None else None
+    return text + (f", {scarcity} replacement market" if scarcity else "")
+
+
+_SCARCITY_CHIP_KIND = {VERY_SCARCE: "negative", SCARCE: "caution", "Normal": "neutral", "Abundant": "positive"}
+
+
+def _replacement_market_section(market: ReplacementMarket | None) -> str:
+    if market is None or not market.positions:
+        return ""
+    items = "".join(
+        f'<li class="alert-item">{_chip(m.scarcity, _SCARCITY_CHIP_KIND.get(m.scarcity, "neutral"))} '
+        f"<strong>{esc(m.position)}</strong>"
+        f'<div class="drop-reasons">{esc(m.describe().split(" — ", 1)[-1])}</div></li>'
+        for m in market.scarcest()
+    )
+    notes = ""
+    if market.understated:
+        notes += '<p class="roster-note">Rank understates their edge here: ' + esc("; ".join(f"{c.entry.name} ({c.clause()})" for c in market.understated)) + "</p>"
+    if market.overstated:
+        notes += '<p class="roster-note">Rank overstates their edge here: ' + esc("; ".join(f"{c.entry.name} ({c.clause()})" for c in market.overstated)) + "</p>"
+    return f"""
+    <section class="panel-block">
+      <h3>Replacement market <span class="muted">&middot; how replaceable each position is from this league's wire</span></h3>
+      <ul class="alert-list">{items}</ul>
+      {notes}
     </section>
     """
 
@@ -484,7 +552,7 @@ def _league_panel(data: LeagueReportData) -> str:
         <section class="panel-block">
           <h3>Trade offers</h3>
           <div class="trade-grid">
-            {"".join(_trade_card(p, i, data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None, data.ladders.get(i - 1)) for i, p in enumerate(data.proposals, start=1)) if data.proposals else '<p class="empty-note">No trade offers cleared the value-match bar this week.</p>'}
+            {"".join(_trade_card(p, i, data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None, data.ladders.get(i - 1), data.trade_economics[i - 1] if i - 1 < len(data.trade_economics) else None) for i, p in enumerate(data.proposals, start=1)) if data.proposals else '<p class="empty-note">No trade offers cleared the value-match bar this week.</p>'}
           </div>
         </section>
         <section class="panel-block">
@@ -497,11 +565,12 @@ def _league_panel(data: LeagueReportData) -> str:
         # default so twelve capabilities don't read as twelve equal panels.
         context_html = (
             _roster_clogs_section(data.roster_clogs)
-            + _pick_opportunity_section(data.pick_opportunity)
+            + _replacement_market_section(data.replacement)
+            + _pick_opportunity_section(data.pick_opportunity, data.replacement)
             + _league_economy_section(data.league_economy, data.roster.roster_id)
         )
         context = (
-            f'<details class="context-details"><summary>Roster context &middot; clogs, draft capital, league economy</summary>{context_html}</details>'
+            f'<details class="context-details"><summary>Roster context &middot; clogs, replacement market, draft capital, league economy</summary>{context_html}</details>'
             if context_html.strip()
             else ""
         )
@@ -512,7 +581,7 @@ def _league_panel(data: LeagueReportData) -> str:
         ordered = [alerts_section, trades_and_waivers] if has_high_alert else [trades_and_waivers, alerts_section]
         body = (
             _roster_section(data.roster, data.currency)
-            + _lineup_leverage_section(data.lineup_leverage, data.currency)
+            + _lineup_leverage_section(data.lineup_leverage, data.currency, data.replacement_clauses)
             + "".join(ordered)
             + context
         )

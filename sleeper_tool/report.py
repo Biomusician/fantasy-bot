@@ -12,10 +12,12 @@ from sleeper_tool.move_impact import MoveImpact
 from sleeper_tool.negotiation_ladder import NegotiationLadder
 from sleeper_tool.pick_opportunity import PickOpportunity
 from sleeper_tool.portfolio_exposure import PortfolioExposure
+from sleeper_tool.replacement_value import ReplacementMarket
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
 from sleeper_tool.roster_analysis import ValuedRoster
 from sleeper_tool.storage import Storage
 from sleeper_tool.trade_engine import DropCandidate, TradeProposal, percentile_for_currency, value_label_for_currency
+from sleeper_tool.trade_opportunity_cost import TradeEconomics
 from sleeper_tool.valuation import ValuationEngine
 from sleeper_tool.waiver_engine import WaiverTarget
 
@@ -111,9 +113,10 @@ def _render_roster_snapshot(roster: ValuedRoster, currency: str) -> list[str]:
 _DECISION_MARK = {"Toss-Up": "🟡", "Lean Start": "⚪"}
 
 
-def _render_lineup_leverage(lev: LineupLeverage | None, currency: str) -> list[str]:
+def _render_lineup_leverage(lev: LineupLeverage | None, currency: str, clauses: dict[str, str] | None = None) -> list[str]:
     if lev is None or (not lev.close_calls and not lev.bench_surplus):
         return []
+    clauses = clauses or {}
     lines = [f"**Lineup leverage** — best legal lineup projects ~{lev.weekly_starter_points:.0f} pts/week", ""]
     for d in lev.close_calls:
         lines.append(
@@ -127,6 +130,7 @@ def _render_lineup_leverage(lev: LineupLeverage | None, currency: str) -> list[s
             f"- **Bench surplus:** {s.entry.name} ({s.entry.position or '?'}, {pctl} {value_label_for_currency(currency)}) "
             f"projects at {s.ratio:.0%} of {s.displaced_starter.name} ({s.displaced_slot}) but sits — "
             "value that could be traded for a starter without costing lineup points"
+            + (f" · {clauses[s.entry.player_id]}" if s.entry.player_id in clauses else "")
         )
     lines.append("")
     return lines
@@ -135,6 +139,7 @@ def _render_lineup_leverage(lev: LineupLeverage | None, currency: str) -> list[s
 def _render_ladder(ladder: NegotiationLadder) -> list[str]:
     def step(s):
         note = f" — {s.starter_note}" if s.starter_note else ""
+        note += f" — {s.source_note}" if s.source_note else ""
         return f"{s.asset_names} ({s.outgoing_value:.0f}, {s.ratio:.0%} of what you get · acceptance {s.acceptance}){note}"
 
     lines = ["Negotiation ladder:"]
@@ -154,12 +159,17 @@ def _render_ladder(ladder: NegotiationLadder) -> list[str]:
     return lines
 
 
-def _render_trade_proposal(p: TradeProposal, index: int, impact: MoveImpact | None = None, ladder: NegotiationLadder | None = None) -> list[str]:
+def _render_trade_proposal(
+    p: TradeProposal, index: int, impact: MoveImpact | None = None, ladder: NegotiationLadder | None = None,
+    economics: TradeEconomics | None = None,
+) -> list[str]:
     lines = [f"**Offer {index} ({p.trade_type_label}): {p.summary_line()}**", ""]
     lines.append(
         f"*{value_label_for_currency(p.currency)}: {p.my_value_total:.0f} vs {p.their_value_total:.0f} "
         f"({p.balance_label.lower()}) · Acceptance: {p.acceptance_rating} · Confidence: {p.confidence}*"
     )
+    if economics is not None:
+        lines.append(f"*Economics: {economics.describe()}*")
     lines.append("")
     if impact is not None:
         deltas = impact.material_deltas()
@@ -211,6 +221,8 @@ def _render_waiver_targets(targets: list[WaiverTarget], impacts: dict[str, MoveI
         if impact is not None:
             deltas = impact.material_deltas()
             reason += " · **Impact:** " + ("; ".join(deltas) if deltas else "no lineup change — depth only")
+        if t.notes:
+            reason += " · " + " · ".join(t.notes)
         lines.append(
             f"| {mark} {t.priority_tier} | {t.name} | {t.position or '?'} | {t.team or '-'} | {drop} | "
             f"{t.horizon} | {faab} | {reason} |"
@@ -236,7 +248,7 @@ def _render_drop_candidates(candidates: list[DropCandidate]) -> list[str]:
 _PICK_MARK = {"Strategic": "🔒", "Useful": "🟡", "Spendable": "🟢"}
 
 
-def _render_pick_opportunity(opp: PickOpportunity) -> list[str]:
+def _render_pick_opportunity(opp: PickOpportunity, market: ReplacementMarket | None = None) -> list[str]:
     lines = ["What your 1st/2nd-round picks mean to this roster (an annotation, never a veto):", ""]
     for a in opp.assessments:
         value = f", KTC {a.pick.value:,}" if a.pick.value else ""
@@ -244,8 +256,28 @@ def _render_pick_opportunity(opp: PickOpportunity) -> list[str]:
     lines.append("")
     weak = [u for u in opp.units if u.bottom_three]
     if weak:
-        lines.append("Position units driving this: " + "; ".join(u.describe() + (" (weak-aging)" if u.weak_aging else "") for u in weak))
+        lines.append("Position units driving this: " + "; ".join(_unit_line(u, market) for u in weak))
         lines.append("")
+    return lines
+
+
+def _unit_line(u, market: ReplacementMarket | None) -> str:
+    text = u.describe() + (" (weak-aging)" if u.weak_aging else "")
+    scarcity = market.scarcity_of(u.position) if market is not None else None
+    return text + (f", {scarcity} replacement market" if scarcity else "")
+
+
+def _render_replacement_market(market: ReplacementMarket) -> list[str]:
+    lines = ["How replaceable each starting position is from THIS league's waiver wire (scarcest first):", ""]
+    for m in market.scarcest():
+        lines.append(f"- **{m.describe()}**" if m.scarcity in ("Scarce", "Very Scarce") else f"- {m.describe()}")
+    if market.understated:
+        lines.append("")
+        lines.append("Rank understates their edge here: " + "; ".join(f"{c.entry.name} ({c.clause()})" for c in market.understated))
+    if market.overstated:
+        lines.append("")
+        lines.append("Rank overstates their edge here: " + "; ".join(f"{c.entry.name} ({c.clause()})" for c in market.overstated))
+    lines.append("")
     return lines
 
 
@@ -295,7 +327,7 @@ def render_league_section(data: LeagueReportData) -> list[str]:
 
     lines.extend(_render_roster_snapshot(data.roster, data.currency))
     lines.append("")
-    lines.extend(_render_lineup_leverage(data.lineup_leverage, data.currency))
+    lines.extend(_render_lineup_leverage(data.lineup_leverage, data.currency, data.replacement_clauses))
 
     # Time-sensitive alerts lead when there's a high-severity one — a
     # scrolling reader shouldn't have to pass two possibly-empty sections
@@ -308,7 +340,8 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     if data.proposals:
         for i, p in enumerate(data.proposals, start=1):
             impact = data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None
-            trade_lines.extend(_render_trade_proposal(p, i, impact, data.ladders.get(i - 1)))
+            economics = data.trade_economics[i - 1] if i - 1 < len(data.trade_economics) else None
+            trade_lines.extend(_render_trade_proposal(p, i, impact, data.ladders.get(i - 1), economics))
             trade_lines.append("")
     else:
         trade_lines.append("No trade offers cleared the value-match bar this week.")
@@ -348,8 +381,11 @@ def render_league_section(data: LeagueReportData) -> list[str]:
         ] + [""]
         sections.append(("### Roster clogs (dead roster spots)", clog_lines))
 
+    if data.replacement is not None and data.replacement.positions:
+        sections.append(("### Replacement market", _render_replacement_market(data.replacement)))
+
     if data.pick_opportunity and data.pick_opportunity.assessments:
-        sections.append(("### Draft capital", _render_pick_opportunity(data.pick_opportunity)))
+        sections.append(("### Draft capital", _render_pick_opportunity(data.pick_opportunity, data.replacement)))
 
     economy_lines = _render_league_economy(data.league_economy, data.roster.roster_id)
     if economy_lines:

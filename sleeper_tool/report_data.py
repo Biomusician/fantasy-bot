@@ -34,15 +34,40 @@ from sleeper_tool.pick_opportunity import SPENDABLE, STRATEGIC, PickOpportunity,
 from sleeper_tool.playoff_leverage import PlayoffLeverage, classify_playoff_leverage
 from sleeper_tool.portfolio_exposure import PortfolioExposure, acquisition_exposure_note, build_portfolio_exposure
 from sleeper_tool.rankings.ff_dynasty_pass import ff_dynasty_status
-from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster, build_all_valued_rosters
+from sleeper_tool.replacement_value import (
+    ABUNDANT,
+    OVERSTATED_MAX_OVER_WAIVER,
+    SCARCE,
+    UNDERSTATED_MIN_OVER_WAIVER,
+    VERY_SCARCE,
+    ReplacementMarket,
+    build_replacement_market,
+    player_context,
+)
+from sleeper_tool.roster_analysis import SKILL_POSITIONS, RosterEntry, ValuedRoster, build_all_valued_rosters
 from sleeper_tool.roster_clog import RosterClog, identify_roster_clogs
+from sleeper_tool.source_disagreement import (
+    HIGH_DISAGREEMENT,
+    MARKET_ABOVE_PROJECTION,
+    PROJECTION_ABOVE_MARKET,
+    SOURCE_DISAGREEMENT,
+    SourceView,
+    build_source_rank_tables,
+    lookup,
+    source_view,
+)
 from sleeper_tool.storage import Storage
 from sleeper_tool.team_status import CONTENDER, TeamStatusResult, classify_team_status, get_valued_picks_by_roster
 from sleeper_tool.trade_engine import DropCandidate, TradeProposal, generate_trade_proposals, identify_drop_candidates, value_currency
-from sleeper_tool.valuation import LeagueFormat, ValuationEngine
+from sleeper_tool.trade_opportunity_cost import MAJOR_LINEUP_COST, TradeEconomics, analyze_trade
+from sleeper_tool.valuation import LeagueFormat, ValuationEngine, games_remaining
 from sleeper_tool.waiver_engine import TimeSensitiveNote, WaiverTarget, get_time_sensitive_notes, get_waiver_targets
 
 logger = logging.getLogger(__name__)
+
+# The one free-agent pool every decision module shares: skill positions for
+# insurance/replacement, plus K and DEF for streaming.
+FREE_AGENT_POSITIONS = frozenset(SKILL_POSITIONS) | {"K", "DEF"}
 
 
 def describe_format(fmt: LeagueFormat) -> str:
@@ -88,6 +113,10 @@ class LeagueReportData:
     pick_opportunity: PickOpportunity | None = None  # dynasty only: what my 1st/2nd-round picks mean to this roster
     ladders: dict[int, NegotiationLadder] = field(default_factory=dict)  # by proposal index; top two buy-low/pick-target trades
     waivers_note: str | None = None  # shown in place of waiver targets when they're deliberately suppressed
+    replacement: ReplacementMarket | None = None  # league replacement levels by position; None pre-draft or without a lineup
+    replacement_clauses: dict[str, str] = field(default_factory=dict)  # my player_id -> one-line replacement context, for renderers to attach wherever he's named
+    source_views: dict[str, SourceView] = field(default_factory=dict)  # by player_id: my roster, trade pieces, waiver targets
+    trade_economics: list[TradeEconomics | None] = field(default_factory=list)  # parallel to proposals: asset vs roster economics, kept separate
     error: str | None = None
 
 
@@ -166,7 +195,7 @@ def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int 
         # trades already generated for it are the time-boxed ones — they
         # lead the trade list and say why. Nothing new is generated.
         deadline_urgent = ld.playoff is not None and ld.playoff.urgent
-        for p in ld.proposals:
+        for i, p in enumerate(ld.proposals):
             if p.acceptance_rating in ("High", "Good") and p.confidence in ("High", "Medium"):
                 tier_rank = 0 if p.acceptance_rating == "High" else 1
                 detail = f"{ld.league.name} — {p.acceptance_rating.lower()} acceptance likelihood, {p.trade_type.replace('_', ' ')}."
@@ -174,6 +203,8 @@ def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int 
                 if deadline_urgent:
                     detail = f"Deadline Window ({ld.playoff.label}, deadline week {ld.playoff.trade_deadline_week}) — {detail}"
                     rank -= DEADLINE_WINDOW_RANK_BOOST
+                detail += _economics_note(ld.trade_economics[i] if i < len(ld.trade_economics) else None)
+                detail += _source_note_for(ld.source_views, [*p.give, *p.receive])
                 actions.append(PriorityAction(league_name=ld.league.name, kind="trade", headline=p.summary_line(), detail=detail, rank=rank))
         for t in ld.waiver_targets:
             if t.priority_tier == "Must Add":
@@ -182,7 +213,7 @@ def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int 
                 actions.append(PriorityAction(
                     league_name=ld.league.name, kind="waiver",
                     headline=f"Add {t.name}{drop_note}",
-                    detail=f"{ld.league.name} — {t.reason}",
+                    detail=f"{ld.league.name} — {t.reason}" + _source_note_for(ld.source_views, [t]),
                     rank=-(pctl or 0),  # higher percentile ranks first (more negative sorts earlier)
                 ))
         for d in ld.drop_candidates:
@@ -210,6 +241,43 @@ def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int 
             selected_ids.add(id(a))
     selected.sort(key=lambda a: (_ACTION_KIND_ORDER.get(a.kind, 9), a.rank))
     return selected[:max_actions]
+
+
+def _economics_note(econ: TradeEconomics | None) -> str:
+    """The Best Moves list must not hide a lineup cost behind a good
+    acceptance rating: a Strategic Tradeoff or a Major Lineup Cost is
+    named right on the action."""
+    if econ is None or econ.roster_economics is None:
+        return ""
+    if econ.strategic_tradeoff:
+        return (
+            f" Strategic Tradeoff: assets {econ.asset_economics.lower()}, lineup {econ.roster_economics.lower()}"
+            f" ({econ.weekly_delta:+.1f}/wk)."
+        )
+    if econ.roster_economics == MAJOR_LINEUP_COST:
+        return f" {MAJOR_LINEUP_COST} ({econ.weekly_delta:+.1f}/wk)."
+    return ""
+
+
+def _source_note_for(views: dict[str, SourceView], pieces) -> str:
+    """One clause naming the pieces the ranking sources genuinely disagree
+    on (not the milder market-vs-projection direction)."""
+    split = [
+        v.name for e in pieces
+        if (v := views.get(e.player_id)) is not None and v.consensus in (SOURCE_DISAGREEMENT, HIGH_DISAGREEMENT)
+    ]
+    return f" Sources disagree on {', '.join(split)}." if split else ""
+
+
+def _entry_from_target(t: WaiverTarget, all_players: dict) -> RosterEntry:
+    """A waiver target as a RosterEntry, so lineup/replacement code can
+    treat him like any rostered player."""
+    pdata = all_players.get(t.player_id) or {}
+    return RosterEntry(
+        player_id=t.player_id, name=t.name, position=t.position, team=t.team, age=pdata.get("age"),
+        years_exp=pdata.get("years_exp"), injury_status=pdata.get("injury_status"), status=pdata.get("status"),
+        is_starter=False, is_taxi=False, is_reserve=False, value=t.value,
+    )
 
 
 def build_league_report_data(
@@ -265,10 +333,22 @@ def build_league_report_data(
         waiver_targets = get_waiver_targets(
             storage, engine, league, my_roster, current_week=current_week, waiver_budget=waiver_budget, clog_ids=clog_ids
         )
+    # One free-agent pool per league (skill positions plus K/DEF), shared by
+    # insurance, the replacement market and the streamer planner. Pre-draft
+    # it would be the undrafted universe, so it's empty there and every
+    # consumer stays silent.
+    all_players = storage.get_all_players()
+    free_agents: list[RosterEntry] = []
+    replacement: ReplacementMarket | None = None
+    if lineup is not None and not pre_draft:
+        free_agents = free_agent_candidates(storage, engine, league, my_roster, positions=FREE_AGENT_POSITIONS)
+        replacement = build_replacement_market(
+            my_roster, rosters, free_agents, current_week=current_week, lineups={my_roster.roster_id: lineup}
+        )
     insurance: list[InsuranceRecommendation] = []
     if status_result.status == CONTENDER and lineup is not None and not pre_draft:
-        free_agents = free_agent_candidates(storage, engine, league, my_roster)
-        insurance = identify_fragile_starters(my_roster, free_agents, team_status=status_result.status, lineup=lineup)
+        skill_free_agents = [fa for fa in free_agents if fa.position in SKILL_POSITIONS]
+        insurance = identify_fragile_starters(my_roster, skill_free_agents, team_status=status_result.status, lineup=lineup)
         trade_deadline = (league_data.get("settings") or {}).get("trade_deadline")
         deadline_passed = bool(trade_deadline) and current_week is not None and current_week > int(trade_deadline)
         waiver_targets = merge_insurance_into_waiver_targets(
@@ -297,6 +377,22 @@ def build_league_report_data(
     if lineup_leverage is not None:
         _annotate_proposals_with_bench_surplus(proposals, lineup_leverage)
 
+    replacement_clauses: dict[str, str] = {}
+    if replacement is not None:
+        per_week = games_remaining(current_week)
+        replacement_clauses = {pid: c for pid, ctx in replacement.players.items() if (c := ctx.clause())}
+        _annotate_proposals_with_replacement(proposals, replacement, currency, per_week)
+        _annotate_waivers_with_replacement(waiver_targets, replacement, currency, per_week, all_players)
+        _annotate_clogs_with_replacement(roster_clogs, replacement)
+
+    source_table = build_source_rank_tables(engine.snapshots_for(my_roster.fmt), my_roster.fmt)
+    source_views = _build_source_views(source_table, currency, my_roster, proposals, waiver_targets)
+    _annotate_proposals_with_sources(proposals, source_views)
+    for t in waiver_targets:
+        v = source_views.get(t.player_id)
+        if v is not None and v.disagrees:
+            t.notes.append(f"Sources: {v.describe()}")
+
     league_economy = build_league_economy(
         rosters, storage.get_all_transactions(league.league_id), storage.get_traded_picks(league.league_id),
         season=str(league_data.get("season") or ""),
@@ -322,6 +418,7 @@ def build_league_report_data(
         my_status=status_result.status, status_of=counterparty_status,
         my_starter_ids=lineup.starter_ids if lineup is not None else (),
     )
+    _annotate_ladders_with_sources(ladders, source_views)
     if valued_picks is not None and lineup is not None:
         pick_opportunity = assess_picks(
             my_roster, rosters, valued_picks.get(my_roster.roster_id, []),
@@ -336,19 +433,14 @@ def build_league_report_data(
         ctx = PreviewContext.build(rosters, current_week=current_week, storage=storage, engine=engine)
         before = snapshot_roster(my_roster, ctx, lineup=lineup, displayed_status=status_result.status)
         trade_impacts = [preview_trade(p, my_roster, before, ctx) for p in proposals]
-        all_players = storage.get_all_players()
         for t in waiver_targets:
             if t.priority_tier not in PREVIEWED_WAIVER_TIERS:
                 continue
-            pdata = all_players.get(t.player_id) or {}
-            add_entry = RosterEntry(
-                player_id=t.player_id, name=t.name, position=t.position, team=t.team, age=pdata.get("age"),
-                years_exp=pdata.get("years_exp"), injury_status=pdata.get("injury_status"), status=pdata.get("status"),
-                is_starter=False, is_taxi=False, is_reserve=False, value=t.value,
-            )
+            add_entry = _entry_from_target(t, all_players)
             drop_id = t.drop_candidate.player_id if t.drop_candidate else None
             label = f"Add {t.name}" + (f", drop {t.drop_candidate.name}" if t.drop_candidate else "")
             waiver_impacts[t.player_id] = preview_add_drop(label, add_entry, drop_id, my_roster, before, ctx)
+    trade_economics = [analyze_trade(p, impact, replacement) for p, impact in zip(proposals, trade_impacts)]
 
     return LeagueReportData(
         league=league,
@@ -373,7 +465,117 @@ def build_league_report_data(
         pick_opportunity=pick_opportunity,
         ladders=ladders,
         waivers_note=waivers_note,
+        replacement=replacement,
+        replacement_clauses=replacement_clauses,
+        source_views=source_views,
+        trade_economics=trade_economics,
     )
+
+
+def _annotate_proposals_with_replacement(
+    proposals: list[TradeProposal], market: ReplacementMarket, currency: str, per_week: int
+) -> None:
+    """What each piece is worth against THIS league's waiver wire. A
+    give-piece with a real edge in a scarce market is a caveat; one the
+    wire nearly matches is a point in favour. Mirror image for receives."""
+    for p in proposals:
+        for e in p.give:
+            ctx = market.players.get(e.player_id) or player_context(market, e, currency=currency, per_week=per_week)
+            if ctx is None:
+                continue
+            if ctx.projection_over_waiver is None:
+                if ctx.scarcity == VERY_SCARCE:
+                    p.caveats.append(f"Replacement context: {e.name} — {ctx.clause()}; nothing on waivers replaces him.")
+                continue
+            if ctx.scarcity in (SCARCE, VERY_SCARCE) and ctx.projection_over_waiver >= UNDERSTATED_MIN_OVER_WAIVER:
+                p.caveats.append(f"Replacement context: {e.name} is {ctx.clause()}; replacing him from this wire would cost that much.")
+            elif ctx.projection_over_waiver <= OVERSTATED_MAX_OVER_WAIVER:
+                p.rationale_for_me.append(f"Replacement context: {e.name} is {ctx.clause()} — cheap to replace from this league's wire.")
+        for e in p.receive:
+            ctx = player_context(market, e, currency=currency, per_week=per_week)
+            if ctx is None or ctx.projection_over_waiver is None:
+                continue
+            if ctx.projection_over_waiver >= UNDERSTATED_MIN_OVER_WAIVER:
+                p.rationale_for_me.append(f"Replacement context: {e.name} arrives {ctx.clause()}.")
+            elif ctx.projection_over_waiver <= OVERSTATED_MAX_OVER_WAIVER:
+                p.caveats.append(f"Replacement context: {e.name} is only {ctx.clause()} — waivers offer nearly the same production here.")
+
+
+def _annotate_waivers_with_replacement(
+    targets: list[WaiverTarget], market: ReplacementMarket, currency: str, per_week: int, all_players: dict
+) -> None:
+    for t in targets:
+        ctx = player_context(market, _entry_from_target(t, all_players), currency=currency, per_week=per_week)
+        if ctx is None:
+            continue
+        if ctx.scarcity in (SCARCE, VERY_SCARCE):
+            t.notes.append(f"{t.position} market is {ctx.scarcity} here: an add at this position matters more than his rank alone suggests")
+        elif ctx.scarcity == ABUNDANT:
+            t.notes.append(f"{t.position} market is Abundant here: comparable production is usually on waivers, so don't overspend")
+
+
+def _annotate_clogs_with_replacement(clogs: list[RosterClog], market: ReplacementMarket) -> None:
+    for c in clogs:
+        s = market.scarcity_of(c.entry.position)
+        if s == ABUNDANT:
+            c.reasons.append(f"{c.entry.position} replacements are Abundant on this wire")
+        elif s in (SCARCE, VERY_SCARCE):
+            c.reasons.append(f"but {c.entry.position} replacements are {s} here — keep unless the spot is needed")
+
+
+def _build_source_views(
+    table, currency: str, my_roster: ValuedRoster, proposals: list[TradeProposal], targets: list[WaiverTarget]
+) -> dict[str, SourceView]:
+    views: dict[str, SourceView] = {}
+    pieces = [(e.player_id, e.name, e.position) for e in my_roster.entries]
+    pieces += [(e.player_id, e.name, e.position) for p in proposals for e in (*p.give, *p.receive)]
+    pieces += [(t.player_id, t.name, t.position) for t in targets]
+    for pid, name, position in pieces:
+        if pid in views:
+            continue
+        v = source_view(name, position, lookup(table, name), currency)
+        if v.describe() is not None:
+            views[pid] = v
+    return views
+
+
+def _annotate_proposals_with_sources(proposals: list[TradeProposal], views: dict[str, SourceView]) -> None:
+    """Disagreement is a caveat unless it points the way the trade already
+    goes: a market-above-projection piece is one to sell, a
+    projection-above-market piece one to buy."""
+    for p in proposals:
+        for e in p.give:
+            v = views.get(e.player_id)
+            if v is None or not v.disagrees:
+                continue
+            text = f"Sources on {e.name}: {v.describe()}"
+            if v.direction == MARKET_ABOVE_PROJECTION:
+                p.rationale_for_me.append(f"{text} — the market pays more than the projection supports, which favours selling.")
+            else:
+                p.caveats.append(f"{text}.")
+        for e in p.receive:
+            v = views.get(e.player_id)
+            if v is None or not v.disagrees:
+                continue
+            text = f"Sources on {e.name}: {v.describe()}"
+            if v.direction == PROJECTION_ABOVE_MARKET:
+                p.rationale_for_me.append(f"{text} — the projection sees more than the market charges, which favours buying.")
+            else:
+                p.caveats.append(f"{text}.")
+
+
+def _annotate_ladders_with_sources(ladders: dict[int, NegotiationLadder], views: dict[str, SourceView]) -> None:
+    for ladder in ladders.values():
+        for step in (ladder.opening, ladder.fallback, ladder.walk_away):
+            if step is None:
+                continue
+            split = [
+                f"{e.name} ({views[e.player_id].describe()})"
+                for e in step.players
+                if e.player_id in views and views[e.player_id].disagrees
+            ]
+            if split:
+                step.source_note = "sources split on " + "; ".join(split)
 
 
 def _annotate_proposals_with_pick_opportunity(proposals: list[TradeProposal], opportunity: PickOpportunity) -> None:

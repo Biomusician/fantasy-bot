@@ -10,7 +10,7 @@ season.
 from __future__ import annotations
 
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sleeper_tool.config import LeagueInfo
 from sleeper_tool.formatting import ordinal, ordinal_pct
@@ -74,6 +74,7 @@ class WaiverTarget:
     horizon: str = STREAMER
     drop_candidate: RosterEntry | None = None
     suggested_faab_pct: int | None = None  # None when the league isn't FAAB (no waiver_budget data)
+    notes: list[str] = field(default_factory=list)  # context from the decision layer (replacement market, source disagreement, ...); never changes the tier
 
 
 def get_rostered_player_ids(storage: Storage, league: LeagueInfo) -> set[str]:

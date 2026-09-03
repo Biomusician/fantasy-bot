@@ -73,6 +73,7 @@ class LadderStep:
     acceptance: str
     reasons: list[str]
     starters_given: list[str] = field(default_factory=list)  # names of my optimized-lineup starters in this package
+    source_note: str | None = None  # source-disagreement context on a package piece, set by report_data
 
     @property
     def starter_note(self) -> str | None:
