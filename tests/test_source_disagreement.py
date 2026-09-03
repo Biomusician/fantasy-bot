@@ -63,7 +63,8 @@ def test_threshold_boundaries():
     assert direction_label(1 + SIGNIFICANT_RANK_GAP, 1) == PROJECTION_ABOVE_MARKET
     assert direction_label(1, 1 + SIGNIFICANT_RANK_GAP - 1) is None
     assert direction_label(51, 51 + SIGNIFICANT_RANK_GAP) is None  # 20 places at rank 51 is noise
-    assert scaled_gap(51, 91) == 20.0  # 40 raw places at rank 51 = 20 top-of-list places
+    assert scaled_gap(51, 111) == 40.0  # 60 raw places at rank 51 = 40 top-of-list places
+    assert scaled_gap(51, 81) == 20.0  # 30 raw places at rank 51 meets the Disagreement bar exactly
     assert direction_label(51, 91) == MARKET_ABOVE_PROJECTION
     assert direction_label(None, 5) is None
 

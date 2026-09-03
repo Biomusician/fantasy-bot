@@ -45,13 +45,20 @@ from sleeper_tool.valuation import LeagueFormat, _ktc_value_for_format, is_panel
 
 SIGNIFICANT_RANK_GAP = 20  # positional rank places, at the top of a list
 HIGH_RANK_GAP = 40
-STRONG_CONSENSUS_MAX_GAP = 5
+STRONG_CONSENSUS_MAX_GAP = 3
 # Rank places mean less the deeper you go (WR120 vs WR150 is noise, WR5 vs
 # WR35 is not), so a gap is scaled down by 1 + RANK_GAP_SCALE_PER_PLACE x the
 # places below rank 1 of the better-ranked side before it meets the
-# thresholds above: at rank 51 the effective Disagreement bar is 40 places,
-# at rank 101 it is 60.
-RANK_GAP_SCALE_PER_PLACE = 0.02
+# thresholds above: at rank 51 the effective Disagreement bar is 30 places,
+# at rank 101 it is 40. Measured on the 2026-09-03 caches across all nine
+# leagues (591 rostered views): the sources agree almost perfectly inside
+# the top 48 at every position (p90 gap under 12 places), and every real
+# split sits at rank 49 or deeper — 0.02 per place silenced all of them
+# (1 Disagreement in 591), 0.01 keeps the deep-list noise out while letting
+# the genuine splits through (7 Disagreement, 21 Direction calls of 554).
+# Strong Consensus is deliberately the common case: it is a description of
+# the sources, not a signal, and lands on roughly six views in ten.
+RANK_GAP_SCALE_PER_PLACE = 0.01
 
 STRONG_CONSENSUS = "Strong Consensus"
 NORMAL_CONSENSUS = "Normal Consensus"
