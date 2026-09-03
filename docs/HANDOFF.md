@@ -91,9 +91,9 @@ Nothing half-implemented. Unpushed local commits (see Status).
   public `rate_package(...)` / `piece_fit(...)` surface in `trade_engine` would remove
   the drift risk for three callers.
 - Real-data early-season quirks: no Defensive Adds before NFL byes start (correct, but
-  the block renders nothing); every Superflex sell-high of a QB is a Conflicted Move by
-  construction (Very Scarce QB market); the stash board is all "Watch" on full rosters
-  with no clogs.
+  the block renders nothing); a Superflex sell-high of a starting QB is a Conflicted Move
+  by construction (Very Scarce QB market); the stash board is all "Watch" on full rosters
+  with no clogs; streaming plans are all Hold until NFL byes begin.
 - Market velocity shows Insufficient History until three daily snapshots exist
   (retention only just went to 28 days).
 - `get_or_fetch`'s stale-cache fallback still has no ceiling.
