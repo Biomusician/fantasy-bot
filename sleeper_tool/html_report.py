@@ -17,6 +17,7 @@ from sleeper_tool.matchup_leverage import LARGE_DEFICIT, MODEST_DEFICIT, MODEST_
 from sleeper_tool.move_impact import MoveImpact
 from sleeper_tool.negotiation_ladder import NegotiationLadder
 from sleeper_tool.pick_opportunity import PickOpportunity
+from sleeper_tool.recommendation_conflicts import CONFLICTED, TRADE, WAIVER, Conflict, conflict_for
 from sleeper_tool.portfolio_exposure import VERY_HIGH, PortfolioExposure
 from sleeper_tool.replacement_value import SCARCE, VERY_SCARCE, ReplacementMarket
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
@@ -246,9 +247,19 @@ def _economics_chips(econ: TradeEconomics | None) -> str:
     return chips
 
 
+def _conflict_block(conflict: Conflict | None) -> str:
+    if conflict is None:
+        return ""
+    return (
+        f'<div class="caveats conflict-block"><span class="caveat-label">{_chip(esc(CONFLICTED), "negative")}</span><ul>'
+        f"<li><b>For:</b> {esc('; '.join(conflict.reasons_for) or 'see the recommendation')}</li>"
+        f"<li><b>Against:</b> {esc('; '.join(conflict.reasons_against))}</li></ul></div>"
+    )
+
+
 def _trade_card(
     p: TradeProposal, index: int, impact: MoveImpact | None = None, ladder: NegotiationLadder | None = None,
-    economics: TradeEconomics | None = None,
+    economics: TradeEconomics | None = None, conflict: Conflict | None = None,
 ) -> str:
     give_chips = "".join(
         [*(_asset_chip(e.name, is_pick=False) for e in p.give), *(_asset_chip(pk.name, is_pick=True) for pk in p.give_picks)]
@@ -294,6 +305,7 @@ def _trade_card(
         {_economics_chips(economics)}
       </div>
       {f'<p class="muted status-reason">{esc(economics.scarcity_note)}</p>' if economics is not None and economics.scarcity_note else ""}
+      {_conflict_block(conflict)}
       <p class="trade-target">To <strong>{target}</strong> &middot; {esc(value_label)}: {p.my_value_total:.0f} vs {p.their_value_total:.0f}</p>
       {_impact_block(impact)}
       {message_block}
@@ -311,10 +323,13 @@ def _trade_card(
     """
 
 
-def _waiver_table(targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | None = None) -> str:
+def _waiver_table(
+    targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | None = None, conflicts: list[Conflict] | None = None
+) -> str:
     if not targets:
         return '<p class="empty-note">No standout waiver targets this week.</p>'
     impacts = impacts or {}
+    conflicts = conflicts or []
     # "positive" (green), not "negative" (red) -- Must Add is a GOOD thing
     # to see, matching the green used for waiver actions in the "Best
     # moves right now" section (_ACTION_KIND_META). "negative" is reserved
@@ -338,6 +353,12 @@ def _waiver_table(targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | 
                 esc("; ".join(deltas)) if deltas else "no lineup change &mdash; depth only"
             ) + (f" {esc(impact.matchup_note)}" if impact.matchup_note else "") + "</div>"
         notes_html = "".join(f'<div class="impact-inline">{esc(n)}</div>' for n in t.notes)
+        conflict = conflict_for(conflicts, WAIVER, t.player_id)
+        if conflict is not None:
+            notes_html = (
+                f'<div class="impact-inline">{_chip(esc(CONFLICTED), "negative")} against: {esc("; ".join(conflict.reasons_against))}</div>'
+                + notes_html
+            )
         rows.append(
             "<tr>"
             f"<td>{tier_chip}</td>"
@@ -406,6 +427,21 @@ def _stash_section(stash) -> str:
     <section class="panel-block">
       <h3>Stash board <span class="muted">&middot; developmental holds, not lineup help</span></h3>
       <ul class="alert-list">{items}</ul>
+    </section>
+    """
+
+
+def _buyer_board_section(boards) -> str:
+    if not boards:
+        return ""
+    items = []
+    for b in boards:
+        buyers = "; ".join(f.describe() for f in b.buyers) if b.buyers else "no Strong or Possible fit in this league"
+        items.append(f'<li class="alert-item"><strong>{esc(b.candidate.name)}</strong> ({esc(b.candidate.position or "?")})<div class="drop-reasons">{esc(buyers)}</div></li>')
+    return f"""
+    <section class="panel-block">
+      <h3>Buyer board <span class="muted">&middot; who could pay for your sell-high pieces</span></h3>
+      <ul class="alert-list">{"".join(items)}</ul>
     </section>
     """
 
@@ -648,13 +684,13 @@ def _league_panel(data: LeagueReportData) -> str:
         </section>
         """
         waivers_html = (
-            f'<p class="empty-note">{esc(data.waivers_note)}</p>' if data.waivers_note else _waiver_table(data.waiver_targets, data.waiver_impacts)
+            f'<p class="empty-note">{esc(data.waivers_note)}</p>' if data.waivers_note else _waiver_table(data.waiver_targets, data.waiver_impacts, data.conflicts)
         )
         trades_and_waivers = f"""
         <section class="panel-block">
           <h3>Trade offers</h3>
           <div class="trade-grid">
-            {"".join(_trade_card(p, i, data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None, data.ladders.get(i - 1), data.trade_economics[i - 1] if i - 1 < len(data.trade_economics) else None) for i, p in enumerate(data.proposals, start=1)) if data.proposals else '<p class="empty-note">No trade offers cleared the value-match bar this week.</p>'}
+            {"".join(_trade_card(p, i, data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None, data.ladders.get(i - 1), data.trade_economics[i - 1] if i - 1 < len(data.trade_economics) else None, conflict_for(data.conflicts, TRADE, str(i - 1))) for i, p in enumerate(data.proposals, start=1)) if data.proposals else '<p class="empty-note">No trade offers cleared the value-match bar this week.</p>'}
           </div>
           {_consolidation_block(data.consolidations)}
         </section>
@@ -672,12 +708,13 @@ def _league_panel(data: LeagueReportData) -> str:
             _roster_clogs_section(data.roster_clogs)
             + _replacement_market_section(data.replacement)
             + _stash_section(data.stash)
+            + _buyer_board_section(data.buyer_boards)
             + _schedule_section(data.windows)
             + _pick_opportunity_section(data.pick_opportunity, data.replacement)
             + _league_economy_section(data.league_economy, data.roster.roster_id)
         )
         context = (
-            f'<details class="context-details"><summary>Roster context &middot; clogs, replacement market, stash board, schedule, draft capital, league economy</summary>{context_html}</details>'
+            f'<details class="context-details"><summary>Roster context &middot; clogs, replacement market, stash board, buyer board, schedule, draft capital, league economy</summary>{context_html}</details>'
             if context_html.strip()
             else ""
         )
@@ -1059,6 +1096,7 @@ tbody tr:last-child td { border-bottom: none; }
 .trade-rationale ul, .caveats ul { margin: 4px 0 0; padding-left: 18px; font-size: 13px; color: var(--ink-muted); }
 .rationale-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-faint); }
 .streamers { margin-top: 14px; }
+.conflict-block { border-left: 3px solid var(--negative); padding-left: 10px; }
 .context-details { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 12px; }
 .context-details > summary { cursor: pointer; font-family: var(--font-display); font-size: 18px; font-weight: 700; color: var(--ink-muted); list-style: none; padding: 6px 0 14px; }
 .context-details > summary::before { content: "\\25B8"; display: inline-block; margin-right: 8px; color: var(--accent); transition: transform 0.15s; }

@@ -11,6 +11,7 @@ from sleeper_tool.lineup_leverage import LineupLeverage
 from sleeper_tool.move_impact import MoveImpact
 from sleeper_tool.negotiation_ladder import NegotiationLadder
 from sleeper_tool.pick_opportunity import PickOpportunity
+from sleeper_tool.recommendation_conflicts import CONFLICTED, TRADE, WAIVER, Conflict, conflict_for
 from sleeper_tool.portfolio_exposure import PortfolioExposure
 from sleeper_tool.replacement_value import ReplacementMarket
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
@@ -161,9 +162,18 @@ def _render_ladder(ladder: NegotiationLadder) -> list[str]:
     return lines
 
 
+def _render_conflict(conflict: Conflict) -> list[str]:
+    return [
+        f"⚠️ **{CONFLICTED}**",
+        f"- For: {'; '.join(conflict.reasons_for) or 'see the recommendation'}",
+        f"- Against: {'; '.join(conflict.reasons_against)}",
+        "",
+    ]
+
+
 def _render_trade_proposal(
     p: TradeProposal, index: int, impact: MoveImpact | None = None, ladder: NegotiationLadder | None = None,
-    economics: TradeEconomics | None = None,
+    economics: TradeEconomics | None = None, conflict: Conflict | None = None,
 ) -> list[str]:
     lines = [f"**Offer {index} ({p.trade_type_label}): {p.summary_line()}**", ""]
     lines.append(
@@ -173,6 +183,8 @@ def _render_trade_proposal(
     if economics is not None:
         lines.append(f"*Economics: {economics.describe()}*")
     lines.append("")
+    if conflict is not None:
+        lines.extend(_render_conflict(conflict))
     if impact is not None:
         deltas = impact.material_deltas()
         lines.append("What actually changes:")
@@ -211,10 +223,13 @@ def _render_trade_proposal(
 _TIER_MARK = {"Must Add": "🔴", "Strong Add": "🟠", "Moderate": "🟡", "Speculative": "⚪", "Monitor": "⚪", "Insurance": "🛡️"}
 
 
-def _render_waiver_targets(targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | None = None) -> list[str]:
+def _render_waiver_targets(
+    targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | None = None, conflicts: list[Conflict] | None = None
+) -> list[str]:
     if not targets:
         return ["No standout waiver targets this week."]
     impacts = impacts or {}
+    conflicts = conflicts or []
     lines = ["| Priority | Player | Pos | Team | Drop | Horizon | FAAB | Why |", "|---|---|---|---|---|---|---|---|"]
     for t in targets:  # already capped by the engine; insurance rows ride along after the cap
         mark = _TIER_MARK.get(t.priority_tier, "")
@@ -229,6 +244,9 @@ def _render_waiver_targets(targets: list[WaiverTarget], impacts: dict[str, MoveI
                 reason += " " + impact.matchup_note
         if t.notes:
             reason += " · " + " · ".join(t.notes)
+        conflict = conflict_for(conflicts, WAIVER, t.player_id)
+        if conflict is not None:
+            reason = f"⚠️ **{CONFLICTED}** (against: {'; '.join(conflict.reasons_against)}) · " + reason
         lines.append(
             f"| {mark} {t.priority_tier} | {t.name} | {t.position or '?'} | {t.team or '-'} | {drop} | "
             f"{t.horizon} | {faab} | {reason} |"
@@ -367,7 +385,8 @@ def render_league_section(data: LeagueReportData) -> list[str]:
         for i, p in enumerate(data.proposals, start=1):
             impact = data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None
             economics = data.trade_economics[i - 1] if i - 1 < len(data.trade_economics) else None
-            trade_lines.extend(_render_trade_proposal(p, i, impact, data.ladders.get(i - 1), economics))
+            conflict = conflict_for(data.conflicts, TRADE, str(i - 1))
+            trade_lines.extend(_render_trade_proposal(p, i, impact, data.ladders.get(i - 1), economics, conflict))
             trade_lines.append("")
     else:
         trade_lines.append("No trade offers cleared the value-match bar this week.")
@@ -383,7 +402,7 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     sections.append(("### Trade offers", trade_lines))
 
     waiver_lines = (
-        [f"_{data.waivers_note}_", ""] if data.waivers_note else _render_waiver_targets(data.waiver_targets, data.waiver_impacts) + [""]
+        [f"_{data.waivers_note}_", ""] if data.waivers_note else _render_waiver_targets(data.waiver_targets, data.waiver_impacts, data.conflicts) + [""]
     )
     if data.streamers:
         waiver_lines.extend(_render_streamers(data.streamers))
@@ -425,6 +444,14 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     if data.stash:
         stash_lines = [f"- **{c.label}:** {c.describe()}" for c in data.stash] + [""]
         sections.append(("### Stash board (developmental holds)", stash_lines))
+
+    if data.buyer_boards:
+        buyer_lines = []
+        for b in data.buyer_boards:
+            buyers = "; ".join(f.describe() for f in b.buyers) if b.buyers else "no Strong or Possible fit in this league"
+            buyer_lines.append(f"- **{b.candidate.name}** ({b.candidate.position or '?'}): {buyers}")
+        buyer_lines.append("")
+        sections.append(("### Buyer board (who could pay for your sell-high pieces)", buyer_lines))
 
     if data.windows is not None:
         sections.append(("### Schedule windows", [data.windows.describe(), ""]))

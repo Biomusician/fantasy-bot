@@ -9,6 +9,7 @@ import datetime as dt
 import logging
 from dataclasses import dataclass, field
 
+from sleeper_tool.buyer_board import BuyerBoard, annotate_sell_high_proposals, build_buyer_boards, sell_high_candidates
 from sleeper_tool.bye_collision import ByeCollision, describe_bye_collision, plan_bye_collisions, positions_covering
 from sleeper_tool.config import LEAGUES, LeagueInfo, MY_USER_ID
 from sleeper_tool.contender_insurance import (
@@ -38,6 +39,7 @@ from sleeper_tool.pick_opportunity import SPENDABLE, STRATEGIC, PickOpportunity,
 from sleeper_tool.playoff_leverage import PlayoffLeverage, classify_playoff_leverage
 from sleeper_tool.portfolio_exposure import PortfolioExposure, acquisition_exposure_note, build_portfolio_exposure
 from sleeper_tool.rankings.ff_dynasty_pass import ff_dynasty_status
+from sleeper_tool.recommendation_conflicts import CONFLICTED, TRADE, WAIVER, Conflict, conflict_for, detect_conflicts
 from sleeper_tool.replacement_value import (
     ABUNDANT,
     OVERSTATED_MAX_OVER_WAIVER,
@@ -132,6 +134,8 @@ class LeagueReportData:
     stash: list[StashCandidate] = field(default_factory=list)  # dynasty/keeper developmental adds; empty pre-draft and in redraft
     windows: ScheduleWindows | None = None  # next-3 / remaining / playoff week windows from the NFL schedule and league settings
     consolidations: list[Consolidation] = field(default_factory=list)  # 2-for-1 proposals for contenders and strong middling teams
+    buyer_boards: list[BuyerBoard] = field(default_factory=list)  # per sell-high candidate, the counterparties most likely to pay
+    conflicts: list[Conflict] = field(default_factory=list)  # opposing signals on one move; set cross-league in build_weekly_report_data
     error: str | None = None
 
 
@@ -220,6 +224,7 @@ def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int 
                     rank -= DEADLINE_WINDOW_RANK_BOOST
                 detail += _economics_note(ld.trade_economics[i] if i < len(ld.trade_economics) else None)
                 detail += _source_note_for(ld.source_views, [*p.give, *p.receive])
+                detail = _conflict_prefix(conflict_for(ld.conflicts, TRADE, str(i))) + detail
                 actions.append(PriorityAction(league_name=ld.league.name, kind="trade", headline=p.summary_line(), detail=detail, rank=rank))
         for t in ld.waiver_targets:
             if t.priority_tier == "Must Add":
@@ -228,7 +233,8 @@ def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int 
                 actions.append(PriorityAction(
                     league_name=ld.league.name, kind="waiver",
                     headline=f"Add {t.name}{drop_note}",
-                    detail=f"{ld.league.name} — {t.reason}" + _source_note_for(ld.source_views, [t]),
+                    detail=_conflict_prefix(conflict_for(ld.conflicts, WAIVER, t.player_id))
+                    + f"{ld.league.name} — {t.reason}" + _source_note_for(ld.source_views, [t]),
                     rank=-(pctl or 0),  # higher percentile ranks first (more negative sorts earlier)
                 ))
         for d in ld.drop_candidates:
@@ -256,6 +262,13 @@ def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int 
             selected_ids.add(id(a))
     selected.sort(key=lambda a: (_ACTION_KIND_ORDER.get(a.kind, 9), a.rank))
     return selected[:max_actions]
+
+
+def _conflict_prefix(conflict: Conflict | None) -> str:
+    """A Conflicted Move stays in Best Moves, labelled: the reader decides."""
+    if conflict is None:
+        return ""
+    return f"{CONFLICTED}: against — {'; '.join(conflict.reasons_against)}. "
 
 
 def _economics_note(econ: TradeEconomics | None) -> str:
@@ -469,6 +482,11 @@ def build_league_report_data(
         free_agents=[fa for fa in free_agents if fa.position in SKILL_POSITIONS], current_week=current_week,
         exclude_ids=proposed_give_ids,
     )
+    buyer_boards = build_buyer_boards(
+        my_roster, rosters, sell_high_candidates(my_roster, proposals),
+        status_of=status_of, economy=league_economy, market=replacement, valued_picks=valued_picks,
+    )
+    annotate_sell_high_proposals(proposals, buyer_boards)
     _annotate_ladders_with_sources(ladders, source_views)
     if valued_picks is not None and lineup is not None:
         pick_opportunity = assess_picks(
@@ -531,6 +549,7 @@ def build_league_report_data(
         stash=stash,
         windows=windows,
         consolidations=consolidations,
+        buyer_boards=buyer_boards,
     )
 
 
@@ -765,6 +784,11 @@ def build_weekly_report_data(
             continue
         ld.velocity = build_velocities(history, ld, current_week=current_week, today=today)
         annotate_league(ld, ld.velocity)
+    # Conflicts last: they read every annotation above (exposure included).
+    for ld in league_data:
+        if ld.error or not ld.drafted:
+            continue
+        ld.conflicts = detect_conflicts(ld)
 
     report = WeeklyReportData(
         generated_at=now,
