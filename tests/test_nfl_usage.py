@@ -185,7 +185,6 @@ def _age_every_cache_entry(age: dt.timedelta) -> None:
         path.write_text(json.dumps(data), encoding="utf-8")
 
 
-@pytest.mark.xfail(strict=True, reason="duplicate player-week rows are counted twice")
 def test_a_repeated_player_week_counts_once():
     """nflverse has shipped duplicate rows before (a release rebuilt while a
     game was being corrected). Two identical (gsis_id, week) rows are one

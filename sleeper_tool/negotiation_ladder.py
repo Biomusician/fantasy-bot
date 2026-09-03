@@ -170,8 +170,8 @@ def build_negotiation_ladder(
     openable = [s for s in steps if _tier(s.acceptance) >= _tier(MIN_OPENING_ACCEPTANCE)]
     # An opening is a cheaper way in, never a dearer one: nothing that costs
     # more than the engine's own offer can open for it.
-    if base_step is not None:
-        openable = [s for s in openable if s.outgoing_value <= base_step.outgoing_value]
+    base_value = base_step.outgoing_value if base_step is not None else proposal.my_value_total
+    openable = [s for s in openable if s.outgoing_value <= base_value]
     opening = min(openable, key=lambda s: (s.outgoing_value, -_tier(s.acceptance))) if openable else base_step
     if opening is None:
         return None

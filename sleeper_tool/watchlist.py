@@ -563,8 +563,8 @@ def _prune(items: dict[str, WatchItem], today: str) -> dict[str, WatchItem]:
     for key, item in items.items():
         if item.trigger_state == RESOLVED and item.resolved_on != today:
             continue
-        if item.last_seen < cutoff:
-            continue
+        if item.last_seen <= cutoff:
+            continue  # unseen for WATCH_MAX_AGE_DAYS: dropped, as the docstring says
         kept[key] = item
     return kept
 

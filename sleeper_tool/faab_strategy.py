@@ -237,7 +237,7 @@ def count_substitutes(
     *,
     percentile_of: Callable[[object], float | None] | None = None,
     exclude_ids: Collection[str] = (),
-    band: float = SUBSTITUTE_PERCENTILE_BAND,
+    band: float | None = None,
 ) -> int:
     """How many other free agents at `position` sit within `band` percentile
     points of the target — the "could I just add someone else instead?"
@@ -255,6 +255,7 @@ def count_substitutes(
     """
     if target_percentile is None or not position:
         return 0
+    band = SUBSTITUTE_PERCENTILE_BAND if band is None else band  # resolved at call time, so the constant can be tuned
     getter = percentile_of or _default_percentile
     excluded = set(exclude_ids)
     count = 0

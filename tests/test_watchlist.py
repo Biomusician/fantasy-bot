@@ -150,10 +150,7 @@ def test_the_retention_cutoff_is_twenty_eight_days_at_absolute_dates():
     """Pinned by value and against literal dates rather than dates derived
     from WATCH_MAX_AGE_DAYS, so a change to the constant has to move these.
 
-    The code's comparison is `last_seen < today - WATCH_MAX_AGE_DAYS`, so an
-    item last seen exactly 28 days ago is KEPT and 29 days ago is dropped —
-    one day looser than the module docstring's "unseen for
-    WATCH_MAX_AGE_DAYS is dropped" reads.
+    An item unseen for WATCH_MAX_AGE_DAYS is dropped: 27 days kept, 28 gone.
     """
     assert WATCH_MAX_AGE_DAYS == 28
     # DAY1 is 2026-09-02: 27d ago is 2026-08-06, 28d is 2026-08-05, 29d is 2026-08-04.
@@ -163,7 +160,7 @@ def test_the_retention_cutoff_is_twenty_eight_days_at_absolute_dates():
         "d29": _item(item_id="d29", last_seen="2026-08-04"),
     })
     result = update(existing, [], now=DAY1, ld_by_league={})
-    assert set(result.items) == {"d27", "d28"}
+    assert set(result.items) == {"d27"}
 
 
 # -- candidate kinds ------------------------------------------------------------

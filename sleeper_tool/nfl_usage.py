@@ -158,6 +158,13 @@ class UsageData:
     _by_team: dict[str, list[PlayerWeek]] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
+        # nflverse has shipped duplicate rows (a release rebuilt while a game
+        # was being corrected): one (gsis_id, week) is one game, last row wins.
+        latest: dict[tuple[str, int], PlayerWeek] = {}
+        for row in self.player_weeks:
+            latest[(row.gsis_id, row.week)] = row
+        if len(latest) != len(self.player_weeks):
+            self.player_weeks = list(latest.values())
         for row in self.player_weeks:
             self._by_player.setdefault(row.gsis_id, []).append(row)
             self._by_team.setdefault(row.team, []).append(row)
