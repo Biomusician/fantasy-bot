@@ -293,6 +293,7 @@ SENTINELS = [
     "SENTINEL-blocker-hole",
     "SENTINEL-schedule-note",
     "SENTINEL-replacement-clause",
+    "SENTINEL-faab-anchor",
     # Names carried by decision-layer records rather than by a rendered sentence.
     "Sentinelopponent Squad",     # matchup opponent
     "Fred Sentinelfa",            # replacement market: best free agent
@@ -325,27 +326,21 @@ def test_every_decision_layer_sentence_reaches_both_renderers(sentinel, rendered
     assert in_html, f"{sentinel!r} is rendered only in Markdown"
 
 
-def test_waiver_target_team_is_markdown_only(rendered):
-    """FINDING (reported, not fixed): the Markdown waiver table has a Team
-    column; `html_report._waiver_table`'s header is
-    Priority/Add/Pos/Drop/Horizon/FAAB/Why with no Team. A dashboard reader
-    can't see which NFL team a suggested add plays for, which matters for
-    bye-week and schedule reasoning. Asserted as-is so a future fix breaks
-    this test loudly rather than silently."""
+def test_waiver_target_team_reaches_both_renderers(rendered):
+    """The NFL team of a suggested add matters for bye-week and schedule
+    reasoning; both tables carry a Team column (the HTML one was added in
+    the 2026-09-03 UX pass after this test first pinned the gap)."""
     markdown, html = rendered
     assert "| BUF |" in markdown  # the waiver target's NFL team, unique in this fixture
-    assert ">BUF<" not in html
+    assert ">BUF<" in html
 
 
-def test_faab_anchor_text_reaches_neither_renderer(rendered):
-    """FINDING (reported, not fixed): `FaabAdvice.anchor_text` (what the
-    league has actually paid for comparable adds) is built by
-    faab_strategy but `bid_detail` — the only thing either renderer calls —
-    joins share/leverage/notes and drops it. Nothing else calls
-    `FaabAdvice.describe()`, so the anchor is computed and thrown away."""
+def test_faab_anchor_text_reaches_both_renderers(rendered):
+    """`FaabAdvice.anchor_text` (what the league has actually paid for
+    comparable adds) is part of `bid_detail`, which both renderers show."""
     markdown, html = rendered
-    assert "SENTINEL-faab-anchor" not in markdown
-    assert "SENTINEL-faab-anchor" not in html
+    assert "SENTINEL-faab-anchor" in markdown
+    assert "SENTINEL-faab-anchor" in html
 
 
 def test_conflict_reasons_for_are_html_only_on_waivers(rendered):

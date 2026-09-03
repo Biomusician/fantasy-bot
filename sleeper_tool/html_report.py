@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from html import escape as esc
 
-from sleeper_tool.action_priority import priority_line
 from sleeper_tool.asset_value import percentile_for_currency, value_label_for_currency
 from sleeper_tool.decision_delta import DecisionDelta
 from sleeper_tool.decision_outcomes import OBSERVED
@@ -25,6 +24,21 @@ from sleeper_tool.recommendation_conflicts import CONFLICTED, TRADE, WAIVER, Con
 from sleeper_tool.portfolio_exposure import VERY_HIGH, PortfolioExposure
 from sleeper_tool.replacement_value import SCARCE, VERY_SCARCE, ReplacementMarket
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
+from sleeper_tool.report_views import (
+    CONFIDENCE_LEGEND,
+    CONFIDENCE_MARK,
+    MAX_IMPACT_DELTAS,
+    action_view,
+    claim,
+    confidence_caveat,
+    health_banner,
+    lineup_lines,
+    lineup_total,
+    lineup_units,
+    split_visible,
+    waiver_row_view,
+    without_repeats,
+)
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
 from sleeper_tool.roster_clog import RosterClog
 from sleeper_tool.streamer_planner import ADD, HOLD, SEQUENCE, StreamPlan
@@ -37,7 +51,6 @@ from sleeper_tool.trade_opportunity_cost import (
     UNFAVORABLE,
     TradeEconomics,
 )
-from sleeper_tool.trade_rating import player_confidence
 from sleeper_tool.trade_types import DropCandidate, TradeProposal
 from sleeper_tool.waiver_engine import TimeSensitiveNote, WaiverTarget
 
@@ -85,20 +98,14 @@ def _confidence_flag(v) -> str:
     """A small marker for a shaky valuation, shown right on the roster
     table instead of only ever surfacing inside a generated trade's
     collapsed caveats (i.e. only when that player happens to be part of a
-    trade offer that week). Reuses trade_rating's own player_confidence
-    rubric directly rather than re-deriving a partial copy of it — a
-    previous version checked only 2 of the 4 signals player_confidence
-    considers, so a player who'd show "Confidence: Medium" the moment
-    they appeared in a trade card could carry no warning at all here.
+    trade offer that week). The rubric is report_views.confidence_caveat,
+    which the Markdown roster table uses too — this used to be an
+    HTML-only flag.
     """
-    if player_confidence(v) == "High":
+    title = confidence_caveat(v)
+    if not title:
         return ""
-    title = v.thin_market_caveat or v.panel_disagreement_caveat or (
-        "Only one ranking source has this player — treat the value as less reliable"
-        if not v.is_corroborated
-        else "KTC and FantasyPros disagree on this player's value"
-    )
-    return f'<span class="confidence-flag" title="{esc(title)}">&#9888;&#65039;</span>'
+    return f'<span class="confidence-flag" title="{esc(title)}">{esc(CONFIDENCE_MARK)}</span>'
 
 
 def _roster_rows(entries: list[RosterEntry], currency: str) -> str:
@@ -117,6 +124,28 @@ def _roster_rows(entries: list[RosterEntry], currency: str) -> str:
     return "".join(rows)
 
 
+def _lineup_section(data: LeagueReportData) -> str:
+    """The optimizer's best legal lineup. `lineup_optimizer` is the single
+    owner of "who starts" and nothing rendered it directly before this."""
+    games_left = data.lineup_leverage.games_left if data.lineup_leverage is not None else None
+    rows = lineup_lines(data.lineup, games_left)
+    if not rows:
+        return ""
+    unit = lineup_units(games_left)
+    items = "".join(
+        f'<li class="alert-item">{_chip(slot, "accent")} <strong>{esc(name)}</strong> '
+        f'<span class="tabular muted">{esc(proj)}{esc(unit)}</span></li>'
+        for slot, name, proj in rows
+    )
+    return f"""
+    <section class="panel-block">
+      <h3>Best starting lineup <span class="muted">&middot; structural &mdash; no bye-week exclusions</span></h3>
+      <p class="roster-note">Projects ~{lineup_total(data.lineup, games_left):.1f} pts{esc(unit)}.</p>
+      <ul class="alert-list">{items}</ul>
+    </section>
+    """
+
+
 def _roster_section(roster: ValuedRoster, currency: str) -> str:
     label = value_label_for_currency(currency)
     starters = sorted(roster.starters(), key=lambda e: -(percentile_for_currency(e.value, currency) or 0))
@@ -132,17 +161,24 @@ def _roster_section(roster: ValuedRoster, currency: str) -> str:
         f"<tbody>{_roster_rows(starters, currency)}</tbody>",
         "</table></div>",
     ]
+    if any(confidence_caveat(e.value) for e in starters):
+        html.append(f'<p class="roster-note">{esc(CONFIDENCE_LEGEND)}</p>')
     if bench:
-        html.append('<div class="bench-strip"><span class="bench-label">Bench</span>')
+        html.append(f'<div class="bench-strip"><span class="bench-label">Bench ({len(bench)})</span>')
         for e in bench:
             pctl = percentile_for_currency(e.value, currency)
             pctl_str = f"{pctl:.0f}{_ordsuffix(pctl)}" if pctl is not None else "unranked"
             html.append(f'<span class="bench-chip">{esc(e.name)} <b>{pctl_str}</b></span>')
         html.append("</div>")
     if taxi:
-        html.append(f'<p class="roster-note"><strong>Taxi:</strong> {esc(", ".join(e.name for e in taxi))}</p>')
+        html.append(f'<p class="roster-note"><strong>Taxi squad:</strong> {esc(", ".join(e.name for e in taxi))}</p>')
     if reserve:
         html.append(f'<p class="roster-note"><strong>IR/Reserve:</strong> {esc(", ".join(e.name for e in reserve))}</p>')
+    if roster.skipped_player_count:
+        html.append(
+            f'<p class="roster-note">Note: {roster.skipped_player_count} roster player(s) couldn\'t be valued '
+            "this week (missing from the player cache) &mdash; this snapshot may be incomplete.</p>"
+        )
     html.append("</section>")
     return "".join(html)
 
@@ -192,15 +228,17 @@ def _asset_chip(name: str, *, is_pick: bool) -> str:
     return f'<span class="asset">{tag}{esc(name)}</span>'
 
 
-def _impact_block(impact: MoveImpact | None) -> str:
+def _impact_block(impact: MoveImpact | None, more: list[str]) -> str:
     if impact is None:
         return ""
-    deltas = impact.material_deltas()
+    deltas, _ = split_visible(impact.material_deltas(), MAX_IMPACT_DELTAS)
     items = "".join(f"<li>{esc(d)}</li>" for d in deltas) if deltas else (
         "<li>nothing material &mdash; lineup, depth, status, and roster value all hold; a value play, not a lineup play</li>"
     )
     if impact.matchup_note:
         items += f"<li>{esc(impact.matchup_note)}</li>"
+    if more:
+        items += f'<li class="muted">&hellip; {len(more)} further change(s) in the full rationale below</li>'
     return f'<div class="impact-block"><span class="rationale-label">What actually changes</span><ul>{items}</ul></div>'
 
 
@@ -252,20 +290,31 @@ def _economics_chips(econ: TradeEconomics | None) -> str:
     return chips
 
 
-def _conflict_block(conflict: Conflict | None) -> str:
+def _conflict_block(conflict: Conflict | None, reasons_for: list[str], reasons_against: list[str]) -> str:
     if conflict is None:
         return ""
     return (
         f'<div class="caveats conflict-block"><span class="caveat-label">{_chip(esc(CONFLICTED), "negative")}</span><ul>'
-        f"<li><b>For:</b> {esc('; '.join(conflict.reasons_for) or 'see the recommendation')}</li>"
-        f"<li><b>Against:</b> {esc('; '.join(conflict.reasons_against))}</li></ul></div>"
+        f"<li><b>For:</b> {esc('; '.join(reasons_for) or 'see Why now above')}</li>"
+        f"<li><b>Against:</b> {esc('; '.join(reasons_against) or 'see Why now above')}</li></ul></div>"
     )
+
+
+def _rationale_items(texts: list[str]) -> str:
+    if not texts:
+        return '<li class="muted">see Why now above</li>'
+    return "".join(f"<li>{esc(t)}</li>" for t in texts)
 
 
 def _trade_card(
     p: TradeProposal, index: int, impact: MoveImpact | None = None, ladder: NegotiationLadder | None = None,
     economics: TradeEconomics | None = None, conflict: Conflict | None = None, provenance=None,
 ) -> str:
+    """Visible: what the offer is, how it rates, its economics, a conflict
+    chip if any, the Why-now card, and what actually changes. Collapsed:
+    the full rationale, acceptance factors, caveats, the message and the
+    ladder. Nothing is dropped; a sentence already shown in the Why-now
+    card is simply not repeated underneath it."""
     give_chips = "".join(
         [*(_asset_chip(e.name, is_pick=False) for e in p.give), *(_asset_chip(pk.name, is_pick=True) for pk in p.give_picks)]
     )
@@ -276,15 +325,37 @@ def _trade_card(
     type_label = p.trade_type_label
     value_label = value_label_for_currency(p.currency)
 
-    mine = "".join(f"<li>{esc(r)}</li>" for r in p.rationale_for_me)
-    theirs = "".join(f"<li>{esc(r)}</li>" for r in p.rationale_for_them)
-    acceptance_reasons = "".join(f"<li>{esc(r)}</li>" for r in p.acceptance_reasons)
+    # One vocabulary per fact: the economics line and the Why-now card
+    # claim their facts first, then the collapsed block below shows what
+    # is left rather than restating them in another phrasing.
+    seen: set = set()
+    if economics is not None:
+        claim(seen, [economics.scarcity_note])
+    if provenance is not None:
+        claim(seen, [r.text for r in provenance.all_reasons])
+
+    _, more_deltas = split_visible(impact.material_deltas() if impact is not None else [], MAX_IMPACT_DELTAS)
+
+    mine = _rationale_items(without_repeats(p.rationale_for_me, seen))
+    theirs = _rationale_items(without_repeats(p.rationale_for_them, seen))
+    acceptance_reasons = "".join(f"<li>{esc(r)}</li>" for r in without_repeats(p.acceptance_reasons, seen))
     acceptance_block = (
         f'<div><span class="rationale-label">Why this rating</span><ul>{acceptance_reasons}</ul></div>'
         if acceptance_reasons
         else ""
     )
-    caveats = "".join(f'<li class="caveat-item">{esc(c)}</li>' for c in p.caveats)
+    conflict_block = _conflict_block(
+        conflict,
+        without_repeats(conflict.reasons_for, seen) if conflict is not None else [],
+        without_repeats(conflict.reasons_against, seen) if conflict is not None else [],
+    )
+    more_block = (
+        f'<div><span class="rationale-label">Further changes</span>'
+        f'<ul>{"".join(f"<li>{esc(d)}</li>" for d in more_deltas)}</ul></div>'
+        if more_deltas
+        else ""
+    )
+    caveats = "".join(f'<li class="caveat-item">{esc(c)}</li>' for c in without_repeats(p.caveats, seen))
     caveats_block = f'<div class="caveats"><span class="caveat-label">Caveats</span><ul>{caveats}</ul></div>' if caveats else ""
     message_block = (
         f'<div class="trade-message"><span class="rationale-label">Message to send</span>'
@@ -304,24 +375,27 @@ def _trade_card(
         <div class="trade-arrow" aria-hidden="true">&#8644;</div>
         <div class="trade-side"><span class="trade-side-label">You get</span><div class="asset-list">{receive_chips}</div></div>
       </div>
+      <p class="trade-target">To <strong>{target}</strong> &middot; {esc(value_label)}: {p.my_value_total:.0f} vs {p.their_value_total:.0f}</p>
       <div class="trade-signals">
         {_chip('Acceptance: ' + esc(p.acceptance_rating), _ACCEPTANCE_CHIP_KIND.get(p.acceptance_rating, 'neutral'))}
         {_chip('Confidence: ' + esc(p.confidence), _CONFIDENCE_CHIP_KIND.get(p.confidence, 'neutral'))}
         {_economics_chips(economics)}
+        {_chip(CONFLICTED, "negative") if conflict is not None else ""}
       </div>
       {f'<p class="muted status-reason">{esc(economics.scarcity_note)}</p>' if economics is not None and economics.scarcity_note else ""}
-      {_conflict_block(conflict)}{_provenance_block(provenance)}
-      <p class="trade-target">To <strong>{target}</strong> &middot; {esc(value_label)}: {p.my_value_total:.0f} vs {p.their_value_total:.0f}</p>
-      {_impact_block(impact)}
-      {message_block}
+      {_provenance_block(provenance)}
+      {_impact_block(impact, more_deltas)}
       <details class="trade-details">
-        <summary>Why this trade</summary>
+        <summary>Full rationale &middot; both sides, acceptance factors, caveats, message, ladder</summary>
+        {conflict_block}
         <div class="trade-rationale">
           <div><span class="rationale-label">For me</span><ul>{mine}</ul></div>
           <div><span class="rationale-label">For {esc(p.target_username)}</span><ul>{theirs}</ul></div>
         </div>
         {acceptance_block}
+        {more_block}
         {caveats_block}
+        {message_block}
         {_ladder_block(ladder)}
       </details>
     </article>
@@ -347,42 +421,44 @@ def _waiver_table(
         "Must Add": "positive", "Strong Add": "accent", "Moderate": "neutral", "Speculative": "neutral",
         "Monitor": "neutral", "Insurance": "caution",
     }
+    _CHIP_KIND = {"negative": "negative", "neutral": "neutral"}
     rows = []
     for t in targets:  # already capped by the engine; insurance rows ride along after the cap
         tier_chip = _chip(t.priority_tier, _TIER_CHIP_KIND.get(t.priority_tier, "neutral"))
         drop = esc(t.drop_candidate.name) if t.drop_candidate else '<span class="muted">—</span>'
         advice = faab.get(t.player_id)
         faab_text = esc(bid_cell(advice, t.suggested_faab_pct))
-        detail = bid_detail(advice)
-        faab_html = f'<div class="impact-inline"><b>FAAB:</b> {esc(detail)}</div>' if detail else ""
-        impact_html = ""
-        impact = impacts.get(t.player_id)
-        if impact is not None:
-            deltas = impact.material_deltas()
-            impact_html = '<div class="impact-inline"><b>Impact:</b> ' + (
-                esc("; ".join(deltas)) if deltas else "no lineup change &mdash; depth only"
-            ) + (f" {esc(impact.matchup_note)}" if impact.matchup_note else "") + "</div>"
-        notes_html = "".join(f'<div class="impact-inline">{esc(n)}</div>' for n in t.notes)
-        conflict = conflict_for(conflicts, WAIVER, t.player_id)
-        if conflict is not None:
-            notes_html = (
-                f'<div class="impact-inline">{_chip(esc(CONFLICTED), "negative")} against: {esc("; ".join(conflict.reasons_against))}</div>'
-                + notes_html
-            )
+        row = waiver_row_view(
+            t, impact=impacts.get(t.player_id), conflict=conflict_for(conflicts, WAIVER, t.player_id),
+            faab_detail=bid_detail(advice),
+        )
+        chips = "".join(_chip(text, _CHIP_KIND.get(kind, "neutral")) for text, kind in row.chips)
+        chips_html = f'<div class="row-chips">{chips}</div>' if chips else ""
+        # Everything the engine wrote that isn't the lead clause lives one
+        # click away instead of turning the cell into a 600-character wall.
+        details = (
+            '<details class="row-details"><summary>Details</summary>'
+            + "".join(f'<div class="impact-inline">{esc(d)}</div>' for d in row.details)
+            + "</details>"
+            if row.details
+            else ""
+        )
         rows.append(
             "<tr>"
             f"<td>{tier_chip}</td>"
             f'<td class="player-cell">{esc(t.name)}</td>'
             f'<td>{esc(t.position or "?")}</td>'
+            f'<td>{esc(t.team or "-")}</td>'
             f'<td>{drop}</td>'
             f'<td>{_chip(t.horizon, "neutral")}</td>'
             f'<td class="tabular">{faab_text}</td>'
-            f'<td class="waiver-reason">{esc(t.reason)}{impact_html}{notes_html}{faab_html}</td>'
+            f'<td class="waiver-reason">{esc(row.lead)}{chips_html}{details}</td>'
             "</tr>"
         )
     return (
         '<div class="table-scroll"><table class="waiver-table">'
-        "<thead><tr><th>Priority</th><th>Add</th><th>Pos</th><th>Drop</th><th>Horizon</th><th>FAAB</th><th>Why</th></tr></thead>"
+        "<thead><tr><th>Priority</th><th>Player</th><th>Pos</th><th>Team</th><th>Drop</th>"
+        "<th>Horizon</th><th>FAAB</th><th>Why</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table></div>"
     )
 
@@ -398,7 +474,8 @@ def _matchup_section(m: MatchupLeverage | None) -> str:
       <h3>This week's matchup <span class="muted">&middot; week {m.week} vs {esc(m.opponent_name)}</span></h3>
       <p class="roster-note">{_chip(m.label, _MATCHUP_CHIP_KIND.get(m.label, "neutral"))} you project
       <span class="tabular">{m.my_points:.1f}</span>, they project <span class="tabular">{m.opponent_points:.1f}</span>
-      (<span class="tabular">{m.gap:+.1f}</span>) &middot; this-week lineups with byes and outs applied</p>
+      (<span class="tabular">{m.gap:+.1f}</span>)</p>
+      <p class="roster-note">This-week lineups with byes and outs applied.</p>
     </section>
     """
 
@@ -563,6 +640,7 @@ def _pick_opportunity_section(opp: PickOpportunity | None, market: ReplacementMa
     return f"""
     <section class="panel-block">
       <h3>Draft capital <span class="muted">&middot; what your 1st/2nd-round picks mean to this roster</span></h3>
+      <p class="roster-note">An annotation, never a veto.</p>
       <ul class="alert-list">{items}</ul>
       {units_note}
     </section>
@@ -595,6 +673,7 @@ def _replacement_market_section(market: ReplacementMarket | None) -> str:
     return f"""
     <section class="panel-block">
       <h3>Replacement market <span class="muted">&middot; how replaceable each position is from this league's wire</span></h3>
+      <p class="roster-note">Scarcest first.</p>
       <ul class="alert-list">{items}</ul>
       {notes}
     </section>
@@ -651,6 +730,9 @@ def _alerts_list(notes: list[TimeSensitiveNote]) -> str:
         items.append(f'<li class="alert-item alert-{kind}"><strong>{esc(n.player_name)}</strong> &middot; {esc(n.note)}</li>')
     return f'<ul class="alert-list">{"".join(items)}</ul>'
 
+
+CONTEXT_SUMMARY = "lineup, roster, clogs, replacement market, stash board, buyer board, schedule, draft capital, league economy"
+DIAGNOSTICS_SUMMARY = "decision ledger, outcome facts, watchlist"
 
 _STATUS_CHIP_KIND = {"contender": "positive", "middling": "neutral", "rebuild": "caution"}
 _PLAYOFF_CHIP_KIND = {"Comfortable": "positive", "Bubble": "caution", "Long Shot": "caution", "Out": "negative"}
@@ -717,8 +799,12 @@ def _league_panel(data: LeagueReportData) -> str:
         """
         # Context that explains or qualifies the moves above, collapsed by
         # default so twelve capabilities don't read as twelve equal panels.
+        # The roster and the optimized lineup live here too: they are
+        # reference material, not this week's decisions.
         context_html = (
-            _roster_clogs_section(data.roster_clogs)
+            _lineup_section(data)
+            + _roster_section(data.roster, data.currency)
+            + _roster_clogs_section(data.roster_clogs)
             + _replacement_market_section(data.replacement)
             + _stash_section(data.stash)
             + _buyer_board_section(data.buyer_boards)
@@ -727,20 +813,20 @@ def _league_panel(data: LeagueReportData) -> str:
             + _league_economy_section(data.league_economy, data.roster.roster_id)
         )
         context = (
-            f'<details class="context-details"><summary>Roster context &middot; clogs, replacement market, stash board, buyer board, schedule, draft capital, league economy</summary>{context_html}</details>'
+            f'<details class="context-details"><summary>Roster context &middot; {CONTEXT_SUMMARY}</summary>{context_html}</details>'
             if context_html.strip()
             else ""
         )
         # A high-severity alert (a long-term injury not yet moved to an
         # IR slot, or a starter's bye) is time-boxed to this week's
-        # lineup lock — don't make a scrolling reader pass two sections
-        # that may both be empty-state ("no trades this week") to reach it.
-        ordered = [alerts_section, trades_and_waivers] if has_high_alert else [trades_and_waivers, alerts_section]
+        # lineup lock — don't make a scrolling reader pass sections that
+        # may all be empty-state ("no trades this week") to reach it.
         body = (
-            _roster_section(data.roster, data.currency)
-            + _lineup_leverage_section(data.lineup_leverage, data.currency, data.replacement_clauses)
+            (alerts_section if has_high_alert else "")
             + _matchup_section(data.matchup)
-            + "".join(ordered)
+            + _lineup_leverage_section(data.lineup_leverage, data.currency, data.replacement_clauses)
+            + trades_and_waivers
+            + ("" if has_high_alert else alerts_section)
             + context
         )
 
@@ -791,18 +877,25 @@ _ACTION_KIND_LABEL = {"defensive_add": "Block", "streamer": "Stream"}
 
 
 def _priority_action_row(a: PriorityAction) -> str:
+    """Headline (what) → priority (how urgent) → Why now → Against, with
+    the old free-text detail demoted to a muted trailing line. A Conflicted
+    move gets a chip; it no longer swallows the start of the detail."""
     icon, kind = _ACTION_KIND_META.get(a.kind, ("", "neutral"))
     league_slug = _slug(a.league_name)
-    priority = f'<span class="action-priority muted">{esc(priority_line(a.priority))}</span>' if a.priority is not None else ""
-    why = f'<span class="action-why"><b>Why now:</b> {esc(" · ".join(a.why_now))}</span>' if a.why_now else ""
-    against = f'<span class="action-why"><b>Against:</b> {esc(" · ".join(a.against))}</span>' if a.against else ""
+    v = action_view(a)
+    priority = f'<span class="action-priority muted">{esc(v.priority)}</span>' if v.priority else ""
+    why = f'<span class="action-why"><b>Why now:</b> {esc(" · ".join(v.why_now))}</span>' if v.why_now else ""
+    against = f'<span class="action-why"><b>Against:</b> {esc(" · ".join(v.against))}</span>' if v.against else ""
+    conflict = f'<span class="action-why"><b>Conflict:</b> {esc(v.conflict_note)}</span>' if v.conflict_note else ""
+    detail = f'<span class="action-detail muted">{esc(v.detail)}</span>' if v.detail else ""
     return f"""
     <a class="action-row" href="#{league_slug}" data-target="{league_slug}">
       <span class="action-icon" aria-hidden="true">{icon}</span>
       <span class="action-body">
-        <span class="action-headline">{esc(a.headline)}</span>
-        <span class="action-detail muted">{esc(a.detail)}</span>
-        {priority}{why}{against}
+        <span class="action-headline">{esc(a.headline)}
+          <span class="action-league muted">{esc(v.league)}</span>
+          {_chip(CONFLICTED, "negative") if v.conflicted else ""}</span>
+        {priority}{why}{against}{conflict}{detail}
       </span>
       {_chip(_ACTION_KIND_LABEL.get(a.kind, a.kind.capitalize()), kind)}
     </a>
@@ -973,26 +1066,36 @@ def _diagnostics_section(report: WeeklyReportData) -> str:
     if not parts:
         return ""
     return (
-        '<details class="context-details"><summary>Diagnostics and history &middot; decision ledger, outcome facts, watchlist</summary>'
+        f'<details class="context-details"><summary>Diagnostics and history &middot; {DIAGNOSTICS_SUMMARY}</summary>'
         + "".join(parts) + "</details>"
     )
 
 
 def _overview_panel(report: WeeklyReportData) -> str:
     rows = "".join(_overview_row(d) for d in report.leagues)
+    # A degraded run must be visible before anything else on the page, not
+    # only down in the health section a reader may never reach.
+    banner = health_banner(report)
+    banner_html = (
+        f'<p class="health-banner">{_chip(banner.label, "negative" if banner.degraded else "caution")} '
+        f"{esc(banner.text)} Details in Signal health below.</p>"
+        if banner is not None
+        else ""
+    )
     return f"""
     <div class="panel" id="panel-overview" role="tabpanel">
       <header class="panel-header">
         <h2>Overview</h2>
         <p class="muted">Generated {report.generated_at.strftime('%b %d, %Y &middot; %H:%M UTC')}</p>
       </header>
+      {banner_html}
       {_priority_actions_section(report.priority_actions)}
       {_delta_section(report.delta)}
-      {_portfolio_section(report.portfolio)}
       <section class="panel-block">
         <h3>Leagues</h3>
         <div class="overview-grid">{rows}</div>
       </section>
+      {_portfolio_section(report.portfolio)}
       {_signal_health_section(report)}
       {_diagnostics_section(report)}
     </div>
@@ -1014,6 +1117,24 @@ CSS = """
 .why-now .why-row { margin: 2px 0; }
 .why-now ul { margin: 2px 0 2px 16px; padding: 0; }
 .action-priority, .action-why { display: block; font-size: 0.85em; margin-top: 2px; }
+.action-headline .chip { margin-left: 8px; vertical-align: 1px; }
+.action-league { font-size: 12px; font-weight: 400; margin-left: 8px; }
+.health-banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 0 0 20px; padding: 10px 14px; font-size: 13px;
+  /* The body text is --ink, not --negative: --negative on --negative-bg
+     is a 4.2:1 pair, which is fine for a chip label but under AA for a
+     sentence the reader is meant to act on. The chip and rule carry the
+     colour instead. */
+  background: var(--negative-bg); color: var(--ink);
+  border-left: 3px solid var(--negative); border-radius: 0 8px 8px 0;
+}
+.row-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.row-details > summary {
+  cursor: pointer; margin-top: 6px; font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent-ink);
+}
+.row-details[open] > summary { margin-bottom: 2px; }
 :root {
   --ground: #13161A;
   --surface: #1B1F24;
@@ -1199,7 +1320,8 @@ tbody tr:last-child td { border-bottom: none; }
 .trade-message-text { margin: 4px 0 0; font-size: 13px; color: var(--ink); font-style: italic; }
 .trade-details summary { cursor: pointer; font-size: 13px; font-weight: 700; color: var(--accent-ink); padding: 6px 0; }
 .trade-rationale { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 6px; }
-.trade-rationale ul, .caveats ul { margin: 4px 0 0; padding-left: 18px; font-size: 13px; color: var(--ink-muted); }
+.trade-details ul, .caveats ul { margin: 4px 0 0; padding-left: 18px; font-size: 13px; color: var(--ink-muted); }
+.trade-details > div + div { margin-top: 10px; }
 .rationale-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-faint); }
 .streamers { margin-top: 14px; }
 .conflict-block { border-left: 3px solid var(--negative); padding-left: 10px; }
@@ -1296,7 +1418,12 @@ def render_dashboard_html(report: WeeklyReportData) -> str:
     nav_items = _nav_items(report)
     panels = _overview_panel(report) + "".join(_league_panel(d) for d in report.leagues)
 
-    return f"""<title>Fantasy Command Center</title>
+    # The charset declaration matters for the local double-click / static-server
+    # case: without it a server that guesses latin-1 turns every em dash and
+    # arrow in the report into mojibake. An Artifact publish already supplies
+    # one in its own <head>; a second declaration there is simply ignored.
+    return f"""<meta charset="utf-8">
+<title>Fantasy Command Center</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;800&family=Public+Sans:wght@400;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">

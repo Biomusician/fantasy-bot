@@ -1,9 +1,16 @@
 """Generates the consolidated weekly Markdown report — one section per
 league, meant to be actually read, not a raw data dump.
+
+Layout follows one rule: per recommendation, WHAT to do, WHY NOW, WHAT
+COULD GO WRONG, HOW URGENT — and everything else behind a collapsed
+`<details>` block. The HTML dashboard (html_report.py) renders the same
+facts in the same order with the same wording; anything that appears in
+one and not the other is a bug, not a style choice. The choices about
+which sentence gets the visible slot live in report_views.py so that both
+renderers make them identically.
 """
 from __future__ import annotations
 
-from sleeper_tool.action_priority import priority_line
 from sleeper_tool.asset_value import percentile_for_currency, value_label_for_currency
 from sleeper_tool.config import LEAGUES, LeagueInfo
 from sleeper_tool.decision_delta import DecisionDelta
@@ -19,6 +26,21 @@ from sleeper_tool.recommendation_conflicts import CONFLICTED, TRADE, WAIVER, Con
 from sleeper_tool.portfolio_exposure import PortfolioExposure
 from sleeper_tool.replacement_value import ReplacementMarket
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
+from sleeper_tool.report_views import (
+    CONFIDENCE_LEGEND,
+    CONFIDENCE_MARK,
+    MAX_IMPACT_DELTAS,
+    action_view,
+    claim,
+    confidence_caveat,
+    health_banner,
+    lineup_lines,
+    lineup_total,
+    lineup_units,
+    split_visible,
+    waiver_row_view,
+    without_repeats,
+)
 from sleeper_tool.roster_analysis import ValuedRoster
 from sleeper_tool.storage import Storage
 from sleeper_tool.streamer_planner import HOLD, SEQUENCE, StreamPlan
@@ -29,22 +51,53 @@ from sleeper_tool.waiver_engine import WaiverTarget
 
 TREND_ARROW = {"rising": "↑", "down": "↓", "no change": "→"}
 
+# Markdown supports raw HTML, so the collapsed blocks below are the same
+# progressive disclosure the dashboard uses — same summary wording, same
+# contents, so the two outputs stay comparable line for line.
+_OPEN_DETAILS = "<details>"
+_CLOSE_DETAILS = ["", "</details>", ""]
+
+
+def _summary(title: str, subtitle: str = "") -> list[str]:
+    tail = f" · {subtitle}" if subtitle else ""
+    return [_OPEN_DETAILS, f"<summary><strong>{title}</strong>{tail}</summary>", ""]
+
+
+def _heading(title: str, subtitle: str = "") -> str:
+    return f"### {title} · {subtitle}" if subtitle else f"### {title}"
+
+
+# Kind labels are the shared vocabulary with the dashboard.
+_KIND_LABEL = {
+    "alert": "Alert", "trade": "Trade", "waiver": "Waiver",
+    "roster": "Roster", "defensive_add": "Block", "streamer": "Stream",
+}
+
 
 def _render_priority_actions(actions: list[PriorityAction]) -> list[str]:
+    """Headline (what) → priority (how urgent) → Why now → Against, with
+    the old free-text detail demoted to a muted trailing line. A Conflicted
+    move is labelled, not led with."""
     lines = ["## Best moves right now", ""]
     if not actions:
         lines.append("Nothing urgent across any league — hold.")
         lines.append("")
         return lines
-    kind_label = {"alert": "ALERT", "trade": "TRADE", "waiver": "WAIVER", "roster": "ROSTER", "defensive_add": "BLOCK", "streamer": "STREAM"}
     for a in actions:
-        lines.append(f"- **[{kind_label.get(a.kind, a.kind.upper())}]** {a.headline} — _{a.detail}_")
-        if a.priority is not None:
-            lines.append(f"  - Priority: {priority_line(a.priority)}")
-        if a.why_now:
-            lines.append(f"  - Why now: {' · '.join(a.why_now)}")
-        if a.against:
-            lines.append(f"  - Against: {' · '.join(a.against)}")
+        v = action_view(a)
+        flag = " · ⚠️ **Conflicted**" if v.conflicted else ""
+        where = f" — *{v.league}*" if v.league else ""
+        lines.append(f"- **[{_KIND_LABEL.get(a.kind, a.kind.capitalize())}]** {a.headline}{where}{flag}")
+        if v.priority:
+            lines.append(f"  - Priority: {v.priority}")
+        if v.why_now:
+            lines.append(f"  - Why now: {' · '.join(v.why_now)}")
+        if v.against:
+            lines.append(f"  - Against: {' · '.join(v.against)}")
+        if v.conflict_note:
+            lines.append(f"  - Conflict: {v.conflict_note}")
+        if v.detail:
+            lines.append(f"  - _{v.detail}_")
     lines.append("")
     return lines
 
@@ -102,25 +155,53 @@ def _render_portfolio_exposure(portfolio: PortfolioExposure | None) -> list[str]
     return lines
 
 
+def _render_lineup(data: LeagueReportData) -> list[str]:
+    """The optimizer's best legal lineup — the single source of "who
+    starts", which nothing rendered directly before this."""
+    games_left = data.lineup_leverage.games_left if data.lineup_leverage is not None else None
+    rows = lineup_lines(data.lineup, games_left)
+    if not rows:
+        return []
+    unit = lineup_units(games_left)
+    lines = [
+        _heading("Best starting lineup", "structural — no bye-week exclusions"),
+        "",
+        f"Projects ~{lineup_total(data.lineup, games_left):.1f} pts{unit}.",
+        "",
+    ]
+    lines.extend(f"- **{slot}** — {name} · {proj}{unit}" for slot, name, proj in rows)
+    lines.append("")
+    return lines
+
+
 def _render_roster_snapshot(roster: ValuedRoster, currency: str) -> list[str]:
     label = value_label_for_currency(currency)
-    lines = [f"**Roster snapshot** ({label}):", ""]
+    lines = [_heading("Roster", label), ""]
     lines.append("| Slot | Player | Pos | Team | Value | Trend |")
     lines.append("|---|---|---|---|---|---|")
     starters = sorted(roster.starters(), key=lambda e: -(percentile_for_currency(e.value, currency) or 0))
+    flagged = False
     for e in starters:
         pctl = percentile_for_currency(e.value, currency)
         val_str = ordinal_pct(pctl) if pctl is not None else "unranked"
         arrow = TREND_ARROW.get(e.value.trend or "", "")
-        lines.append(f"| Start | {e.name} | {e.position or '?'} | {e.team or '-'} | {val_str} | {arrow} |")
+        mark = f" {CONFIDENCE_MARK}" if confidence_caveat(e.value) else ""
+        flagged = flagged or bool(mark)
+        lines.append(f"| Start | {e.name}{mark} | {e.position or '?'} | {e.team or '-'} | {val_str} | {arrow} |")
+    if flagged:
+        lines.append("")
+        lines.append(f"_{CONFIDENCE_LEGEND}_")
 
     bench = sorted(roster.bench(), key=lambda e: -(percentile_for_currency(e.value, currency) or 0))
     if bench:
-        top_bench = ", ".join(
-            f"{e.name} ({ordinal_pct(percentile_for_currency(e.value, currency))})" for e in bench[:4]
+        # Every bench player, same as the dashboard's bench strip — a
+        # truncated list here was a renderer divergence, not a kindness.
+        names = ", ".join(
+            f"{e.name} ({ordinal_pct(percentile_for_currency(e.value, currency)) if percentile_for_currency(e.value, currency) is not None else 'unranked'})"
+            for e in bench
         )
         lines.append("")
-        lines.append(f"Bench ({len(bench)}): {top_bench}{', ...' if len(bench) > 4 else ''}")
+        lines.append(f"Bench ({len(bench)}): {names}")
 
     taxi = [e for e in roster.entries if e.is_taxi]
     if taxi:
@@ -144,7 +225,7 @@ def _render_lineup_leverage(lev: LineupLeverage | None, currency: str, clauses: 
     if lev is None or (not lev.close_calls and not lev.bench_surplus):
         return []
     clauses = clauses or {}
-    lines = [f"**Lineup leverage** — best legal lineup projects ~{lev.weekly_starter_points:.0f} pts/week", ""]
+    lines = [_heading("Lineup leverage", f"best legal lineup ~{lev.weekly_starter_points:.0f} pts/week"), ""]
     for d in lev.close_calls:
         lines.append(
             f"- {_DECISION_MARK.get(d.label, '')} **{d.label}** at {d.slot}: {d.starter.name} "
@@ -187,36 +268,49 @@ def _render_ladder(ladder: NegotiationLadder) -> list[str]:
     return lines
 
 
-def _render_conflict(conflict: Conflict) -> list[str]:
-    return [
-        f"⚠️ **{CONFLICTED}**",
-        f"- For: {'; '.join(conflict.reasons_for) or 'see the recommendation'}",
-        f"- Against: {'; '.join(conflict.reasons_against)}",
-        "",
-    ]
+def _bullets(header: str, items: list[str], *, empty: str | None = None) -> list[str]:
+    if not items:
+        return [header, f"- {empty}"] if empty else []
+    return [header, *(f"- {i}" for i in items)]
 
 
 def _render_trade_proposal(
     p: TradeProposal, index: int, impact: MoveImpact | None = None, ladder: NegotiationLadder | None = None,
     economics: TradeEconomics | None = None, conflict: Conflict | None = None, provenance=None,
 ) -> list[str]:
+    """Visible: what the offer is, how it rates, its economics, why now,
+    and what actually changes. Collapsed: the full rationale, acceptance
+    factors, caveats, the message to send, and the negotiation ladder.
+    Nothing is dropped — a sentence already shown in the Why-now card is
+    simply not repeated verbatim underneath it."""
     lines = [f"**Offer {index} ({p.trade_type_label}): {p.summary_line()}**", ""]
     lines.append(
         f"*{value_label_for_currency(p.currency)}: {p.my_value_total:.0f} vs {p.their_value_total:.0f} "
         f"({p.balance_label.lower()}) · Acceptance: {p.acceptance_rating} · Confidence: {p.confidence}*"
     )
+    lines.append(f"*To {p.target_team_name or p.target_username}*")
     if economics is not None:
         lines.append(f"*Economics: {economics.describe()}*")
-    lines.append("")
     if conflict is not None:
-        lines.extend(_render_conflict(conflict))
+        lines.append(f"⚠️ **{CONFLICTED}** — see the full rationale below")
+    lines.append("")
+
+    # One vocabulary per fact: the economics line and the Why-now card
+    # claim their facts first; the collapsed block below never restates
+    # one of them in a different phrasing.
+    seen: set = set()
+    if economics is not None:
+        claim(seen, [economics.scarcity_note])
     why = _render_provenance(provenance)
     if why:
         lines.append("Why now:")
         lines.extend(why)
         lines.append("")
+        claim(seen, [r.text for r in provenance.all_reasons])
+
+    more: list[str] = []
     if impact is not None:
-        deltas = impact.material_deltas()
+        deltas, more = split_visible(impact.material_deltas(), MAX_IMPACT_DELTAS)
         lines.append("What actually changes:")
         if deltas:
             lines.extend(f"- {d}" for d in deltas)
@@ -224,29 +318,41 @@ def _render_trade_proposal(
             lines.append("- nothing material — lineup, depth, status, and roster value all hold; this is a value play, not a lineup play")
         if impact.matchup_note:
             lines.append(f"- {impact.matchup_note}")
+        if more:
+            lines.append(f"- … {len(more)} further change(s) in the full rationale below")
         lines.append("")
-    lines.append("Why it works for me:")
-    for r in p.rationale_for_me:
-        lines.append(f"- {r}")
-    lines.append(f"Why {p.target_username} plausibly says yes:")
-    for r in p.rationale_for_them:
-        lines.append(f"- {r}")
-    if p.acceptance_reasons:
+
+    mine = without_repeats(p.rationale_for_me, seen)
+    theirs = without_repeats(p.rationale_for_them, seen)
+    acceptance = without_repeats(p.acceptance_reasons, seen)
+    conflict_for_ = without_repeats(conflict.reasons_for, seen) if conflict is not None else []
+    conflict_against = without_repeats(conflict.reasons_against, seen) if conflict is not None else []
+    caveats = without_repeats(p.caveats, seen)
+
+    lines.extend(_summary("Full rationale", "both sides, acceptance factors, caveats, message, ladder"))
+    if conflict is not None:
+        lines.append(f"⚠️ **{CONFLICTED}**")
+        lines.append(f"- For: {'; '.join(conflict_for_) or 'see Why now above'}")
+        lines.append(f"- Against: {'; '.join(conflict_against) or 'see Why now above'}")
         lines.append("")
-        lines.append("Acceptance factors:")
-        for r in p.acceptance_reasons:
-            lines.append(f"- {r}")
-    if p.caveats:
+    lines.extend(_bullets("Why it works for me:", mine, empty="see Why now above"))
+    lines.extend(_bullets(f"Why {p.target_username} plausibly says yes:", theirs, empty="see Why now above"))
+    if acceptance:
         lines.append("")
-        lines.append("Caveats:")
-        for c in p.caveats:
-            lines.append(f"- ⚠️ {c}")
+        lines.extend(_bullets("Acceptance factors:", acceptance))
+    if more:
+        lines.append("")
+        lines.extend(_bullets("Further changes:", more))
+    if caveats:
+        lines.append("")
+        lines.extend(_bullets("Caveats:", [f"⚠️ {c}" for c in caveats]))
     if p.message:
         lines.append("")
         lines.append(f"> Message to send: _{p.message}_")
     if ladder is not None:
         lines.append("")
         lines.extend(_render_ladder(ladder))
+    lines.extend(_CLOSE_DETAILS)
     return lines
 
 
@@ -257,36 +363,39 @@ def _render_waiver_targets(
     targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | None = None, conflicts: list[Conflict] | None = None,
     faab: dict | None = None,
 ) -> list[str]:
+    """The table keeps its columns; the Why cell keeps the engine's own
+    lead clauses plus short chips. Notes, FAAB sizing and source/schedule
+    annotations move into a keyed details list under the table — a table
+    cell can't hold a sub-list in Markdown."""
     if not targets:
         return ["No standout waiver targets this week."]
     impacts = impacts or {}
     conflicts = conflicts or []
     faab = faab or {}
     lines = ["| Priority | Player | Pos | Team | Drop | Horizon | FAAB | Why |", "|---|---|---|---|---|---|---|---|"]
+    details: list[str] = []
     for t in targets:  # already capped by the engine; insurance rows ride along after the cap
         mark = _TIER_MARK.get(t.priority_tier, "")
         drop = t.drop_candidate.name if t.drop_candidate else "—"
         advice = faab.get(t.player_id)
-        faab_text = bid_cell(advice, t.suggested_faab_pct)
-        reason = t.reason
-        impact = impacts.get(t.player_id)
-        if impact is not None:
-            deltas = impact.material_deltas()
-            reason += " · **Impact:** " + ("; ".join(deltas) if deltas else "no lineup change — depth only")
-            if impact.matchup_note:
-                reason += " · " + impact.matchup_note
-        if t.notes:
-            reason += " · " + " · ".join(t.notes)
-        detail = bid_detail(advice)
-        if detail:
-            reason += f" · **FAAB:** {detail}"
-        conflict = conflict_for(conflicts, WAIVER, t.player_id)
-        if conflict is not None:
-            reason = f"⚠️ **{CONFLICTED}** (against: {'; '.join(conflict.reasons_against)}) · " + reason
+        row = waiver_row_view(
+            t, impact=impacts.get(t.player_id), conflict=conflict_for(conflicts, WAIVER, t.player_id),
+            faab_detail=bid_detail(advice),
+        )
+        chips = "".join(f" **[{text}]**" for text, _ in row.chips)
         lines.append(
             f"| {mark} {t.priority_tier} | {t.name} | {t.position or '?'} | {t.team or '-'} | {drop} | "
-            f"{t.horizon} | {faab_text} | {reason} |"
+            f"{t.horizon} | {bid_cell(advice, t.suggested_faab_pct)} | {row.lead}{chips} |"
         )
+        if row.details:
+            details.append(f"**{t.name}**")
+            details.extend(f"- {d}" for d in row.details)
+            details.append("")
+    if details:
+        lines.append("")
+        lines.extend(_summary("Waiver details", "notes, impact, FAAB sizing, source and schedule notes"))
+        lines.extend(details)
+        lines.extend(_CLOSE_DETAILS)
     return lines
 
 
@@ -326,7 +435,7 @@ _PICK_MARK = {"Strategic": "🔒", "Useful": "🟡", "Spendable": "🟢"}
 
 
 def _render_pick_opportunity(opp: PickOpportunity, market: ReplacementMarket | None = None) -> list[str]:
-    lines = ["What your 1st/2nd-round picks mean to this roster (an annotation, never a veto):", ""]
+    lines = ["An annotation, never a veto.", ""]
     for a in opp.assessments:
         value = f", KTC {a.pick.value:,}" if a.pick.value else ""
         lines.append(f"- {_PICK_MARK.get(a.classification, '')} **{a.classification}: {a.display_name}**{value} — {a.reason}")
@@ -345,7 +454,7 @@ def _unit_line(u, market: ReplacementMarket | None) -> str:
 
 
 def _render_replacement_market(market: ReplacementMarket) -> list[str]:
-    lines = ["How replaceable each starting position is from THIS league's waiver wire (scarcest first):", ""]
+    lines = ["Scarcest first.", ""]
     for m in market.scarcest():
         lines.append(f"- **{m.describe()}**" if m.scarcity in ("Scarce", "Very Scarce") else f"- {m.describe()}")
     if market.understated:
@@ -359,7 +468,13 @@ def _render_replacement_market(market: ReplacementMarket) -> list[str]:
 
 
 def _render_league_economy(economy: LeagueEconomy | None, my_roster_id: int) -> list[str]:
+    """Omitted entirely when there is nothing to say — the dashboard does
+    the same, and a "nothing stands out" placeholder was one more
+    equal-weight section competing with the recommendations."""
     if economy is None:
+        return []
+    labelled = economy.labelled()
+    if not labelled and not economy.limited_sample:
         return []
     lines = []
     if economy.limited_sample:
@@ -367,15 +482,67 @@ def _render_league_economy(economy: LeagueEconomy | None, my_roster_id: int) -> 
             f"_Limited trade-history sample ({economy.total_completed_trades} completed trade"
             f"{'s' if economy.total_completed_trades != 1 else ''} this season) — trader-activity labels suppressed._"
         )
-    labelled = economy.labelled()
-    if labelled:
-        for m in sorted(labelled, key=lambda m: (m.roster_id != my_roster_id, -m.completed_trades)):
-            who = f"{m.team_name or m.username or f'roster {m.roster_id}'}{' (you)' if m.roster_id == my_roster_id else ''}"
-            lines.append(f"- **{who}** — {m.describe()}")
-    elif not economy.limited_sample:
-        lines.append("Nothing stands out: no frequent/inactive traders, pick hoarders, or position stockpiles this season.")
+    for m in sorted(labelled, key=lambda m: (m.roster_id != my_roster_id, -m.completed_trades)):
+        who = f"{m.team_name or m.username or f'roster {m.roster_id}'}{' (you)' if m.roster_id == my_roster_id else ''}"
+        lines.append(f"- **{who}** — {m.describe()}")
     lines.append("")
     return lines
+
+
+CONTEXT_SUMMARY = "lineup, roster, clogs, replacement market, stash board, buyer board, schedule, draft capital, league economy"
+
+
+def _render_context(data: LeagueReportData) -> list[str]:
+    """Everything that explains or qualifies the moves above, collapsed so
+    that a dozen capabilities don't read as a dozen equal sections."""
+    body: list[str] = []
+    body.extend(_render_lineup(data))
+    body.extend(_render_roster_snapshot(data.roster, data.currency))
+    body.append("")
+
+    if data.roster_clogs:
+        body.append(_heading("Roster clogs", "dead roster spots"))
+        body.append("")
+        body.extend(f"- **{c.entry.name}** ({c.entry.position or '?'}) — {'; '.join(c.reasons)}" for c in data.roster_clogs)
+        body.append("")
+
+    if data.replacement is not None and data.replacement.positions:
+        body.append(_heading("Replacement market", "how replaceable each position is from this league's wire"))
+        body.append("")
+        body.extend(_render_replacement_market(data.replacement))
+
+    if data.stash:
+        body.append(_heading("Stash board", "developmental holds, not lineup help"))
+        body.append("")
+        body.extend(f"- **{c.label}:** {c.describe()}" for c in data.stash)
+        body.append("")
+
+    if data.buyer_boards:
+        body.append(_heading("Buyer board", "who could pay for your sell-high pieces"))
+        body.append("")
+        for b in data.buyer_boards:
+            buyers = "; ".join(f.describe() for f in b.buyers) if b.buyers else "no Strong or Possible fit in this league"
+            body.append(f"- **{b.candidate.name}** ({b.candidate.position or '?'}): {buyers}")
+        body.append("")
+
+    if data.windows is not None:
+        body.append(_heading("Schedule windows"))
+        body.append("")
+        body.append(data.windows.describe())
+        body.append("")
+
+    if data.pick_opportunity and data.pick_opportunity.assessments:
+        body.append(_heading("Draft capital", "what your 1st/2nd-round picks mean to this roster"))
+        body.append("")
+        body.extend(_render_pick_opportunity(data.pick_opportunity, data.replacement))
+
+    economy_lines = _render_league_economy(data.league_economy, data.roster.roster_id)
+    if economy_lines:
+        body.append(_heading("League economy", "this season's transaction record"))
+        body.append("")
+        body.extend(economy_lines)
+
+    return [*_summary("Roster context", CONTEXT_SUMMARY), *body, *_CLOSE_DETAILS]
 
 
 def render_league_section(data: LeagueReportData) -> list[str]:
@@ -402,19 +569,34 @@ def render_league_section(data: LeagueReportData) -> list[str]:
         lines.append("")
         return lines
 
-    lines.extend(_render_roster_snapshot(data.roster, data.currency))
-    lines.append("")
-    lines.extend(_render_lineup_leverage(data.lineup_leverage, data.currency, data.replacement_clauses))
-    if data.matchup is not None:
-        lines.append(f"**This week's matchup** — {data.matchup.describe()}")
-        lines.append("")
-
     # Time-sensitive alerts lead when there's a high-severity one — a
-    # scrolling reader shouldn't have to pass two possibly-empty sections
-    # (trades, waivers) to reach the one thing that's actually time-boxed
-    # to this week's lineup lock.
+    # scrolling reader shouldn't have to pass sections that may all be
+    # empty-state to reach the one thing that's actually time-boxed to
+    # this week's lineup lock.
     has_high_alert = any(n.severity == "high" for n in data.time_sensitive)
+    alert_lines: list[str] = []
+    if data.time_sensitive:
+        for n in data.time_sensitive:
+            mark = _SEVERITY_MARK.get(n.severity, "")
+            alert_lines.append(f"- {mark} **{n.player_name}**: {n.note}")
+    else:
+        alert_lines.append("Nothing flagged.")
+    alert_lines.append("")
+    alerts = (_heading("Time-sensitive"), alert_lines)
+
     sections: list[tuple[str, list[str]]] = []
+    if has_high_alert:
+        sections.append(alerts)
+
+    if data.matchup is not None:
+        sections.append((
+            _heading("This week's matchup", f"week {data.matchup.week} vs {data.matchup.opponent_name}"),
+            [data.matchup.describe(), "", "This-week lineups with byes and outs applied.", ""],
+        ))
+
+    leverage = _render_lineup_leverage(data.lineup_leverage, data.currency, data.replacement_clauses)
+    if leverage:
+        sections.append((leverage[0], leverage[2:]))  # [0] heading, [1] its blank line
 
     trade_lines = []
     if data.proposals:
@@ -433,7 +615,7 @@ def render_league_section(data: LeagueReportData) -> list[str]:
         for c in data.consolidations:
             trade_lines.append(f"- {c.describe()} · {c.freed_slot_note}" + (f" · ⚠️ {c.fragility_note}" if c.fragility_note else ""))
         trade_lines.append("")
-    sections.append(("### Trade offers", trade_lines))
+    sections.append((_heading("Trade offers"), trade_lines))
 
     waiver_lines = (
         [f"_{data.waivers_note}_", ""]
@@ -446,66 +628,23 @@ def render_league_section(data: LeagueReportData) -> list[str]:
         waiver_lines.extend(_render_streamers(data.streamers))
     if data.defensive_add is not None:
         waiver_lines.extend([f"**🛡 Defensive add** (deny this week's opponent): {data.defensive_add.describe()}", ""])
-    sections.append(("### Waiver targets", waiver_lines))
+    sections.append((_heading("Waiver targets"), waiver_lines))
 
     if data.drop_candidates:
         # Only rendered when there's something real to say — no synthetic
         # "nothing to drop" filler, matching the empty-state discipline
         # used elsewhere in this report.
-        sections.append(("### Consider dropping", _render_drop_candidates(data.drop_candidates)))
+        sections.append((_heading("Consider dropping"), _render_drop_candidates(data.drop_candidates)))
 
-    alert_lines = []
-    if data.time_sensitive:
-        for n in data.time_sensitive:
-            mark = _SEVERITY_MARK.get(n.severity, "")
-            alert_lines.append(f"- {mark} **{n.player_name}**: {n.note}")
-    else:
-        alert_lines.append("Nothing flagged.")
-    alert_lines.append("")
-    sections.append(("### Time-sensitive", alert_lines))
-
-    if has_high_alert:
-        alert_index = next(i for i, (header, _) in enumerate(sections) if header == "### Time-sensitive")
-        sections.insert(0, sections.pop(alert_index))
-
-    # Context sections last: they explain and qualify the moves above
-    # rather than compete with them.
-    if data.roster_clogs:
-        clog_lines = [
-            f"- **{c.entry.name}** ({c.entry.position or '?'}) — {'; '.join(c.reasons)}" for c in data.roster_clogs
-        ] + [""]
-        sections.append(("### Roster clogs (dead roster spots)", clog_lines))
-
-    if data.replacement is not None and data.replacement.positions:
-        sections.append(("### Replacement market", _render_replacement_market(data.replacement)))
-
-    if data.stash:
-        stash_lines = [f"- **{c.label}:** {c.describe()}" for c in data.stash] + [""]
-        sections.append(("### Stash board (developmental holds)", stash_lines))
-
-    if data.buyer_boards:
-        buyer_lines = []
-        for b in data.buyer_boards:
-            buyers = "; ".join(f.describe() for f in b.buyers) if b.buyers else "no Strong or Possible fit in this league"
-            buyer_lines.append(f"- **{b.candidate.name}** ({b.candidate.position or '?'}): {buyers}")
-        buyer_lines.append("")
-        sections.append(("### Buyer board (who could pay for your sell-high pieces)", buyer_lines))
-
-    if data.windows is not None:
-        sections.append(("### Schedule windows", [data.windows.describe(), ""]))
-
-    if data.pick_opportunity and data.pick_opportunity.assessments:
-        sections.append(("### Draft capital", _render_pick_opportunity(data.pick_opportunity, data.replacement)))
-
-    economy_lines = _render_league_economy(data.league_economy, data.roster.roster_id)
-    if economy_lines:
-        sections.append(("### League economy", economy_lines))
+    if not has_high_alert:
+        sections.append(alerts)
 
     for header, body in sections:
         lines.append(header)
         lines.append("")
         lines.extend(body)
 
+    lines.extend(_render_context(data))
     return lines
 
 
@@ -516,6 +655,9 @@ def render_weekly_report(report: WeeklyReportData) -> str:
         f"_Generated {report.generated_at.strftime('%Y-%m-%d %H:%M UTC')}_",
         "",
     ]
+    banner = health_banner(report)
+    if banner is not None:
+        lines.extend([f"> ⚠️ **{banner.text}** Details in Signal health below.", ""])
     lines.extend(_render_priority_actions(report.priority_actions))
     lines.extend(_render_delta(report.delta))
     lines.extend(_render_portfolio_exposure(report.portfolio))
@@ -558,11 +700,13 @@ def _render_signal_health(report: WeeklyReportData) -> list[str]:
 
 MAX_DIAGNOSTIC_LINES = 10
 
+DIAGNOSTICS_SUMMARY = "decision ledger, outcome facts, watchlist"
+
 
 def _render_diagnostics(report: WeeklyReportData) -> list[str]:
-    """History and self-checks, last: what earlier runs recommended and
-    what Sleeper then showed, what the watchlist promoted, how many are
-    still watched. Facts only; nothing here scores the tool."""
+    """History and self-checks, last and collapsed: what earlier runs
+    recommended and what Sleeper then showed, what the watchlist promoted,
+    how many are still watched. Facts only; nothing here scores the tool."""
     body: list[str] = []
     if report.ledger_summary:
         body.append("**Decision ledger** (recommendations recorded, by action and observed outcome):")
@@ -587,7 +731,7 @@ def _render_diagnostics(report: WeeklyReportData) -> list[str]:
         body.append("")
     if not body:
         return []
-    return ["## Diagnostics and history", "", *body]
+    return [*_summary("Diagnostics and history", DIAGNOSTICS_SUMMARY), *body, *_CLOSE_DETAILS]
 
 
 def generate_weekly_report(

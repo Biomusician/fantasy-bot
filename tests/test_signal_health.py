@@ -7,6 +7,7 @@ actually touches — which is the point of the duck typing.
 from __future__ import annotations
 
 import datetime as dt
+import functools
 from dataclasses import dataclass
 
 import pytest
@@ -36,9 +37,9 @@ def _no_ff_csv(monkeypatch):
     monkeypatch.setattr(sh, "ff_dynasty_status", lambda *a, **k: "not provided (optional)")
 
 
-def _snapshot(source: str, age: dt.timedelta, rows: int = 500, fallback: bool = False):
+def _snapshot(source: str, age: dt.timedelta, rows: int = 500, fallback: bool = False, *, now: dt.datetime = NOW):
     snap = RankingSnapshot(
-        source=source, fetched_at=NOW - age, payload=[{"n": i} for i in range(rows)]
+        source=source, fetched_at=now - age, payload=[{"n": i} for i in range(rows)]
     )
     snap.served_from_fallback = fallback
     return snap
@@ -60,11 +61,12 @@ class FakeUsage:
     stale: bool = False
 
 
-def _healthy_engine(**overrides):
+def _healthy_engine(now: dt.datetime = NOW, **overrides):
+    _snap = functools.partial(_snapshot, now=now)
     engine = FakeEngine(
-        ktc_snapshot=_snapshot("ktc_dynasty", dt.timedelta(hours=3), rows=500),
-        fp_snapshots={"dynasty_1qb": _snapshot("fantasypros_dynasty_1qb", dt.timedelta(hours=3), rows=400)},
-        rb_snapshots={"full_ppr": _snapshot("rotoballer_full_ppr", dt.timedelta(hours=3), rows=600)},
+        ktc_snapshot=_snap("ktc_dynasty", dt.timedelta(hours=3), rows=500),
+        fp_snapshots={"dynasty_1qb": _snap("fantasypros_dynasty_1qb", dt.timedelta(hours=3), rows=400)},
+        rb_snapshots={"full_ppr": _snap("rotoballer_full_ppr", dt.timedelta(hours=3), rows=600)},
     )
     for k, v in overrides.items():
         setattr(engine, k, v)
@@ -425,10 +427,14 @@ def test_describe_names_the_unavailable_families_and_carries_the_notes():
 
 
 def test_describe_says_so_when_nothing_is_wrong(tmp_path):
+    # The storage rows are stamped with the real clock, so everything else
+    # in this test is aged against the real clock too.
+    real_now = dt.datetime.now(dt.timezone.utc)
     with _populated_storage(tmp_path) as storage:
         report = sh.build_health(
-            engine=_healthy_engine(),
+            engine=_healthy_engine(now=real_now),
             storage=storage,
+            now=real_now,
             schedule_snapshot=RankingSnapshot(
                 source="nflverse_schedule",
                 fetched_at=dt.datetime.now(dt.timezone.utc),

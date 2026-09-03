@@ -22,3 +22,4 @@ data/yahoo_token.json
 data/calibration_report.md
 data/decision_ledger/
 data/watchlist/
+.claude/launch.json
