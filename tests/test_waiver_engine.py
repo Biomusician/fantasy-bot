@@ -433,3 +433,52 @@ def test_get_waiver_targets_returns_empty_for_undrafted_roster():
     league = make_league_info(kind="dynasty")
     my_roster = make_roster(entries=[], league=league)
     assert get_waiver_targets(FakeStorage({}, []), FakeEngine({}), league, my_roster) == []
+
+
+def test_a_drop_candidate_better_than_the_add_is_never_paired_with_him():
+    """Cutting a better player at the same position to make room for a worse
+    one is a loss whatever the trending feed says. `find_drop_candidate`
+    prefers same-position bench cuts, so the guard has to sit downstream of
+    it in `get_waiver_targets` — and this is the case that proves it does."""
+    my_entries = [
+        make_entry(player_id="my-qb", position="QB", is_starter=True, value=make_value(position="QB", dynasty_value_percentile=80.0, dynasty_positional_percentile=80.0)),
+        make_entry(player_id="my-rb", position="RB", is_starter=True, value=make_value(position="RB", dynasty_value_percentile=75.0, dynasty_positional_percentile=75.0)),
+        make_entry(player_id="my-te", position="TE", is_starter=True, value=make_value(position="TE", dynasty_value_percentile=70.0, dynasty_positional_percentile=70.0)),
+        # The only bench body at WR is BETTER than the trending add.
+        make_entry(player_id="my-good-wr", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=85.0, dynasty_positional_percentile=85.0)),
+    ]
+    league = make_league_info(kind="dynasty")
+    my_roster = make_roster(entries=my_entries, league=league)
+    players = {"new1": _player("new1", "Worse Trending WR", "WR")}
+    storage = FakeStorage(players, [{"player_id": "new1", "count": 50}])
+    engine = FakeEngine({"Worse Trending WR": make_value(
+        name="Worse Trending WR", position="WR", dynasty_value_percentile=60.0, dynasty_positional_percentile=60.0,
+    )})
+
+    targets = get_waiver_targets(storage, engine, league, my_roster, current_week=6)
+    assert len(targets) == 1
+    assert targets[0].drop_candidate is None, "would have cut a better WR to add a worse one"
+    # find_drop_candidate on its own WOULD have offered him: the guard is
+    # the thing being tested, not the absence of any candidate at all.
+    assert find_drop_candidate(my_roster, "WR", [], "dynasty").player_id == "my-good-wr"
+
+
+def test_a_drop_candidate_worse_than_the_add_is_still_paired():
+    """The mirror of the guard above, so it can't pass by never pairing."""
+    my_entries = [
+        make_entry(player_id="my-qb", position="QB", is_starter=True, value=make_value(position="QB", dynasty_value_percentile=80.0, dynasty_positional_percentile=80.0)),
+        make_entry(player_id="my-rb", position="RB", is_starter=True, value=make_value(position="RB", dynasty_value_percentile=75.0, dynasty_positional_percentile=75.0)),
+        make_entry(player_id="my-te", position="TE", is_starter=True, value=make_value(position="TE", dynasty_value_percentile=70.0, dynasty_positional_percentile=70.0)),
+        make_entry(player_id="my-poor-wr", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=20.0, dynasty_positional_percentile=20.0)),
+    ]
+    league = make_league_info(kind="dynasty")
+    my_roster = make_roster(entries=my_entries, league=league)
+    players = {"new1": _player("new1", "Better Trending WR", "WR")}
+    storage = FakeStorage(players, [{"player_id": "new1", "count": 50}])
+    engine = FakeEngine({"Better Trending WR": make_value(
+        name="Better Trending WR", position="WR", dynasty_value_percentile=60.0, dynasty_positional_percentile=60.0,
+    )})
+
+    targets = get_waiver_targets(storage, engine, league, my_roster, current_week=6)
+    assert targets[0].drop_candidate is not None
+    assert targets[0].drop_candidate.player_id == "my-poor-wr"

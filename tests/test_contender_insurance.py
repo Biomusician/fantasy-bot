@@ -113,3 +113,25 @@ def test_cascading_reshuffle_is_handled_by_the_optimizer_not_a_single_backup():
     # Baseline 200+150+180+100=630; without rb1: 150+90+180+100=520 -> drop 110 -> replacement 90.
     assert rb1.replacement_projection == pytest.approx(90)
     assert rb1.restored_projection == pytest.approx(170)
+
+
+def test_a_free_agent_who_out_projects_the_starter_is_an_upgrade_not_insurance():
+    """Insurance is cover for losing a starter. A free agent who would
+    restore the slot to at least what the starter projects is a straight
+    upgrade the waiver board already handles — calling him "insurance" would
+    file a starter swap under injury planning."""
+    r = _roster([_p("qb1", "QB", 300), _p("rb1", "RB", 200), _p("rb2", "RB", 150), _p("wr1", "WR", 180), _p("rb3", "RB", 50)])
+
+    # Losing rb1 (200) leaves rb3 (50) — fragile. A 199-projection free
+    # agent restores 199 < 200: cover.
+    cover = identify_fragile_starters(r, [_fa("fa_rb", "RB", 199)], team_status=CONTENDER, max_recommendations=10)
+    rb1_cover = [x for x in cover if x.starter.player_id == "rb1"]
+    assert rb1_cover and rb1_cover[0].restored_projection == pytest.approx(199)
+
+    # At exactly the starter's own projection it stops being insurance.
+    equal = identify_fragile_starters(r, [_fa("fa_rb", "RB", 200)], team_status=CONTENDER, max_recommendations=10)
+    assert all(x.starter.player_id != "rb1" for x in equal)
+
+    # And above it, likewise.
+    better = identify_fragile_starters(r, [_fa("fa_rb", "RB", 260)], team_status=CONTENDER, max_recommendations=10)
+    assert all(x.starter.player_id != "rb1" for x in better)

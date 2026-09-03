@@ -310,3 +310,122 @@ def test_the_default_slot_list_is_one_the_optimizer_can_model():
     for slot in DEFAULT_ROSTER_POSITIONS:
         if slot not in NON_STARTER_SLOTS:
             slot_eligibility(slot)  # raises UnsupportedSlotError if not
+
+
+# -- one league failing must not take the run with it ------------------------
+
+
+def _broken_and_healthy():
+    """Two leagues; the first one's my-roster owner is not me, which is what
+    a half-finished sync looks like from the report path's side."""
+    from sleeper_tool.config import MY_USER_ID
+
+    broken = make_synthetic_league(name="Half Synced", league_id="9000000000000000005", teams=4)
+    for roster, user in zip(broken.rosters, broken.users):
+        if roster["owner_id"] == MY_USER_ID:
+            roster["owner_id"] = user["user_id"] = "someone_else"
+    healthy = make_synthetic_league(name="Fully Synced", league_id="9000000000000000006", teams=5)
+    return broken, healthy
+
+
+@pytest.fixture(scope="module")
+def partial_report():
+    patcher = pytest.MonkeyPatch()
+    try:
+        isolate_report_data(patcher)
+        synthetic = _broken_and_healthy()
+        storage = make_storage(*synthetic)
+        engine = make_engine(synthetic[1].players)
+        yield build_weekly_report_data(storage, engine, [s.info for s in synthetic], with_nfl_schedule=False)
+    finally:
+        patcher.undo()
+
+
+def test_one_unbuildable_league_does_not_stop_the_others(partial_report):
+    broken = _by_name(partial_report, "Half Synced")
+    healthy = _by_name(partial_report, "Fully Synced")
+    assert broken.error and "roster" in broken.error
+    assert healthy.error is None and healthy.roster is not None and healthy.roster.entries
+    assert healthy.proposals and healthy.waiver_targets  # the good league is fully built
+
+
+def test_a_partial_run_is_never_a_complete_run(partial_report):
+    """The gate daily_run reads: with one league errored, nothing may be
+    persisted as a baseline for the next run to diff against."""
+    from sleeper_tool.decision_delta import is_complete_run
+
+    assert is_complete_run(partial_report, sync_failures=0) is False
+
+
+def test_the_failure_is_visible_in_the_rendered_report(partial_report):
+    """A league that silently vanished from the report would be worse than
+    one that says it failed."""
+    markdown = render_weekly_report(partial_report)
+    assert "Half Synced" in markdown
+    assert _by_name(partial_report, "Half Synced").error in markdown
+    assert "Fully Synced" in markdown
+
+
+def test_the_ledger_records_nothing_for_the_errored_league(partial_report):
+    """`build_entries` skips errored leagues, so a run that couldn't see my
+    roster never claims to have recommended anything there."""
+    broken_id = _by_name(partial_report, "Half Synced").league.league_id
+    healthy_id = _by_name(partial_report, "Fully Synced").league.league_id
+    league_ids = {e.league_id for e in partial_report.ledger.entries.values()}
+    assert broken_id not in league_ids
+    assert healthy_id in league_ids  # ... and the good league still recorded its own
+
+
+def test_the_snapshot_and_watchlist_skip_the_errored_league_too(partial_report):
+    broken_id = _by_name(partial_report, "Half Synced").league.league_id
+    assert broken_id not in partial_report.snapshot["leagues"]
+    assert all(i.league_id != broken_id for i in partial_report.watchlist.items.values())
+
+
+# -- the matchup note's own bar ----------------------------------------------
+
+
+def test_a_matchup_note_is_attached_only_above_the_named_delta(monkeypatch):
+    """MATCHUP_NOTE_MIN_DELTA pinned by value and at literal deltas.
+
+    "+0.0 against a 17.8 edge" is not a fact about the move, so the note is
+    withheld below the bar. The two preview functions are the seam: they are
+    replaced with ones that hand back impacts of exactly the deltas under
+    test, so the assertion doesn't depend on what the synthetic rosters
+    happen to project.
+    """
+    import sleeper_tool.report_data as rd
+    from sleeper_tool.move_impact import MoveImpact, RosterSnapshot
+    from sleeper_tool.report_data import MATCHUP_NOTE_MIN_DELTA
+
+    assert MATCHUP_NOTE_MIN_DELTA == 0.5
+    deltas = iter([0.5, 0.49, -0.5, -0.49, 0.0])
+
+    def _snapshot(delta):
+        def snap(points):
+            return RosterSnapshot(lineup=None, weekly_points=points, depth_needs=[], status="contender",
+                                  strength_percentile=50.0, roster_value=1000.0, avg_starter_age=26.0,
+                                  displayed_status="contender")
+        return MoveImpact("Move", snap(100.0), snap(100.0 + delta))
+
+    def fake_preview(*args, **kwargs):
+        return _snapshot(next(deltas, 0.0))
+
+    isolate_report_data(monkeypatch)
+    monkeypatch.setattr(rd, "preview_trade", fake_preview)
+    monkeypatch.setattr(rd, "preview_add_drop", fake_preview)
+
+    synthetic = make_synthetic_league()
+    report = build_weekly_report_data(
+        make_storage(synthetic), make_engine(synthetic.players), [synthetic.info], with_nfl_schedule=False,
+    )
+    ld = report.leagues[0]
+    assert ld.matchup is not None, "no matchup means the note is never attached at all"
+
+    impacts = [i for i in (*ld.trade_impacts, *ld.waiver_impacts.values()) if i is not None]
+    seen = {round(i.weekly_points_delta, 2): i.matchup_note is not None for i in impacts}
+    assert seen.get(0.5) is True
+    assert seen.get(0.49) is False
+    assert seen.get(-0.5) is True
+    assert seen.get(-0.49) is False
+    assert seen.get(0.0) is False

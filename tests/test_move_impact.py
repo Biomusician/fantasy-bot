@@ -163,3 +163,40 @@ def test_a_bench_only_swap_never_reports_a_status_change():
     assert not any("team status" in d for d in swap.material_deltas())
     starter_swap = MoveImpact("Add X, drop Y", before, after, lineup_in=["X"], lineup_out=["Y"])
     assert any("team status" in d for d in starter_swap.material_deltas())
+
+
+def test_a_free_agent_add_with_no_drop_reports_no_status_or_value_delta():
+    """`pure_add` is the "nobody left" flag. Adding a player without cutting
+    one strictly raises total roster value and can only push the team's
+    classification upward, so reporting either as an EFFECT of the move is a
+    tautology: of course a free asset made the roster more valuable."""
+    from sleeper_tool.move_impact import MoveImpact, RosterSnapshot
+
+    def snap(points, value, status, displayed=None):
+        return RosterSnapshot(lineup=None, weekly_points=points, depth_needs=[], status=status,
+                              strength_percentile=50.0 if status == "middling" else 80.0,
+                              roster_value=value, avg_starter_age=None, displayed_status=displayed)
+
+    before = snap(100.0, 1000.0, "middling", displayed="middling")
+    after = snap(112.0, 1500.0, "contender")  # +50% value, a status jump, a real lineup change
+
+    pure = MoveImpact("Add X", before, after, lineup_in=["X"], pure_add=True)
+    deltas = pure.material_deltas()
+    assert not any(d.startswith("team status") for d in deltas)
+    assert not any(d.startswith("total roster value") for d in deltas)
+    # The things a pure add CAN honestly claim are still reported.
+    assert any("projected starter points +12.0/wk" in d for d in deltas)
+    assert any("enters the lineup" in d for d in deltas)
+
+    # The identical numbers as an add-and-drop do report both.
+    swap = MoveImpact("Add X, drop Y", before, after, lineup_in=["X"], lineup_out=["Y"])
+    assert any(d.startswith("team status") for d in swap.material_deltas())
+    assert any(d.startswith("total roster value") for d in swap.material_deltas())
+
+
+def test_preview_add_drop_sets_pure_add_only_when_nothing_leaves():
+    mine, rosters = _league()
+    before, ctx = _before(mine, rosters)
+    add = _p("fa", "WR", 190, pctl=70.0)
+    assert preview_add_drop("Add fa", add, None, mine, before, ctx).pure_add is True
+    assert preview_add_drop("Add fa, drop rb3", add, "rb3", mine, before, ctx).pure_add is False

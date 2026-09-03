@@ -20,6 +20,7 @@ from sleeper_tool.watchlist import (
     STILL_WATCHING,
     TRADE_PRICE_HIGH,
     VELOCITY_NEAR,
+    VELOCITY_NEAR_RATIO,
     WAIVER_NO_DROP,
     WATCH_MAX_AGE_DAYS,
     WATCHLIST_SCHEMA,
@@ -145,6 +146,26 @@ def test_retention_prunes_items_unseen_past_the_max_age():
     assert set(result.items) == {"new"}
 
 
+def test_the_retention_cutoff_is_twenty_eight_days_at_absolute_dates():
+    """Pinned by value and against literal dates rather than dates derived
+    from WATCH_MAX_AGE_DAYS, so a change to the constant has to move these.
+
+    The code's comparison is `last_seen < today - WATCH_MAX_AGE_DAYS`, so an
+    item last seen exactly 28 days ago is KEPT and 29 days ago is dropped —
+    one day looser than the module docstring's "unseen for
+    WATCH_MAX_AGE_DAYS is dropped" reads.
+    """
+    assert WATCH_MAX_AGE_DAYS == 28
+    # DAY1 is 2026-09-02: 27d ago is 2026-08-06, 28d is 2026-08-05, 29d is 2026-08-04.
+    existing = Watchlist(items={
+        "d27": _item(item_id="d27", last_seen="2026-08-06"),
+        "d28": _item(item_id="d28", last_seen="2026-08-05"),
+        "d29": _item(item_id="d29", last_seen="2026-08-04"),
+    })
+    result = update(existing, [], now=DAY1, ld_by_league={})
+    assert set(result.items) == {"d27", "d28"}
+
+
 # -- candidate kinds ------------------------------------------------------------
 
 
@@ -194,6 +215,27 @@ def test_velocity_nowhere_near_the_threshold_is_not_watched():
     ld = FakeLD(velocity={"p1": Velocity(STABLE, 4, 0.01, "2026-08-29", "2026-09-02")},
                 roster=full_roster([make_entry(player_id="p1")]))
     assert candidates(ld, FakeReport()) == []
+
+
+def test_the_velocity_near_band_is_symmetric_around_the_directional_bar():
+    """VELOCITY_NEAR_RATIO is a band either side of DIRECTIONAL_MIN_MOVE
+    (0.08 +/- 0.05 => [0.03, 0.13]), and it reads |total_move|, so a fall of
+    the same size is watched exactly as a rise is. Four cases: inside and
+    outside each edge."""
+    assert VELOCITY_NEAR_RATIO == 0.05 and DIRECTIONAL_MIN_MOVE == 0.08
+
+    def kinds(move):
+        ld = FakeLD(velocity={"p1": Velocity(STABLE, 4, move, "2026-08-29", "2026-09-02")},
+                    roster=full_roster([make_entry(player_id="p1", name="Mover")]))
+        return [c.kind for c in candidates(ld, FakeReport())]
+
+    assert kinds(0.03) == [VELOCITY_NEAR]  # lower edge, inclusive
+    assert kinds(0.029) == []              # one step under the lower edge
+    assert kinds(0.13) == [VELOCITY_NEAR]  # upper edge, inclusive
+    assert kinds(0.131) == []              # one step over the upper edge
+    # Symmetric in sign: the same magnitudes falling behave identically.
+    assert kinds(-0.03) == [VELOCITY_NEAR] and kinds(-0.13) == [VELOCITY_NEAR]
+    assert kinds(-0.029) == [] and kinds(-0.131) == []
 
 
 def test_a_player_already_labelled_rising_is_not_a_near_miss():

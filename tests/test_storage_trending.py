@@ -14,6 +14,7 @@ import datetime as dt
 
 import pytest
 
+from sleeper_tool import storage as storage_mod
 from sleeper_tool.storage import Storage
 
 
@@ -70,13 +71,20 @@ def test_get_trending_still_orders_by_count_descending(storage):
     assert [r["player_id"] for r in storage.get_trending("add")] == ["high", "mid", "low"]
 
 
-def test_fetched_at_is_rewritten_on_every_save(storage):
+def test_fetched_at_is_rewritten_on_every_save(storage, monkeypatch):
+    """Strictly later, not merely not-earlier. `utcnow_iso` has one-second
+    resolution, so two saves in the same second would satisfy a `>=` even if
+    save_trending carried the old stamp forward — the clock is controlled
+    here so the assertion can be a real one, without sleeping."""
+    clock = iter(["2026-09-01T12:00:00+00:00", "2026-09-01T12:00:05+00:00"])
+    monkeypatch.setattr(storage_mod, "utcnow_iso", lambda: next(clock))
+
     storage.save_trending("add", _trending(("a1", 10)))
     first = storage.get_trending("add")[0]["fetched_at"]
     storage.save_trending("add", _trending(("a1", 11)))
     second = storage.get_trending("add")[0]["fetched_at"]
 
-    assert dt.datetime.fromisoformat(second) >= dt.datetime.fromisoformat(first)
+    assert dt.datetime.fromisoformat(second) > dt.datetime.fromisoformat(first)
     assert storage.get_trending("add")[0]["count"] == 11
 
 

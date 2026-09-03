@@ -1,6 +1,8 @@
 import datetime as dt
 import json
 
+import pytest
+
 from conftest import make_entry, make_league_info, make_roster, make_value
 
 from sleeper_tool.decision_delta import SNAPSHOTS_KEPT, build_snapshot, load_snapshots, save_snapshot
@@ -8,6 +10,7 @@ from sleeper_tool.market_velocity import (
     DIRECTIONAL_MIN_MOVE,
     FALLING,
     INSUFFICIENT_HISTORY,
+    MAX_OBSERVATION_GAP_DAYS,
     MIN_OBSERVATIONS,
     RAPID_MIN_MOVE,
     RAPIDLY_FALLING,
@@ -48,6 +51,34 @@ def test_labels_and_boundaries():
     unmeasurable = classify_velocity(_obs([0, 0, 10]))
     assert unmeasurable.label == UNMEASURABLE and unmeasurable.describe() == "Unmeasurable (no positive base value in 3 observations)"
     assert classify_velocity(_obs([100, 105, 105, 110])).label == RISING  # a flat day neither counts nor breaks the run
+
+
+def test_a_gap_in_the_daily_record_breaks_the_run_of_moves():
+    """MAX_OBSERVATION_GAP_DAYS pinned by value and at literal dates.
+
+    Two observations more than two days apart are not consecutive days, so
+    the move between them is neutered to zero — a run of same-direction days
+    cannot be built across a week when the cron was down. Same values, same
+    total move, in three different calendar arrangements."""
+    assert MAX_OBSERVATION_GAP_DAYS == 2
+
+    # Consecutive days: two up-moves in a row, 20% total -> Rapidly Rising.
+    daily = [("2026-09-01", 100.0), ("2026-09-02", 110.0), ("2026-09-03", 120.0)]
+    assert classify_velocity(daily).label == RAPIDLY_RISING
+
+    # A one-day hole (2 days apart) is still inside the tolerance.
+    two_apart = [("2026-09-01", 100.0), ("2026-09-03", 110.0), ("2026-09-05", 120.0)]
+    assert classify_velocity(two_apart).label == RAPIDLY_RISING
+
+    # Three days apart: both moves are zeroed, so there is no run at all.
+    three_apart = [("2026-09-01", 100.0), ("2026-09-04", 110.0), ("2026-09-07", 120.0)]
+    broken = classify_velocity(three_apart)
+    assert broken.label == STABLE
+    assert broken.total_move == pytest.approx(0.20)  # the total is still reported honestly
+
+    # One good pair and one gap is not two consecutive moves either.
+    half_broken = [("2026-09-01", 100.0), ("2026-09-02", 110.0), ("2026-09-06", 120.0)]
+    assert classify_velocity(half_broken).label == STABLE
 
 
 def test_describe_is_bucketed_not_precise():

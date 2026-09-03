@@ -139,3 +139,36 @@ def test_sell_high_proposals_get_no_ladder_and_only_two_per_league():
         my_status="contender", status_of={2: "contender"},
     )
     assert sorted(ladders) == [1, 2]
+
+
+def test_the_opening_is_never_dearer_than_the_engines_own_offer():
+    """An opening is a cheaper way in, never a dearer one.
+
+    The biting case: the engine's own package (wr_a, $3000) is on the board
+    but rates Very Low, and the ONLY package that rates Moderate or better
+    is wr_c at $5000 — two thirds more expensive. Without the "no dearer
+    than the base step" filter the ladder would open by asking me to pay
+    $5000 for a deal I was told costs $3000, which is not a negotiating
+    position, it is a different trade.
+    """
+    mine, theirs, base_proposal = _setup()
+    cheap = next(e for e in mine.entries if e.player_id == "wr_a")
+    dearer = next(e for e in mine.entries if e.player_id == "wr_c")
+    proposal = TradeProposal(
+        league_name="L", currency="dynasty", target_username="rival", target_team_name="rival",
+        give=[cheap], receive=list(base_proposal.receive), my_value_total=3000, their_value_total=5000,
+        rationale_for_me=[], rationale_for_them=[], caveats=[], trade_type="buy_low",
+        acceptance_rating="Very Low", message="wr_a for target?",
+    )
+    ladder = build_negotiation_ladder(proposal, mine, theirs, [], my_status="contender", their_status="contender")
+
+    assert ladder is not None
+    assert [p.player_id for p in ladder.opening.players] == [cheap.player_id]
+    assert ladder.opening.outgoing_value == proposal.my_value_total
+    # The better-rated package exists and is deliberately not the opening.
+    assert dearer.player_id not in {p.player_id for p in ladder.opening.players}
+
+    # The general invariant, over both proposals this file builds.
+    for candidate in (base_proposal, proposal):
+        built = build_negotiation_ladder(candidate, mine, theirs, [], my_status="contender", their_status="contender")
+        assert built.opening.outgoing_value <= candidate.my_value_total

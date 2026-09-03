@@ -177,7 +177,19 @@ def test_retention_drops_oldest_resolved_first():
     survivors = ledger.entries
     resolved_left = [e for e in survivors.values() if e.status == RESOLVED]
     assert len(resolved_left) == 5  # 5 of the 10 resolved entries were the ones purged
-    assert all(e.status == OPEN for e in list(survivors.values()) if e.fingerprint == "fp00010")
+    # Direct key access, not an all() over a filter that can be empty: if
+    # fp00010 were purged the generator would be empty and all() vacuously true.
+    assert survivors["fp00010"].status == OPEN
+
+
+def test_the_retention_cap_is_the_documented_two_thousand():
+    assert LEDGER_MAX_ENTRIES == 2000
+    ledger = Ledger()
+    merge_entries(ledger, [_entry(fingerprint=f"fp{i:05d}") for i in range(2000)], RUN)
+    assert len(ledger.entries) == 2000  # exactly at the cap, nothing dropped
+    merge_entries(ledger, [_entry(fingerprint="fp99999")], RUN)
+    assert len(ledger.entries) == 2000  # one over, one evicted
+    assert "fp99999" in ledger.entries
 
 
 # -- observation -----------------------------------------------------------------
@@ -261,6 +273,26 @@ def test_still_available_stays_open_until_the_window_closes():
     ledger, _ = _observe([_entry(receive_ids=("7562",))], [{"type": "free_agent", "status": "complete", "created": _ms(2), "adds": {"1": 4}, "roster_ids": [4]}], [_roster(4, [])], now=late)
     assert ledger.entries["fp1"].outcome == STILL_AVAILABLE
     assert ledger.entries["fp1"].status == RESOLVED
+
+
+def test_the_observation_window_is_fourteen_days_measured_from_first_seen():
+    """The window pinned by value and at absolute instants, not at dates
+    derived from the constant — an off-by-one in OBSERVATION_WINDOW_DAYS
+    has to move these three timestamps to stay green."""
+    assert OBSERVATION_WINDOW_DAYS == 14
+    # _entry's run_id is 2026-09-01T12:00:00+00:00, so the window shuts at
+    # 2026-09-15T12:00:00+00:00 exactly.
+    txs = [{"type": "free_agent", "status": "complete", "created": _ms(2), "adds": {"1": 4}, "roster_ids": [4]}]
+    rosters = [_roster(4, [])]
+
+    def status_at(now: dt.datetime) -> str:
+        ledger, _ = _observe([_entry(receive_ids=("7562",))], txs, rosters, now=now)
+        assert ledger.entries["fp1"].outcome == STILL_AVAILABLE  # the facts never change
+        return ledger.entries["fp1"].status
+
+    assert status_at(dt.datetime(2026, 9, 15, 11, 0, tzinfo=dt.timezone.utc)) == OPEN  # 13d23h
+    assert status_at(dt.datetime(2026, 9, 15, 12, 0, tzinfo=dt.timezone.utc)) == RESOLVED  # 14d exactly
+    assert status_at(dt.datetime(2026, 9, 15, 12, 0, 1, tzinfo=dt.timezone.utc)) == RESOLVED  # 14d + 1s
 
 
 def test_no_observed_action_only_after_the_window():

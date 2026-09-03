@@ -102,3 +102,38 @@ def test_sell_high_proposals_get_buyer_board_context():
                             my_value_total=1, their_value_total=1, rationale_for_me=[], rationale_for_them=[], caveats=[], trade_type="buy_low")
     annotate_sell_high_proposals([buy_low], boards)
     assert buy_low.caveats == [] and buy_low.rationale_for_them == []  # only sell-high proposals are annotated
+
+
+def test_a_positional_need_is_scored_once_however_many_ways_it_shows_up():
+    """"He upgrades their WR" and "WR is a top need" are the same fact read
+    twice — a position is a top need precisely because a piece would upgrade
+    it. Scoring both would let one positional observation alone reach Strong
+    Fit. The two paths are worth +2 and +1, never +3."""
+    piece = _me().entries[2]  # wr_hot, 65th percentile
+    # Their WR room: one genuinely rosterable but mediocre body, so a piece
+    # can be at the position WITHOUT clearing it.
+    needy = _roster(2, [_p("qb2", "QB", 8000, 95), _p("rb2", "RB", 7000, 92), _p("wr_mid", "WR", 3000, 55),
+                        _p("rb_spare", "RB", 4000, 60, starter=False)], "needy")
+
+    def score(their, target, **kw):
+        base = dict(their_status="middling", economy_labels=[], heavy_positions=[], scarcity=None, pick_value=0)
+        base.update(kw)
+        return score_buyer(their, target, "dynasty", **base)
+
+    both = score(needy, piece)
+    assert both.reasons == ["upgrades their WR", "WR is a top need"]
+    assert both.score == 2  # the upgrade's +2; the named top need adds nothing on top
+    assert both.label == POSSIBLE_FIT  # ... which is why one positional fact can't be Strong
+
+    # Need WITHOUT an upgrade: the elif path, worth +1 and no more.
+    weak_wr = _p("wr_weak", "WR", 2500, 45, age=29.0, trend="rising")
+    need_only = score(needy, weak_wr)
+    assert need_only.reasons == ["WR is a top need"]
+    assert need_only.score == 1 and need_only.score < both.score
+
+    # A position they are already strong at scores nothing at all here.
+    stacked = _roster(3, [_p("qb3", "QB", 8000, 95), _p("rb3", "RB", 7000, 92), _p("wr_good", "WR", 7500, 96),
+                          _p("te3", "TE", 6000, 90), _p("rb_spare3", "RB", 4000, 60, starter=False)], "stacked")
+    neither = score(stacked, piece)
+    assert not any("WR" in r for r in neither.reasons)
+    assert neither.score <= 0

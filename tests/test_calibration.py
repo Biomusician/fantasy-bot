@@ -178,6 +178,17 @@ def test_league_concentration_at_the_exact_share():
     assert diagnose(20, 8, at, 2) == NORMAL
 
 
+def test_league_concentration_needs_exactly_five_triggers():
+    """LEAGUE_CONCENTRATION_MIN_TRIGGERS pinned by value and AT the bar —
+    the existing test only checks four, one below it, so a change from 5 to
+    6 would not be caught."""
+    assert cal.LEAGUE_CONCENTRATION_MIN_TRIGGERS == 5
+    assert cal.LEAGUE_CONCENTRATION_MIN_LEAGUES == 3
+    assert diagnose(20, 5, Counter({"L1": 5}), 3) == LEAGUE_CONCENTRATED  # exactly 5
+    assert diagnose(20, 4, Counter({"L1": 4}), 3) == NORMAL  # one short
+    assert diagnose(20, 5, Counter({"L1": 5}), 2) == NORMAL  # 5 triggers, too few leagues
+
+
 def test_thresholds_end_to_end_over_real_waiver_rules():
     def report_with(must_adds, others):
         targets = [_target(f"m{i}", MUST_ADD) for i in range(must_adds)]

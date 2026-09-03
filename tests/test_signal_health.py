@@ -321,6 +321,24 @@ def test_usage_that_calls_itself_stale_is_stale_however_recently_downloaded():
     assert "behind the current week" in signal.detail
 
 
+def test_usage_may_be_one_week_behind_the_league_but_not_two():
+    """USAGE_MAX_WEEKS_BEHIND pinned by value and at literal weeks: in week
+    5, a file through week 4 is Fresh (the current week's games have not all
+    been played) and one through week 3 is Stale, however recently it was
+    downloaded."""
+    assert sh.USAGE_MAX_WEEKS_BEHIND == 1
+
+    def signal_for(latest_week):
+        usage = FakeUsage(fetched_at=NOW - dt.timedelta(hours=1), latest_week=latest_week, rows=900)
+        report = sh.build_health(usage_health=usage, now=NOW, current_week=5)
+        return next(s for s in report.signals if s.family == "nflverse_usage")
+
+    assert signal_for(4).label == sh.FRESH
+    stale = signal_for(3)
+    assert stale.label == sh.STALE
+    assert "2 weeks behind" in stale.detail
+
+
 def test_absent_usage_is_unavailable():
     report = sh.build_health(usage_health=FakeUsage(absent=True), now=NOW)
     assert "nflverse_usage" in report.unavailable_families

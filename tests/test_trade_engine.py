@@ -1546,3 +1546,44 @@ def test_generate_trade_proposals_handles_a_two_entry_roster_without_crashing():
     ])
     proposals = generate_trade_proposals(league, {1: my_roster, 2: opp_roster}, max_proposals=3)
     assert isinstance(proposals, list)  # no crash; empty or non-empty both acceptable
+
+
+# -- the "clears your starter" line ------------------------------------------
+
+
+def _pctl_entry(pid, position, pctl, *, is_starter=False):
+    return make_entry(
+        player_id=pid, name=pid, position=position, is_starter=is_starter,
+        value=make_value(name=pid, position=position, dynasty_positional_percentile=pctl, dynasty_value_percentile=pctl),
+    )
+
+
+def test_a_starter_upgrade_only_clears_at_a_ten_point_within_position_gap():
+    """CLEAR_STARTER_MIN_GAP pinned by value and at literal percentiles: an
+    incoming piece 9 points better than the weakest starter is "a marginal
+    upgrade", 10 points better "clears" him. The distinction is the whole
+    point of the line — "beats your starter" with no size attached is an
+    assertion, not evidence."""
+    from sleeper_tool.trade_engine import CLEAR_STARTER_MIN_GAP, _roster_impact_note
+
+    assert CLEAR_STARTER_MIN_GAP == 10
+    weakest = _pctl_entry("weak_wr", "WR", 50.0, is_starter=True)
+    roster = make_roster(
+        entries=[weakest, _pctl_entry("strong_wr", "WR", 90.0, is_starter=True)],
+        fmt=make_format(roster_positions=("WR", "WR", "BN")),
+        league=make_league_info(kind="dynasty"),
+    )
+
+    def note(incoming_pctl):
+        incoming = make_value(position="WR", dynasty_positional_percentile=incoming_pctl, dynasty_value_percentile=incoming_pctl)
+        return _roster_impact_note(roster, "WR", incoming, "dynasty")
+
+    marginal = note(59.0)
+    assert "a marginal upgrade, 9 points" in marginal and "clears" not in marginal
+
+    clears = note(60.0)
+    assert "clears your current starting WR" in clears and "10-point jump" in clears
+    assert "not a marginal swap" in clears
+
+    # And it is honest the other way: worse than the weakest starter is depth.
+    assert "slots in as depth behind" in note(40.0)

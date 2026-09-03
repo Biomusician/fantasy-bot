@@ -158,6 +158,33 @@ def test_materiality_sits_exactly_on_its_named_cutoffs():
     assert classify(TRADE, losing, _report(), key="0").materiality == MARGINAL
 
 
+def test_the_materiality_cutoffs_are_seven_and_two_points_a_week():
+    """Pinned by value and at literal point deltas, including the step
+    below Major — the case the existing cutoff test leaves untested."""
+    assert MAJOR_WEEKLY_POINTS == 7.0 and MEANINGFUL_WEEKLY_POINTS == 2.0
+    deltas = [7.0, 6.9, 2.0, 1.9]
+    ld = _ld(
+        proposals=[_proposal(receive=[_p(f"p{i}")]) for i in range(len(deltas))],
+        trade_economics=[None] * len(deltas),
+        trade_impacts=[_impact(d) for d in deltas],
+    )
+    got = [classify(TRADE, ld, _report(), key=str(i)).materiality for i in range(len(deltas))]
+    assert got == [MAJOR, MEANINGFUL, MEANINGFUL, MARGINAL]
+
+
+def test_a_claim_stops_being_cheap_at_twenty_percent_of_the_budget():
+    """HIGH_FAAB_PCT pinned by value and at literal percentages."""
+    assert HIGH_FAAB_PCT == 20
+    bench = _p("spare", "WR", 10.0)
+    ld = _ld(
+        [_p("qb", "QB", 340), _p("rb", "RB"), bench],
+        waiver_targets=[_target(f"f{pct}", drop=bench, faab=pct) for pct in (19, 20, 21)],
+    )
+    assert classify(WAIVER, ld, _report(), key="f19").cost == LOW_REVERSIBLE
+    assert classify(WAIVER, ld, _report(), key="f20").cost == MODERATE
+    assert classify(WAIVER, ld, _report(), key="f21").cost == MODERATE
+
+
 def test_materiality_without_a_preview_falls_back_to_the_tier_or_the_economics():
     ld = _ld(
         proposals=[_proposal(receive=[_p("a")])],

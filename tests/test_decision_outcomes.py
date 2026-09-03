@@ -92,6 +92,24 @@ def test_windows_are_pending_until_their_days_have_elapsed():
     assert three.describe().endswith("(9 of 21 days since the recommendation)")
 
 
+def test_the_one_week_window_opens_on_day_seven_exactly():
+    """The 1-week window is 7 days from first_seen (2026-09-01), so 09-07
+    is the first day it is no longer pending. Absolute dates, not dates
+    derived from OUTCOME_WINDOWS_WEEKS * DAYS_PER_WEEK."""
+    assert OUTCOME_WINDOWS_WEEKS[0] == 1
+
+    def one_week_state(day: int) -> str:
+        ledger = _ledger(_entry())
+        facts = _facts(ledger, [], now=dt.datetime(2026, 9, day, tzinfo=dt.timezone.utc))
+        assert facts[0].window_days == 7
+        return facts[0].state
+
+    assert one_week_state(6) == PENDING  # 5 days in
+    assert one_week_state(7) == PENDING  # 6 days in — the day before it opens
+    assert one_week_state(8) != PENDING  # 7 days exactly
+    assert one_week_state(9) != PENDING  # and it stays open
+
+
 def test_reachable_window_without_snapshots_is_insufficient_history():
     ledger = _ledger(_entry())
     facts = _facts(ledger, [], now=dt.datetime(2026, 10, 30, tzinfo=dt.timezone.utc))

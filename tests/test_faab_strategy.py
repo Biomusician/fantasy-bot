@@ -3,6 +3,7 @@ from conftest import make_entry, make_value
 from sleeper_tool.faab_strategy import (
     AFFORDABILITY_NOTE,
     AGGRESSIVE,
+    ANCHOR_MIN_BIDS,
     ANCHOR_OVERSHOOT_RATIO,
     FEW_SUBSTITUTES,
     LATE_SEASON_WEEKS_LEFT,
@@ -247,6 +248,49 @@ def test_anchor_overshoot_is_a_note_not_a_cap():
     assert 35 > 16 * ANCHOR_OVERSHOOT_RATIO
 
 
+def test_the_overshoot_multiple_is_exactly_two_times_the_largest_bid():
+    """ANCHOR_OVERSHOOT_RATIO pinned by value and at literal dollars: a $35
+    bid clears 2x a $17 max and does not clear 2x an $18 one. Both lists
+    carry a $0 claim (excluded from the anchor) and three contested bids
+    (ANCHOR_MIN_BIDS), so only the max is doing the work."""
+    assert ANCHOR_OVERSHOOT_RATIO == 2.0 and ANCHOR_MIN_BIDS == 3
+
+    def notes(bids):
+        advice = advise(ctx(league_bids=bids), facts(tier=MUST_ADD, scarcity=SCARCE, substitutes=2, suggested_pct=35))
+        assert advice.suggested_dollars == 35
+        return [n for n in advice.notes if "largest winning bid" in n]
+
+    assert notes([0, 1, 2, 17])  # 35 > 34
+    assert not notes([0, 1, 2, 18])  # 35 < 36
+    # A $0 claim can never become the anchor, however many there are.
+    assert not notes([0, 0, 0, 0, 0])
+    # Two contested bids are not a market, even at an absurd multiple.
+    assert not notes([0, 1, 1])
+
+
+def test_the_late_season_preserve_starts_three_weeks_out():
+    """LATE_SEASON_WEEKS_LEFT pinned by value, at literal weeks: playoffs
+    start in week 15, so weeks 12, 13 and 14 preserve and week 11 does not."""
+    assert LATE_SEASON_WEEKS_LEFT == 3
+    postures = {
+        week: advise(ctx(current_week=week, playoff_week_start=15), facts(tier=MODERATE)).posture
+        for week in (11, 12, 13, 14)
+    }
+    assert postures == {11: NORMAL, 12: PRESERVE, 13: PRESERVE, 14: PRESERVE}
+
+
+def test_few_substitutes_is_exactly_one():
+    """FEW_SUBSTITUTES pinned by value, at literal counts."""
+    assert FEW_SUBSTITUTES == 1
+
+    def posture(subs):
+        return advise(ctx(), facts(tier=MUST_ADD, scarcity=VERY_SCARCE, substitutes=subs, suggested_pct=35)).posture
+
+    assert posture(0) == PRIORITY_SPEND
+    assert posture(1) == PRIORITY_SPEND
+    assert posture(2) == AGGRESSIVE
+
+
 def test_no_overshoot_note_when_the_bid_is_within_the_seasons_range():
     advice = advise(ctx(league_bids=[10, 30, 40]), facts(tier=MUST_ADD, scarcity=SCARCE, substitutes=2, suggested_pct=35))
     assert not any("largest winning bid" in n for n in advice.notes)
@@ -267,6 +311,25 @@ def test_count_substitutes_counts_only_the_same_position_inside_the_band():
         _fa("d", "WR", 60.0),  # wrong position
     ]
     assert count_substitutes(pool, "RB", 60.0) == 2
+
+
+def test_the_substitute_band_is_symmetric_and_inclusive_on_both_edges():
+    """SUBSTITUTE_PERCENTILE_BAND is +/- 10 points around the target, and
+    the edge itself counts. Pinned at literal percentiles either side."""
+    assert SUBSTITUTE_PERCENTILE_BAND == 10.0
+    pool = [
+        _fa("below_edge", "RB", 50.0),   # exactly 10 under: inside
+        _fa("below_out", "RB", 49.0),    # 11 under: outside
+        _fa("above_edge", "RB", 70.0),   # exactly 10 over: inside
+        _fa("above_out", "RB", 71.0),    # 11 over: outside
+        _fa("dead_on", "RB", 60.0),
+    ]
+    assert count_substitutes(pool, "RB", 60.0) == 3
+    # ... and each edge case on its own, so the count above can't hide one.
+    assert count_substitutes([_fa("a", "RB", 50.0)], "RB", 60.0) == 1
+    assert count_substitutes([_fa("a", "RB", 49.0)], "RB", 60.0) == 0
+    assert count_substitutes([_fa("a", "RB", 70.0)], "RB", 60.0) == 1
+    assert count_substitutes([_fa("a", "RB", 71.0)], "RB", 60.0) == 0
 
 
 def test_count_substitutes_excludes_the_target_himself():
@@ -308,3 +371,18 @@ def test_describe_names_the_posture_and_the_dollars():
     assert "Target Player" in text
     assert PRIORITY_SPEND in text
     assert "$60" in text
+
+
+def test_the_streamer_guardrail_is_checked_before_the_abundant_one():
+    """Both preserves would fire for a streamer in an Abundant market. The
+    order is deliberate (the streamer rule is first, so no later rule can
+    talk the tool into paying up), and the reason the user reads should say
+    which rule actually decided."""
+    advice = advise(
+        ctx(),
+        facts(tier=MODERATE, horizon=STREAMER, scarcity=ABUNDANT, substitutes=MANY_SUBSTITUTES, suggested_pct=10),
+    )
+    assert advice.posture == PRESERVE
+    assert len(advice.notes) == 1
+    assert advice.notes[0].startswith("a streamer with")
+    assert "Abundant market" not in advice.notes[0]

@@ -361,3 +361,63 @@ def test_the_sentinel_list_still_covers_the_fixture(rendered):
     found = set(re.findall(r"SENTINEL-[a-z-]+[a-z]", markdown + html))
     missing = found - set(SENTINELS)
     assert not missing, f"sentinels present in output but not asserted on: {sorted(missing)}"
+
+
+# Sentinels deliberately placed in the fixture that must reach NEITHER
+# renderer — the reason each is here is asserted by its own test above.
+DELIBERATELY_UNRENDERED = {
+    # A conflicted waiver row shows only the reasons AGAINST; the
+    # recommendation itself is the case for. See
+    # test_conflict_reasons_for_are_html_only_on_waivers.
+    "SENTINEL-waiver-conflict-for",
+}
+
+
+def _sentinels_in(obj, seen=None) -> set[str]:
+    """Every "SENTINEL-..." string reachable from `obj` by walking
+    dataclasses, sequences, mappings and plain objects."""
+    import dataclasses
+
+    seen = seen if seen is not None else set()
+    if id(obj) in seen:
+        return set()
+    if isinstance(obj, str):
+        return set(re.findall(r"SENTINEL-[a-z-]+[a-z]", obj))
+    if isinstance(obj, (int, float, bool, type(None), bytes)):
+        return set()
+    seen.add(id(obj))
+    found: set[str] = set()
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            found |= _sentinels_in(key, seen) | _sentinels_in(value, seen)
+        return found
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        for item in obj:
+            found |= _sentinels_in(item, seen)
+        return found
+    if dataclasses.is_dataclass(obj):
+        for f in dataclasses.fields(obj):
+            found |= _sentinels_in(getattr(obj, f.name, None), seen)
+        return found
+    for value in vars(obj).values() if hasattr(obj, "__dict__") else ():
+        found |= _sentinels_in(value, seen)
+    return found
+
+
+def test_every_sentinel_planted_in_the_fixture_is_asserted_on():
+    """The stronger half of the guard above.
+
+    `test_the_sentinel_list_still_covers_the_fixture` reads the RENDERED
+    output, so a sentinel that reaches neither renderer — exactly the
+    failure this whole file exists to catch — is invisible to it. This one
+    walks the fixture object graph instead, so a new annotation added to
+    `build_rich_league` and forgotten in SENTINELS fails here even when
+    nothing renders it at all.
+    """
+    planted = _sentinels_in(build_rich_league())
+    assert planted, "the fixture no longer carries any sentinels"
+    unasserted = planted - set(SENTINELS) - DELIBERATELY_UNRENDERED
+    assert not unasserted, f"planted in the fixture but never asserted on: {sorted(unasserted)}"
+    # ... and nothing in SENTINELS quietly stopped being planted.
+    stale = {s for s in SENTINELS if s.startswith("SENTINEL-")} - planted
+    assert not stale, f"asserted on but no longer in the fixture: {sorted(stale)}"

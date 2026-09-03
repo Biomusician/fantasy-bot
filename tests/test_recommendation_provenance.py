@@ -329,11 +329,13 @@ def test_role_trends_and_role_market_are_used_when_the_orchestrator_supplies_the
     ld.role_market = {"in": "Role Ahead of Market", "out": "Market Ahead of Role"}
     prov = build_provenance(ld, _report())[(TRADE, "0")]
     role_for = [r for r in prov.reasons_for if r.category == ROLE]
+    # No trailing slice: a `[: len(role_for)]` would let an empty list — or
+    # any prefix of the expected reasons — pass silently.
     assert _texts(role_for) == [
         "in: Role Rising — routes run up +8 per game",
         "out: Role Collapsing — snap share halved",
         "in: Role Ahead of Market",
-    ][: len(role_for)]
+    ]
     assert all(r.source == "role_trends" for r in role_for)
     # A falling incoming role would argue against instead.
     ld.role_trends = {"in": _Trend("Role Falling", note="down to 40% of snaps")}
