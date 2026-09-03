@@ -3,6 +3,131 @@
 Consequential choices and why. Newest first. The module docstrings carry the
 mechanics; this file carries the reasoning that isn't obvious from the code.
 
+## 2026-09-03 — Intelligence & hardening tranche (usage, feedback, calibration, arbitration)
+
+- **The trade engine's primitives were extracted before anything else touched
+  them.** Six modules that sit strictly below `trade_engine.py` (`asset_value`,
+  `trade_types`, `roster_assets`, `trade_fit`, `trade_rating`, `trade_messages`)
+  plus `draft_picks.pick_key`, with 23 characterization tests written first
+  and the report diffed byte-for-byte after. Nothing outside the engine reaches
+  for a private helper any more; the engine re-exports what it imports.
+- **Player usage comes from nflverse's `stats_player_week`, `stats_team_week`
+  and `snap_counts` releases, not the deprecated `player_stats` family and not
+  play-by-play.** Three small gzipped CSVs per season (~2 MB) through the same
+  daily file cache the rankings use; red-zone shares would need the 19 MB PBP
+  file and are a documented future extension. A season whose files 404 is
+  cached as an explicit "absent" marker for a day, so the pre-season report
+  costs one request per day, not one per league.
+- **Sleeper ids are mapped to nflverse ids by a ladder, never by name alone.**
+  Sleeper's own `gsis_id` (present for ~21% of rostered players, sometimes with
+  a leading space) → DynastyProcess `db_playerids` by `sleeper_id` (~95%) →
+  nflverse `players.csv` by name + position + team, active players only →
+  unmatched. Name-only matching is last because seven rostered offensive
+  players share a name with an IDP (Lamar Jackson the CB, Justin Jefferson the
+  LB). DEF units map to their team code. Only rostered and trending players
+  are crosswalked (~400 of 12k).
+- **A role trend needs two played games; a strong label needs three.** Bye
+  weeks and DNPs are absent rows, never zero-usage rows, so a bye cannot
+  read as a collapse. Every threshold is a named constant with an epsilon
+  because `fmean([0.6, 0.6]) - 0.5` is not exactly 0.1. The prior season is
+  context only ("2025 baseline: ...") and never feeds a label — last year's
+  role is not evidence about this year's.
+- **Role vs market is three labels or nothing.** `market_cross` compares the
+  role direction with the market's (velocity, source direction); when the
+  market's own labels disagree it says nothing. Role Ahead of Market also
+  covers a role moving against the price, on purpose: that is the case worth
+  a look.
+- **Role annotations are sparse.** Only Rising/Surging/Falling/Collapsing is
+  ever written, on the side of the recommendation it argues for; a Stable or
+  Insufficient role writes nothing. Until the season has usage rows the report
+  says "Role data begins after games are played" exactly once, in the health
+  block, and no per-player line.
+- **The decision ledger records; it never grades.** Fingerprints exclude the
+  run id, so a same-day rerun refreshes `last_seen` instead of duplicating.
+  Outcomes are Sleeper facts (Completed / Partially Matched / Acquired by
+  Another Manager / Still Available / No Observed Action / Unable to
+  Determine) — never "Rejected": the public API has no rejected state and a
+  trade nobody sent is not a rejection. Only transactions created at or
+  after `first_seen` count, and the open entries are observed BEFORE this
+  run's entries are merged, so a recommendation made this minute is
+  "(open)", not "Still Available". Persisted only by `daily_run.py` after a
+  complete run, like the snapshot.
+- **Outcome facts are descriptive windows (1/3/6 weeks), not verdicts.** A
+  value move is the sources' own move; "moved in the direction the read
+  implied" is the strongest phrasing allowed. Only OBSERVED facts render;
+  "window not reached" is state, not news.
+- **Calibration reports, it does not tune.** 117 rules over 24 modules,
+  eligible counted before any cap, Never Fires only with ≥25 eligible,
+  Nearly Always Fires above 60%, time-gated rules listed as such. Findings
+  become manual changes with their own decision entries (below) or
+  documented expectations — never a threshold rewritten by the report.
+- **Source disagreement was recalibrated from measured gaps, and Strong
+  Consensus is allowed to be the common case.** On the 2026-09-03 caches
+  (591 rostered views) the sources agree almost perfectly inside the top 48
+  at every position and every real split sits at rank 49+; the previous
+  0.02-per-place scaling silenced all of them (1 Disagreement in 591). 0.01
+  per place and a tighter Strong band (≤3 scaled places) give 7 Disagreement,
+  21 Direction calls, 63% Strong Consensus. Strong Consensus is a description
+  of the sources, not a signal, so its frequency is not a pathology.
+- **A Must Add has to beat the weakest starter he would replace.** "Need" is
+  relative — two of four positions are always the two weakest, even behind a
+  94th-percentile starter — so the tier now reads the same comparison the
+  reason sentence phrases; a depth-only need is a Strong Add. The tell was six
+  $35 Must Adds for depth QBs/TEs in one league.
+- **FAAB posture is about the money, not the player.** Four postures
+  (Preserve / Normal / Aggressive / Priority Spend) from facts the report
+  already holds; the bid is stated as a share of REMAINING budget, the budget
+  is Sleeper's `waiver_budget`, and a negative `waiver_budget_used` (FAAB
+  acquired by trade) is real. Guardrails: a streamer with ≥4 comparable free
+  agents is a Preserve; so is an Abundant market with ≥4 substitutes and no
+  urgent need, whatever the tier. The anchor note ("more than 2× the largest
+  winning bid") waits for three observed bids. Leverage is a count of who can
+  outbid, never a probability.
+- **Signal health grades every input before the leagues build; Unavailable
+  suppresses, Stale flags.** Per-source windows (fresh / usable / ceiling); a
+  fallback-served snapshot is never Fresh and always degrades the run; the
+  stale-cache fallback now has a ceiling past which a fetch failure raises.
+  A season's usage feed not existing yet is `expected_absent`: still
+  Unavailable (role trends are suppressed), but not a degraded run.
+  `save_trending` replaces the table (it used to append, silently
+  accumulating 12-day-old counts) and sync skips an empty fetch.
+- **Provenance harvests, it does not re-derive.** Every For/Against/Context
+  reason is a sentence the decision layer already wrote or a `describe()` of
+  an object it built, labelled with a category and a source module; at most
+  3/2/2 per card by a categorical priority order, never a weight. Sentences
+  that are notes on the method ("treat these offers as more approximate",
+  "KTC rank 192 is well outside the startup-relevant pool") or admissions
+  ("not an immediate upgrade") are Context, never evidence.
+- **Best Moves is ordered by six categorical dimensions, lexicographically.**
+  Urgency, Materiality, Perishability, Strategic fit, Evidence agreement,
+  Cost — then kind, then the kind's own quality rank, then league and
+  headline. No per-kind floors and no numeric boosts remain: a Must Add is
+  Immediate and outranks any trade; a Strong Drop is cheaper to reverse than
+  a trade and outranks an otherwise-equal one; a deadline-window team's
+  trades are This Week. `explain_order` names the deciding dimension.
+- **The watchlist is deterministic and quiet.** Near-misses are stored with
+  the metrics they were judged on; New Trigger fires once per promotion key,
+  a same-day rerun is a no-op (`last_run_on`), two consecutive misses resolve
+  an item, resolved items prune after the run that resolved them, 28-day cap.
+- **Performance came from sharing, not caching heuristics.** One structural
+  lineup map per league threaded into every consumer (the optimizer was 72%
+  of the build), valued picks priced once per league, `normalize_name`
+  memoized, KTC's name index memoized per snapshot: 5.1s → 3.4s with the
+  report byte-identical.
+
+### Known calibration findings left as they are (2026-09-03)
+
+- The trade engine only emits value-matched offers, so Asset economics is
+  Roughly Even 92% of the time and Favorable never fires; a Strategic
+  Tradeoff therefore needs a Slight-overpay/Overpay verdict against a lineup
+  gain. Loosening the value-match bar is a product decision, not a fix.
+- Velocity, schedule notes, defensive adds and outcome facts are time-gated
+  (three snapshots, NFL byes, observation windows) and are expected to read
+  Insufficient / Never Fires in week 1.
+- 46% of scarcity-boosted buyer-board candidates also carry a replacement
+  caveat: scarcity is why a buyer pays AND why selling costs; both are true
+  and neither is double-counted into a score.
+
 ## 2026-09-02 — Second decision-layer tranche (12 capabilities)
 
 - **Scarcity is a gap between two replacement levels, never a position rule.**
