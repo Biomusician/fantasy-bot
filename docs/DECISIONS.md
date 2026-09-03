@@ -115,6 +115,69 @@ mechanics; this file carries the reasoning that isn't obvious from the code.
   memoized, KTC's name index memoized per snapshot: 5.1s → 3.4s with the
   report byte-identical.
 
+### After the seven-reviewer red team (2026-09-03)
+
+- **Projections interpolate by the league's PPR value.** RotoBaller publishes
+  full-PPR and standard totals (its TE-premium column equals PPR in every
+  cached file, and its format parameter changes nothing — the three fetches
+  are identical). Half PPR was being read as standard, marking every
+  pass-catcher down ~35% in two leagues and making QBs look enormous next to
+  them, which is what made a 94th-percentile QB "fragile" and five depth
+  QBs "Strong Adds". Now `standard + ppr × (ppr_total − standard)`; the
+  TE-premium column only for a TE and only when it differs from PPR.
+- **Facts the tool computes can now veto, not only annotate.** The previous
+  tranche's rule ("conflicts are labelled, never resolved") stays for genuine
+  tradeoffs, but three facts are not tradeoffs and now act as filters: an
+  optimized starter is never the paired drop; a better same-position player
+  is never cut for a worse add; an insurance candidate who out-projects the
+  starter he insures, or covers an Abundant/Normal position, is not
+  insurance. A negotiation ladder never opens above the engine's own offer.
+- **"Your current starting X" is the optimizer's starter everywhere.** The
+  waiver engine read Sleeper's set-lineup flag, so one panel named two
+  different starting QBs. It now receives the optimizer's starter ids;
+  trade_engine's sibling sentence still reads the flag (it has no lineup in
+  hand) and says so in its docstring.
+- **Materiality is what a move adds.** `abs(delta)` had promoted a −10.7/wk
+  sell-high above every unconflicted buy-low. The lineup cost rides on the
+  Risk reason and the Cost dimension; a marginal claim or switch is a Monitor
+  unless it is a Must Add, so a +0.0 add can never lead the list. Evidence
+  agreement counts distinct source modules. Perishability needs a paid tier
+  that is also trending. Drop ordering no longer rewards how many modules
+  appended a sentence.
+- **One positional-need fact on the buyer board.** "Upgrades their WR" and
+  "WR is a top need" are the same ranking read twice; the second is now a
+  reason string without points, so Strong requires need + timeline +
+  economy-or-scarcity, which is what DECISIONS already claimed.
+- **The note's writer states its side.** Provenance had inferred FOR/AGAINST
+  for waiver notes by substring ("abundant", "exposure"); `report_data`
+  annotators now record the direction in `LeagueReportData.note_directions`
+  and the heuristics are only a fallback. Conflict reasons are keyed on the
+  fact they state, so one scarcity is one Against however many modules
+  phrase it. Method caveats ("treat as approximate") are Context.
+- **Best Moves uses `action_priority.rank_actions` itself**, with the kind's
+  quality rank as an Action field, so the shipped ordering is the tested
+  ordering and `explain_order` can name the deciding dimension. The rule is
+  printed above the list.
+- **Ledger time is `status_updated`.** A waiver claim is queued at `created`
+  and processes hours to days later; 17% of the real rows lag by more than
+  an hour. The current roster is checked before a rival's add is treated as
+  terminal, and an empty transaction list is an answer.
+- **Usage staleness is measured against the league's week**, not only the
+  fetch age; a season file with too few rows is Partial; the cache ceiling
+  applies. Trending is its own health family (an empty fetch keeps
+  yesterday's list, so a MAX over the weekly tables would have masked it).
+  A degraded ranking source blocks the snapshot, so a source outage never
+  becomes a "price move" for market velocity, and velocity breaks its run
+  across gaps in the daily record.
+- **Left as documented limitations:** the sell-high signal is RotoBaller's
+  redraft rank arrow (fires on a third of the pool; a stronger KTC-vs-FP gate
+  exists and is preferred when available); scarcity annotates but does not
+  enter the value-match tolerance; simultaneous offers are each previewed
+  against the untouched roster; the waiver table has no roster-capacity check;
+  the owner-profile "trades often" note and the league-economy "Inactive
+  Trader" label can disagree (one is a manual note, the other this season's
+  record); two `_roster_impact_note` phrasings remain by design.
+
 ### Known calibration findings left as they are (2026-09-03)
 
 - The trade engine only emits value-matched offers, so Asset economics is

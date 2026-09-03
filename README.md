@@ -381,7 +381,10 @@ is fast and deterministic.
 - **RotoBaller's redraft data isn't superflex-aware** — confirmed
   identical regardless of league format param — so a fixed scarcity
   multiplier is applied to QB projections in superflex redraft/keeper
-  leagues as an approximation.
+  leagues as an approximation. It publishes only full-PPR and standard
+  season totals (its TE-premium column equals PPR in every cached file), so
+  a league's projection is interpolated between the two by its PPR value;
+  half PPR is halfway, not standard (fixed 2026-09-03).
 - **Multi-FLEX formats** (3-4 FLEX spots) aren't fully accounted for in
   positional-need detection, which weighs each position's single best
   player rather than full flex-slot demand. The depth-need signal
@@ -517,3 +520,19 @@ is fast and deterministic.
   fresh under 20h, usable under 3 days, ceiling 7 days; schedule and usage
   longer; Sleeper tables daily) and a Stale source still produces output —
   only Unavailable suppresses.
+- **Three facts now veto instead of annotating** (2026-09-03 red team): an
+  optimized starter is never a paired drop, a better same-position player is
+  never cut for a worse add, and insurance is only offered for a Scarce/Very
+  Scarce position by a candidate who does not out-project the starter. Every
+  other disagreement between modules is still a labelled Conflicted Move.
+- **Sell-high is RotoBaller's rank arrow** (it fires on about a third of the
+  pool); the KTC-vs-FantasyPros divergence gate is used when it applies. The
+  value-match tolerance is on raw currency and does not see replacement
+  scarcity; simultaneous offers are each previewed against the untouched
+  roster; the waiver table is capped at eight rows with no roster-capacity
+  check; the owner-profile "trades often" note is a manual note and can
+  disagree with this season's league-economy record.
+- **Best Moves ordering is lexicographic and Materiality is the gain a move
+  makes** — a lineup cost is carried by the Risk reason and the Cost
+  dimension, never promoted; a marginal claim is a Monitor unless it is a
+  Must Add; in a quiet week the list is trades in acceptance order.
