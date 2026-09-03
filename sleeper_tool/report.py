@@ -6,6 +6,8 @@ from __future__ import annotations
 from sleeper_tool.asset_value import percentile_for_currency, value_label_for_currency
 from sleeper_tool.config import LEAGUES, LeagueInfo
 from sleeper_tool.decision_delta import DecisionDelta
+from sleeper_tool.decision_outcomes import OBSERVED
+from sleeper_tool.faab_strategy import bid_cell, bid_detail
 from sleeper_tool.formatting import age_str, ordinal_pct
 from sleeper_tool.league_economy import LeagueEconomy
 from sleeper_tool.lineup_leverage import LineupLeverage
@@ -225,17 +227,20 @@ _TIER_MARK = {"Must Add": "🔴", "Strong Add": "🟠", "Moderate": "🟡", "Spe
 
 
 def _render_waiver_targets(
-    targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | None = None, conflicts: list[Conflict] | None = None
+    targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | None = None, conflicts: list[Conflict] | None = None,
+    faab: dict | None = None,
 ) -> list[str]:
     if not targets:
         return ["No standout waiver targets this week."]
     impacts = impacts or {}
     conflicts = conflicts or []
+    faab = faab or {}
     lines = ["| Priority | Player | Pos | Team | Drop | Horizon | FAAB | Why |", "|---|---|---|---|---|---|---|---|"]
     for t in targets:  # already capped by the engine; insurance rows ride along after the cap
         mark = _TIER_MARK.get(t.priority_tier, "")
         drop = t.drop_candidate.name if t.drop_candidate else "—"
-        faab = f"{t.suggested_faab_pct}%" if t.suggested_faab_pct is not None else "—"
+        advice = faab.get(t.player_id)
+        faab_text = bid_cell(advice, t.suggested_faab_pct)
         reason = t.reason
         impact = impacts.get(t.player_id)
         if impact is not None:
@@ -245,12 +250,15 @@ def _render_waiver_targets(
                 reason += " · " + impact.matchup_note
         if t.notes:
             reason += " · " + " · ".join(t.notes)
+        detail = bid_detail(advice)
+        if detail:
+            reason += f" · **FAAB:** {detail}"
         conflict = conflict_for(conflicts, WAIVER, t.player_id)
         if conflict is not None:
             reason = f"⚠️ **{CONFLICTED}** (against: {'; '.join(conflict.reasons_against)}) · " + reason
         lines.append(
             f"| {mark} {t.priority_tier} | {t.name} | {t.position or '?'} | {t.team or '-'} | {drop} | "
-            f"{t.horizon} | {faab} | {reason} |"
+            f"{t.horizon} | {faab_text} | {reason} |"
         )
     return lines
 
@@ -401,8 +409,12 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     sections.append(("### Trade offers", trade_lines))
 
     waiver_lines = (
-        [f"_{data.waivers_note}_", ""] if data.waivers_note else _render_waiver_targets(data.waiver_targets, data.waiver_impacts, data.conflicts) + [""]
+        [f"_{data.waivers_note}_", ""]
+        if data.waivers_note
+        else _render_waiver_targets(data.waiver_targets, data.waiver_impacts, data.conflicts, data.faab) + [""]
     )
+    if data.faab_note and not data.waivers_note and data.waiver_targets:
+        waiver_lines.extend([f"_{data.faab_note}_", ""])
     if data.streamers:
         waiver_lines.extend(_render_streamers(data.streamers))
     if data.defensive_add is not None:
@@ -480,21 +492,75 @@ def render_weekly_report(report: WeeklyReportData) -> str:
     lines.extend(_render_priority_actions(report.priority_actions))
     lines.extend(_render_delta(report.delta))
     lines.extend(_render_portfolio_exposure(report.portfolio))
-    lines.append("## Data freshness")
-    lines.append("")
-    for source, age in report.source_freshness.items():
-        lines.append(f"- {source}: {age_str(age)} old")
-    lines.append(f"- ff_dynasty_pass (manual CSV): {report.ff_status}")
-    lines.append("")
-    lines.append("---")
-    lines.append("")
+    lines.extend(_render_signal_health(report))
 
     for league_data in report.leagues:
         lines.extend(render_league_section(league_data))
         lines.append("---")
         lines.append("")
 
+    lines.extend(_render_diagnostics(report))
     return "\n".join(lines)
+
+
+def _render_signal_health(report: WeeklyReportData) -> list[str]:
+    """Every input with its label and age, then what that cost this run.
+    Falls back to the bare ages when the report carries no health grade
+    (a test-built report)."""
+    lines: list[str] = []
+    if report.health is None:
+        lines.extend(["## Data freshness", ""])
+        for source, age in report.source_freshness.items():
+            lines.append(f"- {source}: {age_str(age)} old")
+        lines.append(f"- ff_dynasty_pass (manual CSV): {report.ff_status}")
+    else:
+        state = "degraded" if report.health.degraded else "all sources fresh or usable"
+        lines.extend([f"## Signal health — {state}", ""])
+        lines.extend(f"- {line}" for line in report.freshness_lines)
+        for note in report.health.notes:
+            lines.append(f"- ⚠️ {note}")
+        for feature, why in sorted(report.suppressed.items()):
+            lines.append(f"- ⚠️ Suppressed this run: {feature.replace('_', ' ')} — {why}")
+    if report.usage_note:
+        lines.append(f"- Player usage: {report.usage_note}.")
+    if report.crosswalk_note:
+        lines.append(f"- {report.crosswalk_note}")
+    lines.extend(["", "---", ""])
+    return lines
+
+
+MAX_DIAGNOSTIC_LINES = 10
+
+
+def _render_diagnostics(report: WeeklyReportData) -> list[str]:
+    """History and self-checks, last: what earlier runs recommended and
+    what Sleeper then showed, what the watchlist promoted, how many are
+    still watched. Facts only; nothing here scores the tool."""
+    body: list[str] = []
+    if report.ledger_summary:
+        body.append("**Decision ledger** (recommendations recorded, by action and observed outcome):")
+        body.append("")
+        for action, counts in report.ledger_summary.items():
+            body.append(f"- {action}: " + ", ".join(f"{label} {n}" for label, n in counts.items()))
+        body.append("")
+    observed = [f for f in report.outcome_facts if f.state == OBSERVED]
+    if observed:
+        body.append("**Outcome facts** (descriptive; the value moves are the sources', not a verdict):")
+        body.append("")
+        body.extend(f"- {f.describe()}" for f in observed[-MAX_DIAGNOSTIC_LINES:])
+        if len(observed) > MAX_DIAGNOSTIC_LINES:
+            body.append(f"- … {len(observed) - MAX_DIAGNOSTIC_LINES} earlier facts not shown")
+        body.append("")
+    if report.watchlist_new or report.watchlist_watching:
+        body.append("**Watchlist:**")
+        body.append("")
+        body.extend(f"- 🆕 {line}" for line in report.watchlist_new)
+        if report.watchlist_watching:
+            body.append(f"- {report.watchlist_watching} near-miss item(s) still watched, nothing new to say")
+        body.append("")
+    if not body:
+        return []
+    return ["## Diagnostics and history", "", *body]
 
 
 def generate_weekly_report(

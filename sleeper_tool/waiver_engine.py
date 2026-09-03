@@ -181,9 +181,29 @@ def _find_drop_candidate(
     return min(non_need_pool, key=_sort_key)
 
 
-def _priority_tier(fills_need: bool, pctl: float | None, trend_rank: int) -> str:
+def _upgrades_starter(my_roster: ValuedRoster, position: str | None, new_pctl: float | None, currency: str) -> bool | None:
+    """Would he beat my weakest current starter at the position? None when
+    nobody starts there or a percentile is missing (an empty slot IS an
+    upgrade, so callers treat None as not-a-demotion). The same comparison
+    _roster_impact_note phrases; kept as a bool so the tier can read it."""
+    if not position:
+        return None
+    starters_here = [e for e in my_roster.by_position(position) if e.is_starter]
+    if not starters_here:
+        return None
+    weak_pctl = _display_percentile(min(starters_here, key=lambda e: _display_percentile(e.value, currency) or 0).value, currency)
+    if weak_pctl is None or new_pctl is None:
+        return None
+    return new_pctl > weak_pctl
+
+
+def _priority_tier(fills_need: bool, pctl: float | None, trend_rank: int, upgrades_starter: bool | None = None) -> str:
+    """`upgrades_starter` False demotes a would-be Must Add to Strong Add: a
+    "need" is relative (the two weakest of four positions are always needs,
+    even behind a 94th-percentile starter), so a player who is depth behind
+    the starter he'd supposedly replace is not a must."""
     p = pctl or 0
-    if fills_need and p >= 70:
+    if fills_need and p >= 70 and upgrades_starter is not False:
         return MUST_ADD
     if (fills_need and p >= 50) or (not fills_need and p >= 80):
         return STRONG_ADD
@@ -312,7 +332,7 @@ def get_waiver_targets(
             qualifier = "within-position " if currency == DYNASTY_CURRENCY and value.dynasty_positional_percentile is not None else ""
             reason_bits.append(f"{ordinal_pct(pctl)} {qualifier}{value_label_for_currency(currency)}")
 
-        tier = _priority_tier(fills_need, pctl, trend_rank)
+        tier = _priority_tier(fills_need, pctl, trend_rank, _upgrades_starter(my_roster, position, pctl, currency))
         horizon = _horizon(value, pdata.get("years_exp"), currency, fills_need, pctl)
         faab_pct = _suggested_faab_pct(tier, waiver_budget, my_roster.waiver_budget_used)
 

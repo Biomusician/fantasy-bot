@@ -9,7 +9,7 @@ import datetime as dt
 import logging
 from dataclasses import dataclass, field
 
-from sleeper_tool.asset_value import value_currency
+from sleeper_tool.asset_value import percentile_for_currency, value_currency
 from sleeper_tool.buyer_board import BuyerBoard, annotate_sell_high_proposals, build_buyer_boards, sell_high_candidates
 from sleeper_tool.bye_collision import ByeCollision, describe_bye_collision, plan_bye_collisions, positions_covering
 from sleeper_tool.config import LEAGUES, LeagueInfo, MY_USER_ID
@@ -20,6 +20,12 @@ from sleeper_tool.contender_insurance import (
     merge_insurance_into_waiver_targets,
 )
 from sleeper_tool.decision_delta import DecisionDelta, build_snapshot, compute_delta, load_latest_snapshot, load_snapshots
+from sleeper_tool.decision_ledger import Ledger, build_entries, load_ledger, merge_entries, observe
+from sleeper_tool.decision_ledger import summary as ledger_summary
+from sleeper_tool.decision_outcomes import OutcomeFact, build_outcome_facts
+from sleeper_tool.faab_strategy import FaabAdvice, FaabContext, TargetFacts, budget_plan, context_from_sleeper, count_substitutes
+from sleeper_tool.faab_strategy import advise as faab_advise
+from sleeper_tool.faab_strategy import status_note as faab_status_note
 from sleeper_tool.league_economy import LeagueEconomy, build_league_economy
 from sleeper_tool.lineup_leverage import LineupLeverage, build_lineup_leverage
 from sleeper_tool.lineup_optimizer import LineupResult, UnsupportedSlotError, optimize_lineup
@@ -36,9 +42,12 @@ from sleeper_tool.move_impact import (
 from sleeper_tool.negotiation_ladder import NegotiationLadder, build_ladders
 from sleeper_tool.opponent_blocker import DefensiveAdd, find_defensive_add, open_roster_spots
 from sleeper_tool.nfl_schedule import Schedule, load_schedule
+from sleeper_tool.nfl_usage import UsageData, cached_health, load_crosswalk_rows, load_usage
 from sleeper_tool.pick_opportunity import SPENDABLE, STRATEGIC, PickOpportunity, assess_picks
+from sleeper_tool.player_ids import PlayerIds, build_crosswalk
 from sleeper_tool.playoff_leverage import PlayoffLeverage, classify_playoff_leverage
 from sleeper_tool.portfolio_exposure import PortfolioExposure, acquisition_exposure_note, build_portfolio_exposure
+from sleeper_tool.rankings.cache import load_snapshot
 from sleeper_tool.rankings.ff_dynasty_pass import ff_dynasty_status
 from sleeper_tool.recommendation_conflicts import CONFLICTED, TRADE, WAIVER, Conflict, conflict_for, detect_conflicts
 from sleeper_tool.replacement_value import (
@@ -53,6 +62,7 @@ from sleeper_tool.replacement_value import (
 )
 from sleeper_tool.roster_analysis import SKILL_POSITIONS, RosterEntry, ValuedRoster, build_all_valued_rosters
 from sleeper_tool.roster_clog import RosterClog, _is_dynasty_developmental, identify_roster_clogs
+from sleeper_tool.role_trends import NO_HISTORY_NOTE, RoleTrend, market_cross, trends_for
 from sleeper_tool.roster_consolidation import Consolidation, find_consolidations
 from sleeper_tool.schedule_window import ScheduleWindows, build_windows, schedule_tiebreak, team_window
 from sleeper_tool.source_disagreement import (
@@ -65,6 +75,7 @@ from sleeper_tool.source_disagreement import (
     lookup,
     source_view,
 )
+from sleeper_tool.signal_health import SignalHealthReport, build_health, freshness_lines, suppressed_features
 from sleeper_tool.stash_board import StashCandidate, build_stash_board
 from sleeper_tool.storage import Storage
 from sleeper_tool.streamer_planner import StreamPlan, plan_streams
@@ -73,7 +84,11 @@ from sleeper_tool.trade_engine import generate_trade_proposals, identify_drop_ca
 from sleeper_tool.trade_opportunity_cost import MAJOR_LINEUP_COST, TradeEconomics, analyze_trade
 from sleeper_tool.trade_types import DropCandidate, TradeProposal
 from sleeper_tool.valuation import LeagueFormat, ValuationEngine, games_remaining
-from sleeper_tool.waiver_engine import MUST_ADD, STRONG_ADD, TimeSensitiveNote, WaiverTarget, get_time_sensitive_notes, get_waiver_targets
+from sleeper_tool.waiver_engine import INSURANCE, MUST_ADD, STRONG_ADD, TimeSensitiveNote, WaiverTarget, get_time_sensitive_notes, get_waiver_targets
+from sleeper_tool.watchlist import Watchlist, load_watchlist
+from sleeper_tool.watchlist import candidates as watch_candidates
+from sleeper_tool.watchlist import render_lines as watchlist_lines
+from sleeper_tool.watchlist import update as update_watchlist
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +153,11 @@ class LeagueReportData:
     consolidations: list[Consolidation] = field(default_factory=list)  # 2-for-1 proposals for contenders and strong middling teams
     buyer_boards: list[BuyerBoard] = field(default_factory=list)  # per sell-high candidate, the counterparties most likely to pay
     conflicts: list[Conflict] = field(default_factory=list)  # opposing signals on one move; set cross-league in build_weekly_report_data
+    role_trends: dict[str, RoleTrend] = field(default_factory=dict)  # by player_id (my roster, trade pieces, waiver targets, stash); empty until the season has usage rows
+    role_market: dict[str, str] = field(default_factory=dict)  # by player_id: Role Ahead of Market / Market Ahead of Role / Role and Market Confirm
+    faab: dict[str, FaabAdvice] = field(default_factory=dict)  # by waiver target player_id; empty pre-draft and in non-FAAB leagues
+    faab_note: str | None = None  # why there is no FAAB advice, when there isn't any
+    faab_context: FaabContext | None = None
     error: str | None = None
 
 
@@ -166,6 +186,18 @@ class WeeklyReportData:
     portfolio: PortfolioExposure | None = None  # cross-league player concentration
     delta: DecisionDelta | None = None  # vs the last complete run's snapshot; None on a first run
     snapshot: dict | None = None  # this run's decision snapshot, for daily_run to persist after a complete run
+    health: SignalHealthReport | None = None  # every input graded Fresh/Usable/Partial/Stale/Unavailable
+    suppressed: dict[str, str] = field(default_factory=dict)  # feature -> why it was suppressed this run (a required source is Unavailable)
+    freshness_lines: list[str] = field(default_factory=list)  # one labelled line per source, for both renderers
+    usage_note: str | None = None  # "Role data begins after games are played" until the season's first usage rows exist
+    crosswalk_note: str | None = None  # how many of the players that matter resolved to an nflverse id
+    watchlist: Watchlist | None = None  # this run's updated watchlist (in memory); daily_run persists it after a complete run
+    watchlist_new: list[str] = field(default_factory=list)  # New Trigger lines only
+    watchlist_watching: int = 0
+    ledger: Ledger | None = None  # this run's merged + observed ledger (in memory); daily_run persists it after a complete run
+    ledger_new: int = 0  # recommendations first recorded this run
+    ledger_summary: dict[str, dict[str, int]] = field(default_factory=dict)
+    outcome_facts: list[OutcomeFact] = field(default_factory=list)
 
 
 _ACTION_KIND_ORDER = {"alert": 0, "trade": 1, "waiver": 2, "roster": 3}
@@ -314,8 +346,15 @@ def _entry_from_target(t: WaiverTarget, all_players: dict) -> RosterEntry:
 
 def build_league_report_data(
     storage: Storage, engine: ValuationEngine, league: LeagueInfo, current_week: int | None,
-    schedule: Schedule | None = None,
+    schedule: Schedule | None = None, *, usage: UsageData | None = None, crosswalk: dict[str, PlayerIds] | None = None,
+    suppressed: dict[str, str] | None = None,
 ) -> LeagueReportData:
+    """`usage`/`crosswalk` are the season's nflverse rows and the Sleeper->
+    gsis id map, loaded once per run by build_weekly_report_data (None
+    until games are played). `suppressed` is signal_health's feature ->
+    reason map for this run; a feature listed there is skipped rather
+    than built from a source that isn't there."""
+    suppressed = suppressed or {}
     rosters = build_all_valued_rosters(storage, engine, league)
     my_roster = next((r for r in rosters.values() if r.owner_id == MY_USER_ID), None)
 
@@ -430,6 +469,7 @@ def build_league_report_data(
             waiver_budget=waiver_budget, clog_ids=clog_ids,
         )
     time_sensitive = get_time_sensitive_notes(storage, my_roster, current_week=current_week)
+    urgent_add_ids: set[str] = set()  # waiver targets that answer a bye hole (FAAB posture reads this)
     bye_collision = plan_bye_collisions(my_roster, current_week=current_week, lineup=lineup) if lineup is not None else None
     if bye_collision is not None:
         # Next week's hole is this week's waiver move; further out is a heads-up.
@@ -441,6 +481,7 @@ def build_league_report_data(
         for t in waiver_targets:
             if t.position in covering:
                 t.reason = f"{t.reason}; would also cover your week {bye_collision.week} bye hole"
+                urgent_add_ids.add(t.player_id)
     drop_candidates = identify_drop_candidates(my_roster, status_result.status, exclude_ids=proposed_give_ids)
     # A clog that's already a drop candidate is surfaced there; listing him
     # twice under two headings is noise, not extra information.
@@ -486,7 +527,11 @@ def build_league_report_data(
     )
 
     source_table = build_source_rank_tables(engine.snapshots_for(my_roster.fmt), my_roster.fmt)
-    source_views = _build_source_views(source_table, currency, my_roster, proposals, waiver_targets)
+    source_views = (
+        _build_source_views(source_table, currency, my_roster, proposals, waiver_targets)
+        if "source_disagreement" not in suppressed
+        else {}
+    )
     _annotate_proposals_with_sources(proposals, source_views)
     for t in waiver_targets:
         v = source_views.get(t.player_id)
@@ -555,6 +600,23 @@ def build_league_report_data(
                 impact.matchup_note = matchup.effect_clause(impact.weekly_points_delta)
     streamers = plan_streams(my_roster, free_agents, schedule=schedule, current_week=current_week, lineup=lineup)
 
+    # Role trends for the players this report names, through the crosswalk.
+    # Nothing here until the season has usage rows; the market cross and
+    # the sparse annotations wait for velocity in build_weekly_report_data.
+    role_trends: dict[str, RoleTrend] = {}
+    if usage is not None and crosswalk and "role_trends" not in suppressed:
+        named = {e.player_id for e in my_roster.entries}
+        named |= {e.player_id for p in proposals for e in (*p.give, *p.receive)}
+        named |= {t.player_id for t in waiver_targets}
+        named |= {c.entry.player_id for c in stash}
+        role_trends = trends_for(usage, crosswalk, sorted(named))
+
+    faab_ctx = context_from_sleeper(
+        league_data, storage.get_rosters(league.league_id), storage.get_all_transactions(league.league_id),
+        my_roster.roster_id, current_week=current_week, pre_draft=pre_draft,
+    )
+    faab = _build_faab_advice(faab_ctx, waiver_targets, free_agents, replacement, currency, role_trends, urgent_add_ids)
+
     return LeagueReportData(
         league=league,
         fmt_desc=fmt_desc,
@@ -589,7 +651,45 @@ def build_league_report_data(
         windows=windows,
         consolidations=consolidations,
         buyer_boards=buyer_boards,
+        role_trends=role_trends,
+        faab=faab,
+        faab_note=faab_status_note(faab_ctx),
+        faab_context=faab_ctx,
     )
+
+
+def _build_faab_advice(
+    ctx: FaabContext, targets: list[WaiverTarget], free_agents: list[RosterEntry], market: ReplacementMarket | None,
+    currency: str, role_trends: dict[str, RoleTrend], urgent_ids: set[str],
+) -> dict[str, FaabAdvice]:
+    """One FaabAdvice per waiver target from facts the report already
+    holds: tier, horizon, the position's replacement scarcity, his role
+    label, how many comparable free agents sit near him, and whether the
+    add answers an urgent need (a need the engine found, an insurance
+    row, a bye-hole cover). Then the table-level affordability pass."""
+    if not targets:
+        return {}
+
+    def pctl_of(e) -> float | None:
+        return percentile_for_currency(e.value, currency) if getattr(e, "value", None) is not None else None
+
+    out: dict[str, FaabAdvice] = {}
+    for t in targets:
+        trend = role_trends.get(t.player_id)
+        facts = TargetFacts(
+            player_id=t.player_id, name=t.name, tier=t.priority_tier, horizon=t.horizon,
+            scarcity=market.scarcity_of(t.position) if market is not None else None,
+            role_label=trend.label if trend is not None else None,
+            substitutes=count_substitutes(free_agents, t.position, pctl_of(t), percentile_of=pctl_of, exclude_ids={t.player_id}),
+            need_urgency=bool(t.fills_need) or t.priority_tier == INSURANCE or t.player_id in urgent_ids,
+            suggested_pct=t.suggested_faab_pct,
+        )
+        advice = faab_advise(ctx, facts)
+        if advice is not None:
+            out[t.player_id] = advice
+    for pid, note in budget_plan([out[t.player_id] for t in targets if t.player_id in out], ctx.remaining).items():
+        out[pid].notes.append(note)
+    return out
 
 
 def _annotate_with_schedule_windows(schedule, windows: ScheduleWindows, leverage, targets: list[WaiverTarget], proposals: list[TradeProposal]) -> None:
@@ -779,7 +879,7 @@ def _annotate_proposals_with_bench_surplus(proposals: list[TradeProposal], lever
 
 def _safe_build_league_report_data(
     storage: Storage, engine: ValuationEngine, league: LeagueInfo, current_week: int | None,
-    schedule: Schedule | None = None,
+    schedule: Schedule | None = None, **kwargs,
 ) -> LeagueReportData:
     """One league's bad data (a malformed Sleeper payload, an unexpected
     None somewhere in the valuation chain) must not blank the whole daily
@@ -789,7 +889,7 @@ def _safe_build_league_report_data(
     same degraded-but-visible path already used for "my roster not found".
     """
     try:
-        return build_league_report_data(storage, engine, league, current_week, schedule)
+        return build_league_report_data(storage, engine, league, current_week, schedule, **kwargs)
     except Exception as exc:
         logger.exception("Report generation failed for %s", league.name)
         return LeagueReportData(league=league, error=f"Report generation failed: {exc}")
@@ -807,19 +907,43 @@ def _season_of(storage: Storage, leagues: list[LeagueInfo]) -> int | None:
 
 
 def build_weekly_report_data(
-    storage: Storage, engine: ValuationEngine, leagues: list[LeagueInfo] = LEAGUES, *, with_nfl_schedule: bool = True
+    storage: Storage, engine: ValuationEngine, leagues: list[LeagueInfo] = LEAGUES, *,
+    with_nfl_schedule: bool = True, with_usage: bool | None = None,
 ) -> WeeklyReportData:
+    """`with_nfl_schedule=False` skips every non-ranking external asset
+    (the schedule and, unless `with_usage` says otherwise, the nflverse
+    usage layer) — the test suite's no-network path."""
     now = dt.datetime.now(dt.timezone.utc)
     current_week_raw = storage.get_meta("current_week")
     current_week = int(current_week_raw) if current_week_raw else None
+    if with_usage is None:
+        with_usage = with_nfl_schedule
 
     # One NFL schedule per run (cached daily), shared by every league.
     schedule: Schedule | None = None
-    season = _season_of(storage, leagues) if with_nfl_schedule else None
-    if season is not None:
+    season = _season_of(storage, leagues)
+    if season is not None and with_nfl_schedule:
         schedule = load_schedule(season)
+    usage, crosswalk, usage_note, crosswalk_note = _load_usage_layer(storage, leagues, season if with_usage else None)
 
-    league_data = [_safe_build_league_report_data(storage, engine, league, current_week, schedule) for league in leagues]
+    # Grade every input BEFORE the leagues build, so a feature whose source
+    # is Unavailable is skipped rather than computed from nothing.
+    health = build_health(
+        engine=engine, storage=storage,
+        schedule_snapshot=load_snapshot("nflverse_schedule") if with_nfl_schedule else None,
+        usage_health=cached_health(season) if (season is not None and with_usage) else None,
+        now=now,
+    )
+    suppressed = suppressed_features(health)
+    for feature, why in suppressed.items():
+        logger.warning("%s suppressed this run: %s", feature, why)
+
+    league_data = [
+        _safe_build_league_report_data(
+            storage, engine, league, current_week, schedule, usage=usage, crosswalk=crosswalk, suppressed=suppressed
+        )
+        for league in leagues
+    ]
     portfolio = build_portfolio_exposure(
         (ld.league.name, ld.roster, ld.lineup) for ld in league_data if ld.drafted and ld.roster is not None
     )
@@ -836,6 +960,15 @@ def build_weekly_report_data(
             annotate_league(ld, ld.velocity)
         except Exception:  # an annotation pass must never blank a league that already built
             logger.exception("Market velocity skipped for %s", ld.league.name)
+    # Roles against the market (velocity and the source direction are
+    # both known now), then the sparse role annotations.
+    for ld in league_data:
+        if ld.error or not ld.drafted or not ld.role_trends:
+            continue
+        try:
+            _annotate_with_roles(ld)
+        except Exception:
+            logger.exception("Role annotations skipped for %s", ld.league.name)
     # Conflicts last: they read every annotation above (exposure included).
     for ld in league_data:
         if ld.error or not ld.drafted:
@@ -853,13 +986,146 @@ def build_weekly_report_data(
         leagues=league_data,
         priority_actions=build_priority_actions(league_data),
         portfolio=portfolio,
+        health=health,
+        suppressed=suppressed,
+        freshness_lines=freshness_lines(health),
+        # The health block already says the feed isn't published yet; don't say it twice.
+        usage_note=usage_note if not any(s.family == "nflverse_usage" and s.expected_absent for s in health.signals) else None,
+        crosswalk_note=crosswalk_note,
     )
     report.snapshot = build_snapshot(report)
     # Skip today's own snapshot so a same-day re-run still diffs against
     # the previous day (daily_run overwrites today's file, keeping runs
     # idempotent).
     report.delta = compute_delta(load_latest_snapshot(before_date=now.date().isoformat()), report.snapshot)
+    _attach_watchlist(report, now)
+    _attach_ledger(report, storage, now)
     return report
+
+
+def _load_usage_layer(
+    storage: Storage, leagues: list[LeagueInfo], season: int | None
+) -> tuple[UsageData | None, dict[str, PlayerIds] | None, str | None, str | None]:
+    """The season's nflverse usage rows and the Sleeper -> gsis crosswalk,
+    once per run. (None, None, note, None) until the season has games —
+    the note is the ONE place the report says so; nothing per player."""
+    if season is None:
+        return None, None, None, None
+    try:
+        usage = load_usage(season)
+    except Exception:
+        logger.exception("Usage layer skipped")
+        return None, None, None, None
+    if usage is None or not usage.latest_week:
+        return None, None, NO_HISTORY_NOTE, None
+    try:
+        ff_rows, nfl_rows = load_crosswalk_rows()
+    except Exception:
+        logger.exception("Crosswalk sources unavailable; Sleeper's own gsis ids only")
+        ff_rows, nfl_rows = [], []
+    # The players that matter: everyone rostered in these leagues plus the
+    # trending adds the waiver engine draws from. A free agent outside both
+    # (an insurance row, a stash) simply gets no role line.
+    only_ids: set[str] = set()
+    for league in leagues:
+        for roster in storage.get_rosters(league.league_id):
+            only_ids.update(str(p) for p in (roster.get("players") or []))
+    only_ids.update(str(row["player_id"]) for row in storage.get_trending("add"))
+    crosswalk, xreport = build_crosswalk(storage.get_all_players(), ff_rows=ff_rows, nfl_rows=nfl_rows, only_ids=only_ids)
+    return usage, crosswalk, None, f"Player id crosswalk: {xreport.describe()}"
+
+
+# The source-disagreement direction labels, as a market direction for the
+# role/market cross: a market priced above the projection is a market
+# that has moved UP on him relative to what he produces.
+_SOURCE_DIRECTION = {MARKET_ABOVE_PROJECTION: "up", PROJECTION_ABOVE_MARKET: "down"}
+
+
+def _annotate_with_roles(ld: LeagueReportData) -> None:
+    """Sparse by design: only a notable role trend (Rising / Surging /
+    Falling / Collapsing) is written anywhere, and it goes on the side of
+    the recommendation it argues for. The market cross rides on the same
+    line rather than becoming a second bullet."""
+    for pid, trend in ld.role_trends.items():
+        velocity = ld.velocity.get(pid)
+        view = ld.source_views.get(pid)
+        cross = market_cross(
+            trend, value_direction=None,
+            velocity_label=velocity.label if velocity is not None else None,
+            source_direction=_SOURCE_DIRECTION.get(view.direction) if view is not None and view.direction else None,
+        )
+        if cross:
+            ld.role_market[pid] = cross
+
+    def line(pid: str, trend: RoleTrend) -> str:
+        cross = ld.role_market.get(pid)
+        return f"Role: {trend.describe()}" + (f" — {cross}" if cross else "")
+
+    for t in ld.waiver_targets:
+        trend = ld.role_trends.get(t.player_id)
+        if trend is not None and trend.notable:
+            t.notes.append(line(t.player_id, trend))
+    for p in ld.proposals:
+        for e in p.give:
+            trend = ld.role_trends.get(e.player_id)
+            if trend is None or not trend.notable:
+                continue
+            if trend.rising:
+                p.caveats.append(f"{line(e.player_id, trend)} — {e.name}'s role is growing, which argues against selling now.")
+            else:
+                p.rationale_for_me.append(f"{line(e.player_id, trend)} — {e.name}'s role is shrinking, which favours selling.")
+        for e in p.receive:
+            trend = ld.role_trends.get(e.player_id)
+            if trend is None or not trend.notable:
+                continue
+            if trend.rising:
+                p.rationale_for_me.append(f"{line(e.player_id, trend)} — {e.name}'s role is growing, which favours buying.")
+            else:
+                p.caveats.append(f"{line(e.player_id, trend)} — {e.name}'s role is shrinking; the price may not have caught up.")
+    for c in ld.stash:
+        trend = ld.role_trends.get(c.entry.player_id)
+        if trend is not None and trend.notable:
+            c.reasons.append(line(c.entry.player_id, trend))
+
+
+def _attach_watchlist(report: WeeklyReportData, now: dt.datetime) -> None:
+    """Fold this run's near-misses into the stored watchlist, in memory.
+    Only daily_run writes the file, after a complete run."""
+    try:
+        existing = load_watchlist()
+        ld_by_league = {ld.league.league_id: ld for ld in report.leagues if not ld.error and ld.drafted}
+        found = [c for ld in ld_by_league.values() for c in watch_candidates(ld, report, role_trends=ld.role_trends)]
+        report.watchlist = update_watchlist(existing, found, now=now, ld_by_league=ld_by_league)
+        report.watchlist_new, report.watchlist_watching = watchlist_lines(report.watchlist)
+    except Exception:
+        logger.exception("Watchlist skipped")
+
+
+def _attach_ledger(report: WeeklyReportData, storage: Storage, now: dt.datetime) -> None:
+    """Record this run's recommendations and stamp the open ones with what
+    Sleeper shows, in memory; daily_run persists after a complete run. The
+    outcome facts read the snapshot history and never judge."""
+    try:
+        ledger = load_ledger()
+        ok = [ld for ld in report.leagues if not ld.error and ld.drafted and ld.roster is not None]
+        # Observe BEFORE recording this run's entries: a recommendation made
+        # this minute has had no chance to be acted on, and stamping it
+        # "Still Available" would be a fact that means nothing.
+        observe(
+            ledger,
+            transactions_by_league={ld.league.league_id: storage.get_all_transactions(ld.league.league_id) for ld in ok},
+            rosters_by_league={ld.league.league_id: storage.get_rosters(ld.league.league_id) for ld in ok},
+            my_roster_ids={ld.league.league_id: ld.roster.roster_id for ld in ok},
+            now=now,
+        )
+        new, _refreshed = merge_entries(ledger, build_entries(report), run_id=now.isoformat())
+        role_labels = {pid: trend.label for ld in ok for pid, trend in ld.role_trends.items()}
+        report.ledger = ledger
+        report.ledger_new = new
+        report.ledger_summary = ledger_summary(ledger)
+        report.outcome_facts = build_outcome_facts(ledger, load_snapshots(), now=now, report=report, role_labels=role_labels)
+    except Exception:
+        logger.exception("Decision ledger skipped")
 
 
 def _annotate_recommendations_with_exposure(leagues: list[LeagueReportData], portfolio: PortfolioExposure) -> None:

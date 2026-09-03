@@ -159,6 +159,10 @@ class SignalHealth:
     fallback: bool = False
     label: str = UNAVAILABLE
     detail: str = ""
+    # True when the source's absence is its normal state right now (the
+    # season's usage file before any game is played): still Unavailable,
+    # still suppresses what needs it, but never grades the run degraded.
+    expected_absent: bool = False
 
     @property
     def display_name(self) -> str:
@@ -381,7 +385,9 @@ def _usage_signal(usage_health, now: dt.datetime) -> SignalHealth:
     if usage_health is None:
         return _unavailable("nflverse_usage", "nflverse_usage", "no usage health supplied")
     if getattr(usage_health, "absent", False):
-        return _unavailable("nflverse_usage", "nflverse_usage", "usage data not available")
+        signal = _unavailable("nflverse_usage", "nflverse_usage", "not published for this season yet")
+        signal.expected_absent = True
+        return signal
 
     fetched_at = getattr(usage_health, "fetched_at", None)
     age = _age(now, fetched_at)
@@ -474,7 +480,11 @@ def build_health(
 
     notes: list[str] = []
     for family in sorted(unavailable_families - OPTIONAL_FAMILIES):
-        details = sorted({s.detail for s in families[family] if s.detail})
+        members = families[family]
+        if all(s.expected_absent for s in members):
+            notes.append(f"{_display_name(family)} {members[0].detail or 'not available yet'}")
+            continue
+        details = sorted({s.detail for s in members if s.detail})
         reason = details[0] if details else "no usable data"
         notes.append(f"{_display_name(family)} unavailable ({reason})")
     for signal in signals:
@@ -493,7 +503,7 @@ def build_health(
         degraded=any(
             s.label in DEGRADED_LABELS or s.fallback
             for s in signals
-            if s.family not in OPTIONAL_FAMILIES
+            if s.family not in OPTIONAL_FAMILIES and not s.expected_absent
         ),
         unavailable_families=unavailable_families,
         notes=notes,

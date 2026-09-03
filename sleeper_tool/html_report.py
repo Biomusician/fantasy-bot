@@ -11,6 +11,8 @@ from html import escape as esc
 
 from sleeper_tool.asset_value import percentile_for_currency, value_label_for_currency
 from sleeper_tool.decision_delta import DecisionDelta
+from sleeper_tool.decision_outcomes import OBSERVED
+from sleeper_tool.faab_strategy import bid_cell, bid_detail
 from sleeper_tool.formatting import age_str
 from sleeper_tool.league_economy import LeagueEconomy
 from sleeper_tool.lineup_leverage import LineupLeverage
@@ -326,12 +328,14 @@ def _trade_card(
 
 
 def _waiver_table(
-    targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | None = None, conflicts: list[Conflict] | None = None
+    targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | None = None, conflicts: list[Conflict] | None = None,
+    faab: dict | None = None,
 ) -> str:
     if not targets:
         return '<p class="empty-note">No standout waiver targets this week.</p>'
     impacts = impacts or {}
     conflicts = conflicts or []
+    faab = faab or {}
     # "positive" (green), not "negative" (red) -- Must Add is a GOOD thing
     # to see, matching the green used for waiver actions in the "Best
     # moves right now" section (_ACTION_KIND_META). "negative" is reserved
@@ -346,7 +350,10 @@ def _waiver_table(
     for t in targets:  # already capped by the engine; insurance rows ride along after the cap
         tier_chip = _chip(t.priority_tier, _TIER_CHIP_KIND.get(t.priority_tier, "neutral"))
         drop = esc(t.drop_candidate.name) if t.drop_candidate else '<span class="muted">—</span>'
-        faab = f"{t.suggested_faab_pct}%" if t.suggested_faab_pct is not None else "—"
+        advice = faab.get(t.player_id)
+        faab_text = esc(bid_cell(advice, t.suggested_faab_pct))
+        detail = bid_detail(advice)
+        faab_html = f'<div class="impact-inline"><b>FAAB:</b> {esc(detail)}</div>' if detail else ""
         impact_html = ""
         impact = impacts.get(t.player_id)
         if impact is not None:
@@ -368,8 +375,8 @@ def _waiver_table(
             f'<td>{esc(t.position or "?")}</td>'
             f'<td>{drop}</td>'
             f'<td>{_chip(t.horizon, "neutral")}</td>'
-            f'<td class="tabular">{faab}</td>'
-            f'<td class="waiver-reason">{esc(t.reason)}{impact_html}{notes_html}</td>'
+            f'<td class="tabular">{faab_text}</td>'
+            f'<td class="waiver-reason">{esc(t.reason)}{impact_html}{notes_html}{faab_html}</td>'
             "</tr>"
         )
     return (
@@ -685,8 +692,12 @@ def _league_panel(data: LeagueReportData) -> str:
         </section>
         """
         waivers_html = (
-            f'<p class="empty-note">{esc(data.waivers_note)}</p>' if data.waivers_note else _waiver_table(data.waiver_targets, data.waiver_impacts, data.conflicts)
+            f'<p class="empty-note">{esc(data.waivers_note)}</p>'
+            if data.waivers_note
+            else _waiver_table(data.waiver_targets, data.waiver_impacts, data.conflicts, data.faab)
         )
+        if data.faab_note and not data.waivers_note and data.waiver_targets:
+            waivers_html += f'<p class="muted">{esc(data.faab_note)}</p>'
         trades_and_waivers = f"""
         <section class="panel-block">
           <h3>Trade offers</h3>
@@ -869,12 +880,86 @@ def _portfolio_section(portfolio: PortfolioExposure | None) -> str:
     """
 
 
+_HEALTH_CHIP_KIND = {"Fresh": "positive", "Usable": "neutral", "Partial": "caution", "Stale": "caution", "Unavailable": "negative"}
+
+
+def _signal_health_section(report: WeeklyReportData) -> str:
+    """One chip per source with its label; the run's notes and suppressed
+    features underneath. Falls back to bare ages without a health grade."""
+    if report.health is None:
+        chips = "".join(
+            f'<span class="freshness-chip">{esc(source)} <b>{age_str(age)}</b></span>'
+            for source, age in report.source_freshness.items()
+        ) + f'<span class="freshness-chip">ff_dynasty_pass <b>{esc(report.ff_status)}</b></span>'
+        title = "Data freshness"
+        notes_html = ""
+    else:
+        chips = "".join(
+            f'<span class="freshness-chip">{esc(s.display_name)} {_chip(esc(s.label), _HEALTH_CHIP_KIND.get(s.label, "neutral"))}'
+            f'{" <b>" + esc(_age_text(s.cache_age)) + "</b>" if s.cache_age is not None else ""}'
+            f'{" <span class=muted>" + str(s.coverage) + " rows</span>" if s.coverage is not None else ""}</span>'
+            for s in report.health.signals
+        )
+        title = "Signal health &middot; " + ("degraded" if report.health.degraded else "all sources fresh or usable")
+        items = [f"<li>{esc(n)}</li>" for n in report.health.notes]
+        items += [f"<li>Suppressed this run: {esc(f.replace('_', ' '))} &mdash; {esc(why)}</li>" for f, why in sorted(report.suppressed.items())]
+        notes_html = f'<ul class="alert-list">{"".join(items)}</ul>' if items else ""
+    extra = []
+    if report.usage_note:
+        extra.append(f'<p class="muted">Player usage: {esc(report.usage_note)}.</p>')
+    if report.crosswalk_note:
+        extra.append(f'<p class="muted">{esc(report.crosswalk_note)}</p>')
+    return f"""
+      <section class="panel-block">
+        <h3>{title}</h3>
+        <div class="freshness-grid">{chips}</div>
+        {notes_html}{"".join(extra)}
+      </section>
+    """
+
+
+def _age_text(age) -> str:
+    hours = age.total_seconds() / 3600
+    if hours < 1:
+        return f"{int(age.total_seconds() // 60)}m"
+    if hours < 48:
+        return f"{hours:.1f}h"
+    return f"{hours / 24:.1f}d"
+
+
+MAX_DIAGNOSTIC_LINES = 10
+
+
+def _diagnostics_section(report: WeeklyReportData) -> str:
+    """Collapsed by default: the ledger's counts, the observed outcome
+    facts, the watchlist's new triggers. Same fields as the Markdown."""
+    parts: list[str] = []
+    if report.ledger_summary:
+        rows = "".join(
+            f"<li><b>{esc(action)}</b>: " + ", ".join(f"{esc(label)} {n}" for label, n in counts.items()) + "</li>"
+            for action, counts in report.ledger_summary.items()
+        )
+        parts.append(f'<h4>Decision ledger</h4><p class="muted">Recommendations recorded, by action and observed outcome.</p><ul class="alert-list">{rows}</ul>')
+    observed = [f for f in report.outcome_facts if f.state == OBSERVED]
+    if observed:
+        rows = "".join(f"<li>{esc(f.describe())}</li>" for f in observed[-MAX_DIAGNOSTIC_LINES:])
+        more = f'<li class="muted">… {len(observed) - MAX_DIAGNOSTIC_LINES} earlier facts not shown</li>' if len(observed) > MAX_DIAGNOSTIC_LINES else ""
+        parts.append(f'<h4>Outcome facts</h4><p class="muted">Descriptive; the value moves are the sources\', not a verdict.</p><ul class="alert-list">{rows}{more}</ul>')
+    if report.watchlist_new or report.watchlist_watching:
+        rows = "".join(f"<li>{_chip('New Trigger', 'accent')} {esc(line)}</li>" for line in report.watchlist_new)
+        if report.watchlist_watching:
+            rows += f'<li class="muted">{report.watchlist_watching} near-miss item(s) still watched, nothing new to say</li>'
+        parts.append(f'<h4>Watchlist</h4><ul class="alert-list">{rows}</ul>')
+    if not parts:
+        return ""
+    return (
+        '<details class="context-details"><summary>Diagnostics and history &middot; decision ledger, outcome facts, watchlist</summary>'
+        + "".join(parts) + "</details>"
+    )
+
+
 def _overview_panel(report: WeeklyReportData) -> str:
     rows = "".join(_overview_row(d) for d in report.leagues)
-    freshness_chips = "".join(
-        f'<span class="freshness-chip">{esc(source)} <b>{age_str(age)}</b></span>'
-        for source, age in report.source_freshness.items()
-    )
     return f"""
     <div class="panel" id="panel-overview" role="tabpanel">
       <header class="panel-header">
@@ -888,12 +973,8 @@ def _overview_panel(report: WeeklyReportData) -> str:
         <h3>Leagues</h3>
         <div class="overview-grid">{rows}</div>
       </section>
-      <section class="panel-block">
-        <h3>Data freshness</h3>
-        <div class="freshness-grid">{freshness_chips}
-          <span class="freshness-chip">ff_dynasty_pass <b>{esc(report.ff_status)}</b></span>
-        </div>
-      </section>
+      {_signal_health_section(report)}
+      {_diagnostics_section(report)}
     </div>
     """
 

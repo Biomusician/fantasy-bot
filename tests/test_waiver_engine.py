@@ -57,6 +57,14 @@ def test_priority_tier_must_add_when_fills_need_and_high_percentile():
     assert _priority_tier(fills_need=True, pctl=80.0, trend_rank=0) == MUST_ADD
 
 
+def test_priority_tier_demotes_a_need_that_is_only_depth_behind_the_starter():
+    # The same need + percentile that makes a Must Add is a Strong Add when
+    # he would sit behind the starter he is supposedly needed to replace.
+    assert _priority_tier(fills_need=True, pctl=80.0, trend_rank=0, upgrades_starter=False) == STRONG_ADD
+    assert _priority_tier(fills_need=True, pctl=80.0, trend_rank=0, upgrades_starter=True) == MUST_ADD
+    assert _priority_tier(fills_need=True, pctl=80.0, trend_rank=0, upgrades_starter=None) == MUST_ADD  # empty slot
+
+
 def test_priority_tier_strong_add_without_need_but_very_high_percentile():
     assert _priority_tier(fills_need=False, pctl=85.0, trend_rank=0) == STRONG_ADD
 

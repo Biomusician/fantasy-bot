@@ -46,7 +46,7 @@ import statistics
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 
-from sleeper_tool.replacement_value import SCARCE, VERY_SCARCE
+from sleeper_tool.replacement_value import ABUNDANT, SCARCE, VERY_SCARCE
 from sleeper_tool.waiver_engine import (
     _FAAB_PCT_BY_TIER,
     MODERATE,
@@ -171,6 +171,55 @@ class FaabAdvice:
         return name + " — ".join(bits)
 
 
+def context_from_sleeper(
+    league_data: dict, rosters: list[dict], transactions: list[dict], my_roster_id: int,
+    *, current_week: int | None, pre_draft: bool,
+) -> FaabContext:
+    """A FaabContext straight from the cached Sleeper payloads: league
+    settings (waiver_type, waiver_budget, playoff_week_start,
+    trade_deadline), every roster's `settings.waiver_budget_used`, and the
+    winning bids of every completed waiver claim. A Sleeper league_id is one
+    season, so every stored transaction is this season's."""
+    settings = league_data.get("settings") or {}
+    my_used = 0
+    others: list[int] = []
+    for r in rosters:
+        try:
+            used = int((r.get("settings") or {}).get("waiver_budget_used") or 0)
+        except (TypeError, ValueError):
+            used = 0
+        if r.get("roster_id") == my_roster_id:
+            my_used = used
+        else:
+            others.append(used)
+    bids: list[int] = []
+    for tx in transactions:
+        if tx.get("type") != "waiver" or tx.get("status") != "complete":
+            continue
+        bid = (tx.get("settings") or {}).get("waiver_bid")
+        if bid is None:
+            continue
+        try:
+            bids.append(int(bid))
+        except (TypeError, ValueError):
+            continue
+
+    def _int_or_none(value):
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    return FaabContext(
+        waiver_type=_int_or_none(settings.get("waiver_type")),
+        budget=_int_or_none(settings.get("waiver_budget")),
+        my_used=my_used, others_used=others, current_week=current_week,
+        playoff_week_start=_int_or_none(settings.get("playoff_week_start")),
+        trade_deadline=_int_or_none(settings.get("trade_deadline")),
+        pre_draft=pre_draft, league_bids=sorted(bids),
+    )
+
+
 def status_note(ctx: FaabContext) -> str | None:
     """Why there is no FAAB advice, when there isn't any. Renderers show
     this in place of a bid column rather than printing a bare "0%"."""
@@ -254,6 +303,11 @@ def choose_posture(ctx: FaabContext, facts: TargetFacts) -> tuple[str, list[str]
     reasons: list[str] = []
     if facts.horizon == STREAMER and facts.substitutes >= MANY_SUBSTITUTES:
         return PRESERVE, [f"a streamer with {facts.substitutes} comparable free agents at {facts.scarcity or 'his position'} — win the cheap one or take the next"]
+    if facts.scarcity == ABUNDANT and facts.substitutes >= MANY_SUBSTITUTES and not facts.need_urgency:
+        return PRESERVE, [
+            f"an Abundant market with {facts.substitutes} comparable free agents and no urgent need — "
+            f"comparable production is on waivers, so don't pay a {facts.tier} price for it"
+        ]
 
     priority = _is_priority_spend(facts)
     if ctx.budget and ctx.remaining <= round(ctx.budget * LOW_REMAINING_PCT / 100) and not priority:
@@ -352,6 +406,25 @@ def advise(ctx: FaabContext, facts: TargetFacts) -> FaabAdvice | None:
         share_of_remaining_text=share, leverage_text=_leverage_text(ctx, dollars), anchor_text=anchor,
         notes=notes, name=facts.name, tier=facts.tier,
     )
+
+
+def bid_cell(advice: FaabAdvice | None, raw_pct: int | None) -> str:
+    """The waiver table's FAAB column: a sized bid with its posture when the
+    league is FAAB and the target got advice, else the engine's raw
+    percentage of the total budget, else a dash."""
+    if advice is not None:
+        return f"${advice.suggested_dollars} · {advice.posture}"
+    return f"{raw_pct}%" if raw_pct is not None else "—"
+
+
+def bid_detail(advice: FaabAdvice | None) -> str | None:
+    """The bid's reasoning, for Must/Strong Add rows only — the rows where
+    money is actually at stake. One line: share of remaining budget, the
+    outbid leverage, then the posture's own notes."""
+    if advice is None or advice.tier not in (MUST_ADD, STRONG_ADD):
+        return None
+    bits = [b for b in (advice.share_of_remaining_text, advice.leverage_text, *advice.notes) if b]
+    return "; ".join(bits) if bits else None
 
 
 AFFORDABILITY_NOTE = "if the first claim clears, this one may not be affordable"

@@ -32,6 +32,8 @@ up to the usage yet", and says nothing when either side is silent.
 """
 from __future__ import annotations
 
+from typing import Iterable
+
 import re
 from dataclasses import dataclass, field
 from statistics import pstdev
@@ -399,6 +401,23 @@ def market_cross(trend: RoleTrend, *, value_direction: str | None, velocity_labe
     if role_dir == market_dir:
         return CONFIRM
     return ROLE_AHEAD
+
+
+def trends_for(usage: UsageData | None, crosswalk: dict, player_ids: Iterable[str]) -> dict[str, RoleTrend]:
+    """Role trends keyed by Sleeper player_id for the players that matter
+    to one league, through the id crosswalk (player_ids.PlayerIds). A
+    player the crosswalk couldn't place gets no entry — absence, not a
+    made-up Insufficient label, so renderers stay sparse."""
+    out: dict[str, RoleTrend] = {}
+    if usage is None:
+        return out
+    for pid in player_ids:
+        ids = crosswalk.get(pid)
+        gsis = getattr(ids, "gsis_id", None) if ids is not None else None
+        if not gsis:
+            continue
+        out[pid] = role_trend(usage, gsis)
+    return out
 
 
 def prior_season_baseline(usage_prior: UsageData | None, gsis_id: str | None) -> str | None:

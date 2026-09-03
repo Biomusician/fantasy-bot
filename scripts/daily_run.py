@@ -16,7 +16,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from sleeper_tool.client import SleeperClient
 from sleeper_tool.config import LEAGUES
 from sleeper_tool.console import ensure_utf8_stdout
+from sleeper_tool.calibration import calibrate, render_calibration_markdown
 from sleeper_tool.decision_delta import is_complete_run, save_snapshot
+from sleeper_tool.decision_ledger import save_ledger
+from sleeper_tool.watchlist import save_watchlist
 from sleeper_tool.html_report import render_dashboard_html
 from sleeper_tool.report import render_weekly_report
 from sleeper_tool.report_data import build_weekly_report_data
@@ -56,10 +59,32 @@ def main() -> None:
     # The "since last run" delta only ever compares against a run that was
     # itself complete — a partial run as the baseline would make the next
     # delta report a missing league's players as "joined your roster".
-    if is_complete_run(report_data, sync_failures=len(failed)) and report_data.snapshot is not None:
+    complete = is_complete_run(report_data, sync_failures=len(failed))
+    if complete and report_data.snapshot is not None:
         print(f"OK: saved decision snapshot {save_snapshot(report_data.snapshot)}")
     else:
         print("SKIP: decision snapshot not saved (run was not complete)", file=sys.stderr)
+    # The feedback ledger and the watchlist follow the same rule as the
+    # snapshot: persisted only after a complete run, so a half-synced
+    # morning can't record recommendations it never fully built or mark a
+    # watched player as gone because his league didn't load.
+    if complete and report_data.ledger is not None:
+        print(f"OK: saved decision ledger ({report_data.ledger_new} new) {save_ledger(report_data.ledger)}")
+    else:
+        print("SKIP: decision ledger not saved (run was not complete)", file=sys.stderr)
+    if complete and report_data.watchlist is not None:
+        print(f"OK: saved watchlist ({len(report_data.watchlist_new)} new triggers) {save_watchlist(report_data.watchlist)}")
+    else:
+        print("SKIP: watchlist not saved (run was not complete)", file=sys.stderr)
+    # The calibration report is an engineering diagnostic over this run's
+    # own rules; it never feeds back into any threshold.
+    try:
+        calibration_path = DATA_DIR / "calibration_report.md"
+        role_labels = {pid: t.label for ld in report_data.leagues for pid, t in ld.role_trends.items()}
+        calibration_path.write_text(render_calibration_markdown(calibrate(report_data, role_labels=role_labels)), encoding="utf-8")
+        print(f"OK: wrote {calibration_path}")
+    except Exception as exc:  # a diagnostic must never fail the run
+        print(f"WARNING: calibration report skipped: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":
