@@ -17,10 +17,11 @@ from sleeper_tool.contender_insurance import (
     identify_fragile_starters,
     merge_insurance_into_waiver_targets,
 )
-from sleeper_tool.decision_delta import DecisionDelta, build_snapshot, compute_delta, load_latest_snapshot
+from sleeper_tool.decision_delta import DecisionDelta, build_snapshot, compute_delta, load_latest_snapshot, load_snapshots
 from sleeper_tool.league_economy import LeagueEconomy, build_league_economy
 from sleeper_tool.lineup_leverage import LineupLeverage, build_lineup_leverage
 from sleeper_tool.lineup_optimizer import LineupResult, UnsupportedSlotError, optimize_lineup
+from sleeper_tool.market_velocity import Velocity, annotate_league, build_velocities
 from sleeper_tool.move_impact import (
     PREVIEWED_WAIVER_TIERS,
     MoveImpact,
@@ -120,6 +121,7 @@ class LeagueReportData:
     source_views: dict[str, SourceView] = field(default_factory=dict)  # by player_id: my roster, trade pieces, waiver targets
     trade_economics: list[TradeEconomics | None] = field(default_factory=list)  # parallel to proposals: asset vs roster economics, kept separate
     streamers: list[StreamPlan] = field(default_factory=list)  # QB/TE/K/DEF plans over the next few weeks; empty pre-draft
+    velocity: dict[str, Velocity] = field(default_factory=dict)  # by player_id, actionable players only (trade pieces, waiver targets, drops)
     error: str | None = None
 
 
@@ -676,6 +678,15 @@ def build_weekly_report_data(
         (ld.league.name, ld.roster, ld.lineup) for ld in league_data if ld.drafted and ld.roster is not None
     )
     _annotate_recommendations_with_exposure(league_data, portfolio)
+    # Market velocity reads the snapshot history (today's own file is
+    # replaced by this run's values, so a same-day re-run counts once).
+    today = now.date().isoformat()
+    history = load_snapshots(before_date=today)
+    for ld in league_data:
+        if ld.error or not ld.drafted or ld.roster is None:
+            continue
+        ld.velocity = build_velocities(history, ld, current_week=current_week, today=today)
+        annotate_league(ld, ld.velocity)
 
     report = WeeklyReportData(
         generated_at=now,

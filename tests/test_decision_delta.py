@@ -1,7 +1,7 @@
 import datetime as dt
 import json
 
-from sleeper_tool.decision_delta import (
+from sleeper_tool.decision_delta import SNAPSHOTS_KEPT, (
     RECOMMENDATION,
     ROSTER,
     STATUS,
@@ -65,12 +65,12 @@ def test_a_league_missing_from_the_previous_run_is_not_diffed():
     assert compute_delta(previous, current).items == []
 
 
-def test_snapshots_persist_and_only_the_latest_two_are_kept(tmp_path):
-    for day in (1, 2, 3):
-        save_snapshot(_snap(generated=f"2026-09-0{day}T12:00:00+00:00"), tmp_path)
+def test_snapshots_persist_and_only_the_newest_snapshots_kept_days_survive(tmp_path):
+    for day in range(1, SNAPSHOTS_KEPT + 2):
+        save_snapshot(_snap(generated=f"2026-08-{day:02d}T12:00:00+00:00"), tmp_path)
     kept = sorted(p.name for p in tmp_path.glob("*.json"))
-    assert kept == ["20260902.json", "20260903.json"]
-    assert load_latest_snapshot(tmp_path)["generated_at"] == "2026-09-03T12:00:00+00:00"
+    assert len(kept) == SNAPSHOTS_KEPT and kept[0] == "20260802.json"
+    assert load_latest_snapshot(tmp_path)["generated_at"] == f"2026-08-{SNAPSHOTS_KEPT + 1:02d}T12:00:00+00:00"
 
 
 def test_same_day_rerun_overwrites_and_still_diffs_against_the_previous_day(tmp_path):

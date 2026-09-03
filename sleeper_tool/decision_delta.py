@@ -14,7 +14,8 @@ the overview with only the meaningful movement:
     different things at rank 50 and rank 300)
   - a player joined or left one of my rosters
 
-Only the latest SNAPSHOTS_KEPT snapshots are retained. A partial run
+Only the latest SNAPSHOTS_KEPT daily snapshots are retained — enough
+history for market_velocity to read a direction of travel. A partial run
 (a league failed to sync, or errored while building) never writes one,
 so the baseline is always a run that was itself complete — otherwise the
 next delta would report "N players joined your roster" for a league that
@@ -34,7 +35,7 @@ from sleeper_tool.valuation import weekly_projection
 logger = logging.getLogger(__name__)
 
 VALUATION_DELTA_RATIO = 0.15
-SNAPSHOTS_KEPT = 2
+SNAPSHOTS_KEPT = 28
 # Bump when the snapshot's meaning changes (e.g. what "value" is); an
 # older-schema baseline is ignored rather than diffed into nonsense.
 SNAPSHOT_SCHEMA = 2
@@ -102,6 +103,10 @@ def build_snapshot(report) -> dict[str, Any]:
                 e.player_id: {"name": e.name, "value": _stable_value(e.value, ld.currency, report.current_week)}
                 for e in ld.roster.entries
             },
+            # Additive (schema unchanged): the non-rostered players a
+            # recommendation touched, so market_velocity can track a
+            # trade target or waiver add across days too.
+            "tracked": _tracked_values(ld, report.current_week),
         }
     return {
         "schema": SNAPSHOT_SCHEMA,
@@ -110,6 +115,19 @@ def build_snapshot(report) -> dict[str, Any]:
         "leagues": leagues,
         "best_moves": [a.headline for a in report.priority_actions],
     }
+
+
+def _tracked_values(ld, current_week: int | None) -> dict[str, dict[str, Any]]:
+    rostered = {e.player_id for e in ld.roster.entries}
+    tracked: dict[str, dict[str, Any]] = {}
+    for p in ld.proposals:
+        for e in p.receive:
+            if e.player_id not in rostered:
+                tracked[e.player_id] = {"name": e.name, "value": _stable_value(e.value, ld.currency, current_week)}
+    for t in ld.waiver_targets:
+        if t.player_id not in rostered and t.value is not None:
+            tracked[t.player_id] = {"name": t.name, "value": _stable_value(t.value, ld.currency, current_week)}
+    return tracked
 
 
 def is_complete_run(report, sync_failures: int = 0) -> bool:
@@ -155,6 +173,27 @@ def load_latest_snapshot(snapshot_dir: Path = DEFAULT_SNAPSHOT_DIR, *, before_da
             return None
         return snapshot
     return None
+
+
+def load_snapshots(snapshot_dir: Path = DEFAULT_SNAPSHOT_DIR, *, before_date: str | None = None) -> list[dict[str, Any]]:
+    """Every readable current-schema snapshot, oldest first, optionally
+    skipping `before_date`'s own file (a same-day re-run supplies today's
+    values itself). Unreadable or old-schema files are skipped, not fatal."""
+    if not snapshot_dir.exists():
+        return []
+    out: list[dict[str, Any]] = []
+    for path in sorted(snapshot_dir.glob("*.json")):
+        if before_date is not None and path.stem == before_date.replace("-", ""):
+            continue
+        try:
+            snapshot = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning("Ignoring unreadable snapshot %s: %s", path, exc)
+            continue
+        if snapshot.get("schema") != SNAPSHOT_SCHEMA:
+            continue
+        out.append(snapshot)
+    return out
 
 
 def _relative_move(old: float | None, new: float | None) -> float | None:
