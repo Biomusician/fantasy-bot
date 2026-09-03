@@ -21,6 +21,7 @@ from sleeper_tool.replacement_value import SCARCE, VERY_SCARCE, ReplacementMarke
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
 from sleeper_tool.roster_clog import RosterClog
+from sleeper_tool.streamer_planner import ADD, HOLD, SEQUENCE, StreamPlan
 from sleeper_tool.trade_engine import DropCandidate, TradeProposal, _player_confidence, percentile_for_currency, value_label_for_currency
 from sleeper_tool.trade_opportunity_cost import (
     COSTS_LINEUP,
@@ -350,6 +351,37 @@ def _waiver_table(targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | 
     )
 
 
+_STREAM_CHIP_KIND = {HOLD: "neutral", ADD: "positive", SEQUENCE: "accent"}
+
+
+def _streamers_block(plans: list[StreamPlan]) -> str:
+    if not plans:
+        return ""
+    items = []
+    for plan in plans:
+        detail = ""
+        if plan.recommendation != HOLD:
+            if plan.recommendation == SEQUENCE:
+                rows = [
+                    f"{esc(plan.sequence.first.entry.name)}: {esc(plan.sequence.first.week_text())}",
+                    f"{esc(plan.sequence.second.entry.name)}: {esc(plan.sequence.second.week_text())}",
+                ]
+            else:
+                rows = [f"{esc(plan.single.entry.name)}: {esc(plan.single.week_text())}"]
+            if plan.current is not None:
+                rows.append(f"{esc(plan.current.entry.name)} (current): {esc(plan.current.week_text())}")
+            detail = '<div class="drop-reasons">' + "<br>".join(rows) + "</div>"
+        items.append(
+            f'<li class="alert-item">{_chip(plan.recommendation, _STREAM_CHIP_KIND.get(plan.recommendation, "neutral"))} '
+            f"{esc(plan.describe())}{detail}</li>"
+        )
+    return (
+        '<div class="streamers"><span class="rationale-label">Streaming plan &middot; projected points over the window; '
+        'byes from the NFL schedule, no opponent adjustment</span>'
+        f'<ul class="alert-list">{"".join(items)}</ul></div>'
+    )
+
+
 _DROP_PRIORITY_KIND = {"Strong Drop": "caution", "Consider Dropping": "neutral"}
 
 
@@ -558,6 +590,7 @@ def _league_panel(data: LeagueReportData) -> str:
         <section class="panel-block">
           <h3>Waiver targets</h3>
           {waivers_html}
+          {_streamers_block(data.streamers)}
         </section>
         {_drop_candidates_section(data.drop_candidates)}
         """
@@ -950,6 +983,7 @@ tbody tr:last-child td { border-bottom: none; }
 .trade-rationale { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 6px; }
 .trade-rationale ul, .caveats ul { margin: 4px 0 0; padding-left: 18px; font-size: 13px; color: var(--ink-muted); }
 .rationale-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-faint); }
+.streamers { margin-top: 14px; }
 .context-details { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 12px; }
 .context-details > summary { cursor: pointer; font-family: var(--font-display); font-size: 18px; font-weight: 700; color: var(--ink-muted); list-style: none; padding: 6px 0 14px; }
 .context-details > summary::before { content: "\\25B8"; display: inline-block; margin-right: 8px; color: var(--accent); transition: transform 0.15s; }

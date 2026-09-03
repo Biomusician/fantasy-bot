@@ -30,6 +30,7 @@ from sleeper_tool.move_impact import (
     snapshot_roster,
 )
 from sleeper_tool.negotiation_ladder import NegotiationLadder, build_ladders
+from sleeper_tool.nfl_schedule import Schedule, load_schedule
 from sleeper_tool.pick_opportunity import SPENDABLE, STRATEGIC, PickOpportunity, assess_picks
 from sleeper_tool.playoff_leverage import PlayoffLeverage, classify_playoff_leverage
 from sleeper_tool.portfolio_exposure import PortfolioExposure, acquisition_exposure_note, build_portfolio_exposure
@@ -57,6 +58,7 @@ from sleeper_tool.source_disagreement import (
     source_view,
 )
 from sleeper_tool.storage import Storage
+from sleeper_tool.streamer_planner import StreamPlan, plan_streams
 from sleeper_tool.team_status import CONTENDER, TeamStatusResult, classify_team_status, get_valued_picks_by_roster
 from sleeper_tool.trade_engine import DropCandidate, TradeProposal, generate_trade_proposals, identify_drop_candidates, value_currency
 from sleeper_tool.trade_opportunity_cost import MAJOR_LINEUP_COST, TradeEconomics, analyze_trade
@@ -117,6 +119,7 @@ class LeagueReportData:
     replacement_clauses: dict[str, str] = field(default_factory=dict)  # my player_id -> one-line replacement context, for renderers to attach wherever he's named
     source_views: dict[str, SourceView] = field(default_factory=dict)  # by player_id: my roster, trade pieces, waiver targets
     trade_economics: list[TradeEconomics | None] = field(default_factory=list)  # parallel to proposals: asset vs roster economics, kept separate
+    streamers: list[StreamPlan] = field(default_factory=list)  # QB/TE/K/DEF plans over the next few weeks; empty pre-draft
     error: str | None = None
 
 
@@ -281,7 +284,8 @@ def _entry_from_target(t: WaiverTarget, all_players: dict) -> RosterEntry:
 
 
 def build_league_report_data(
-    storage: Storage, engine: ValuationEngine, league: LeagueInfo, current_week: int | None
+    storage: Storage, engine: ValuationEngine, league: LeagueInfo, current_week: int | None,
+    schedule: Schedule | None = None,
 ) -> LeagueReportData:
     rosters = build_all_valued_rosters(storage, engine, league)
     my_roster = next((r for r in rosters.values() if r.owner_id == MY_USER_ID), None)
@@ -441,6 +445,7 @@ def build_league_report_data(
             label = f"Add {t.name}" + (f", drop {t.drop_candidate.name}" if t.drop_candidate else "")
             waiver_impacts[t.player_id] = preview_add_drop(label, add_entry, drop_id, my_roster, before, ctx)
     trade_economics = [analyze_trade(p, impact, replacement) for p, impact in zip(proposals, trade_impacts)]
+    streamers = plan_streams(my_roster, free_agents, schedule=schedule, current_week=current_week, lineup=lineup)
 
     return LeagueReportData(
         league=league,
@@ -469,6 +474,7 @@ def build_league_report_data(
         replacement_clauses=replacement_clauses,
         source_views=source_views,
         trade_economics=trade_economics,
+        streamers=streamers,
     )
 
 
@@ -624,7 +630,8 @@ def _annotate_proposals_with_bench_surplus(proposals: list[TradeProposal], lever
 
 
 def _safe_build_league_report_data(
-    storage: Storage, engine: ValuationEngine, league: LeagueInfo, current_week: int | None
+    storage: Storage, engine: ValuationEngine, league: LeagueInfo, current_week: int | None,
+    schedule: Schedule | None = None,
 ) -> LeagueReportData:
     """One league's bad data (a malformed Sleeper payload, an unexpected
     None somewhere in the valuation chain) must not blank the whole daily
@@ -634,20 +641,37 @@ def _safe_build_league_report_data(
     same degraded-but-visible path already used for "my roster not found".
     """
     try:
-        return build_league_report_data(storage, engine, league, current_week)
+        return build_league_report_data(storage, engine, league, current_week, schedule)
     except Exception as exc:
         logger.exception("Report generation failed for %s", league.name)
         return LeagueReportData(league=league, error=f"Report generation failed: {exc}")
 
 
+def _season_of(storage: Storage, leagues: list[LeagueInfo]) -> int | None:
+    for league in leagues:
+        season = (storage.get_league(league.league_id) or {}).get("season")
+        if season:
+            try:
+                return int(season)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
 def build_weekly_report_data(
-    storage: Storage, engine: ValuationEngine, leagues: list[LeagueInfo] = LEAGUES
+    storage: Storage, engine: ValuationEngine, leagues: list[LeagueInfo] = LEAGUES, *, with_nfl_schedule: bool = True
 ) -> WeeklyReportData:
     now = dt.datetime.now(dt.timezone.utc)
     current_week_raw = storage.get_meta("current_week")
     current_week = int(current_week_raw) if current_week_raw else None
 
-    league_data = [_safe_build_league_report_data(storage, engine, league, current_week) for league in leagues]
+    # One NFL schedule per run (cached daily), shared by every league.
+    schedule: Schedule | None = None
+    season = _season_of(storage, leagues) if with_nfl_schedule else None
+    if season is not None:
+        schedule = load_schedule(season)
+
+    league_data = [_safe_build_league_report_data(storage, engine, league, current_week, schedule) for league in leagues]
     portfolio = build_portfolio_exposure(
         (ld.league.name, ld.roster, ld.lineup) for ld in league_data if ld.drafted and ld.roster is not None
     )

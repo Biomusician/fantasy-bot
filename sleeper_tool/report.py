@@ -16,6 +16,7 @@ from sleeper_tool.replacement_value import ReplacementMarket
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
 from sleeper_tool.roster_analysis import ValuedRoster
 from sleeper_tool.storage import Storage
+from sleeper_tool.streamer_planner import HOLD, SEQUENCE, StreamPlan
 from sleeper_tool.trade_engine import DropCandidate, TradeProposal, percentile_for_currency, value_label_for_currency
 from sleeper_tool.trade_opportunity_cost import TradeEconomics
 from sleeper_tool.valuation import ValuationEngine
@@ -230,6 +231,23 @@ def _render_waiver_targets(targets: list[WaiverTarget], impacts: dict[str, MoveI
     return lines
 
 
+def _render_streamers(plans: list[StreamPlan]) -> list[str]:
+    lines = ["**Streaming plan** (projected points over the window; byes from the NFL schedule, no opponent adjustment):", ""]
+    for plan in plans:
+        text = plan.describe()
+        lines.append(f"- {text}" if plan.recommendation == HOLD else f"- **{text}**")
+        if plan.recommendation != HOLD:
+            if plan.recommendation == SEQUENCE:
+                lines.append(f"  - {plan.sequence.first.entry.name}: {plan.sequence.first.week_text()}")
+                lines.append(f"  - {plan.sequence.second.entry.name}: {plan.sequence.second.week_text()}")
+            else:
+                lines.append(f"  - {plan.single.entry.name}: {plan.single.week_text()}")
+            if plan.current is not None:
+                lines.append(f"  - {plan.current.entry.name} (current): {plan.current.week_text()}")
+    lines.append("")
+    return lines
+
+
 _SEVERITY_MARK = {"high": "🔴", "medium": "🟠", "low": "⚪"}
 
 
@@ -351,6 +369,8 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     waiver_lines = (
         [f"_{data.waivers_note}_", ""] if data.waivers_note else _render_waiver_targets(data.waiver_targets, data.waiver_impacts) + [""]
     )
+    if data.streamers:
+        waiver_lines.extend(_render_streamers(data.streamers))
     sections.append(("### Waiver targets", waiver_lines))
 
     if data.drop_candidates:
