@@ -8,10 +8,9 @@ Regenerate this file with `/handoff`.
 
 ## Status
 
-**Local `main` is 17 commits ahead of `origin/main` and has NOT been pushed** — the
-overnight feature run (2026-09-01/02) was deliberately kept local so Jonathan can QC
-eleven features' worth of dashboard output before the 9am ET automated run publishes
-them. Pushing is his call. Everything is committed; the tree is clean.
+In sync with `origin/main` — the overnight feature run (2026-09-01/02, 17 commits) was
+QC'd locally and pushed on 2026-09-02, so the next 9am ET automated run publishes it.
+Everything is committed; the tree is clean.
 
 A post-run QC pass (Jonathan's eight-point list: move-impact deltas, SF/multi-flex
 lineups, clogs, insurance, ladders, weak-aging, delta sparsity, dashboard hierarchy)
@@ -81,7 +80,7 @@ two kept, only after a fully complete run).
 
 ## In flight
 
-Nothing half-implemented. The only open decision is whether to push (above).
+Nothing half-implemented, nothing unpushed.
 
 ## Known problems
 
@@ -123,8 +122,8 @@ Nothing half-implemented. The only open decision is whether to push (above).
 
 ## Next actions
 
-1. **Jonathan QCs the dashboard, then pushes** (`git push origin main`). Until then the
-   9am automated run keeps publishing the pre-run version.
+1. **Check the first post-push daily run's "Since last run" section.** A good delta is
+   sparse; if it suddenly lists dozens of changes, treat that as a warning, not news.
 2. **`WaiverTarget.notes`** — replace the reason-string appends with a list (see Known
    problems). Small, and it stops the "Why" column becoming an order-dependent run-on.
 3. **Render a this-week lineup** somewhere (the optimizer already supports it) so
