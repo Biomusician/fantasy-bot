@@ -8,10 +8,10 @@ Regenerate this file with `/handoff`.
 
 ## Status
 
-**Local commits ahead of `origin/main`, not pushed.** The second decision-layer tranche
-(12 capabilities, one commit each plus integration, fix-up and docs commits) landed on
-2026-09-02/03 on top of `76e64ff`. Pushing was not authorized by the tranche prompt; the
-9am ET automated run still publishes the previous version until someone pushes.
+**In sync with `origin/main`.** The second decision-layer tranche (12 capabilities, one
+commit each plus integration, fix-up, review-fix and docs commits, 18 in all) landed on
+2026-09-02/03 on top of `76e64ff` and was pushed on 2026-09-03 at Jonathan's request, so
+the next 9am ET automated run publishes it.
 
 What landed, in order (each its own module in `sleeper_tool/`, tests alongside):
 `replacement_value`, `source_disagreement`, `trade_opportunity_cost`, `nfl_schedule` +
@@ -80,7 +80,7 @@ complete run) — market velocity needs three of them before it says anything.
 
 ## In flight
 
-Nothing half-implemented. Unpushed local commits (see Status).
+Nothing half-implemented, nothing unpushed.
 
 ## Known problems
 
@@ -113,8 +113,8 @@ Nothing half-implemented. Unpushed local commits (see Status).
 
 ## Next actions
 
-1. **Decide on the push.** The tranche is local only. Regenerate, skim the dashboard, and
-   push when satisfied — pushing changes what the 9am run publishes.
+1. **Check the first post-push daily run**: the "Since last run" section should be sparse,
+   the new sections should render for every drafted league, and no league should error.
 2. **Watch the first three daily snapshots**: market velocity turns on at the third, and
    "Since last run" should stay sparse.
 3. **Public `rate_package` / fit helpers in `trade_engine`** to stop three modules importing
