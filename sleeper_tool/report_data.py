@@ -9,6 +9,7 @@ import datetime as dt
 import logging
 from dataclasses import dataclass, field
 
+from sleeper_tool.action_priority import ALERT, DEFENSIVE_ADD, DROP, KIND_ORDER, STASH, STREAMER, PriorityKey, classify
 from sleeper_tool.asset_value import percentile_for_currency, value_currency
 from sleeper_tool.buyer_board import BuyerBoard, annotate_sell_high_proposals, build_buyer_boards, sell_high_candidates
 from sleeper_tool.bye_collision import ByeCollision, describe_bye_collision, plan_bye_collisions, positions_covering
@@ -50,6 +51,7 @@ from sleeper_tool.portfolio_exposure import PortfolioExposure, acquisition_expos
 from sleeper_tool.rankings.cache import load_snapshot
 from sleeper_tool.rankings.ff_dynasty_pass import ff_dynasty_status
 from sleeper_tool.recommendation_conflicts import CONFLICTED, TRADE, WAIVER, Conflict, conflict_for, detect_conflicts
+from sleeper_tool.recommendation_provenance import Provenance, build_provenance
 from sleeper_tool.replacement_value import (
     ABUNDANT,
     OVERSTATED_MAX_OVER_WAIVER,
@@ -75,9 +77,10 @@ from sleeper_tool.source_disagreement import (
     lookup,
     source_view,
 )
-from sleeper_tool.signal_health import SignalHealthReport, build_health, freshness_lines, suppressed_features
+from sleeper_tool.signal_health import FRESH, USABLE, SignalHealthReport, build_health, freshness_lines, suppressed_features
 from sleeper_tool.stash_board import StashCandidate, build_stash_board
 from sleeper_tool.storage import Storage
+from sleeper_tool.streamer_planner import ADD as STREAM_ADD
 from sleeper_tool.streamer_planner import StreamPlan, plan_streams
 from sleeper_tool.team_status import CONTENDER, TeamStatusResult, classify_team_status, get_valued_picks_by_roster
 from sleeper_tool.trade_engine import generate_trade_proposals, identify_drop_candidates
@@ -158,6 +161,8 @@ class LeagueReportData:
     faab: dict[str, FaabAdvice] = field(default_factory=dict)  # by waiver target player_id; empty pre-draft and in non-FAAB leagues
     faab_note: str | None = None  # why there is no FAAB advice, when there isn't any
     faab_context: FaabContext | None = None
+    provenance: dict[tuple[str, str], Provenance] = field(default_factory=dict)  # by (kind, key): the For/Against/Context evidence per recommendation
+    priorities: dict[tuple[str, str], PriorityKey] = field(default_factory=dict)  # by (kind, key): the six-dimension priority key
     error: str | None = None
 
 
@@ -169,10 +174,15 @@ class PriorityAction:
     across leagues at all.
     """
     league_name: str
-    kind: str  # "alert" | "trade" | "waiver"
+    kind: str  # "alert" | "trade" | "waiver" | "roster" | "defensive_add" | "streamer"
     headline: str
     detail: str
-    rank: int = 0  # lower = more important WITHIN this kind — quality tiebreak, not shown to the user
+    rank: int = 0  # lower = more important WITHIN this kind — quality tiebreak after the priority key, not shown to the user
+    key: str = ""  # the shared identity: proposal index as text, player_id, position, player name
+    priority: PriorityKey | None = None  # action_priority's six categorical dimensions
+    why_now: list[str] = field(default_factory=list)  # provenance reasons FOR (at most MAX_FOR)
+    against: list[str] = field(default_factory=list)  # provenance reasons AGAINST (at most MAX_AGAINST)
+    context: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -200,38 +210,32 @@ class WeeklyReportData:
     outcome_facts: list[OutcomeFact] = field(default_factory=list)
 
 
-_ACTION_KIND_ORDER = {"alert": 0, "trade": 1, "waiver": 2, "roster": 3}
-
-
 _CONFIDENCE_RANK = {"High": 0, "Medium": 1, "Low": 2}
 
-
-# A week with several Good/High-confidence trades can otherwise fill every
-# slot with trades alone, leaving a Must-Add waiver or a Strong-Drop
-# invisible even though it exists in every league that week -- reserve a
-# minimum floor per kind so those still surface. Trades and alerts need no
-# floor: alerts are already sorted first, and trades routinely fill the
-# rest of the budget on their own.
-_KIND_FLOOR = {"waiver": 2, "roster": 2}
-DEADLINE_WINDOW_RANK_BOOST = 100  # sorts a deadline-window team's trades ahead of every other trade action
+# Renderer kind for each action_priority kind (drops render as "roster").
+_RENDER_KIND = {DROP: "roster"}
 
 
-def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int = 8) -> list[PriorityAction]:
-    """Rank the user's highest-value actions across ALL leagues and
-    transaction types: high-severity injury/bye alerts first (they're
-    time-boxed to this week's lineup lock), then trades with a Good/High
-    acceptance rating AND at least Medium valuation confidence (a
-    favorable-looking trade built on shaky data isn't a top action), then
-    Must-Add waivers, then Strong-Drop roster cleanup. Within each kind,
-    ranked by actual quality (trade acceptance tier then confidence;
-    waiver percentile) rather than league-iteration order — otherwise
-    truncating to max_actions could silently drop an objectively better
-    action from a later-processed league in favor of a weaker one from an
-    earlier league. A minimum number of waiver and roster-cleanup slots are
-    reserved (_KIND_FLOOR) so a week with many good trades can't crowd every
-    other kind out of the list entirely. An empty result is a legitimate
-    "nothing urgent right now" — this never manufactures activity to avoid
-    an empty list, since a synthetic action would be actively misleading.
+def build_priority_actions(
+    leagues: list[LeagueReportData], report: WeeklyReportData | None = None, *, max_actions: int = 8
+) -> list[PriorityAction]:
+    """The cross-league "best moves right now" list. Candidates are the
+    recommendations worth a top slot: high-severity alerts, trades with a
+    Good/High acceptance rating AND at least Medium valuation confidence,
+    Must-Add and Insurance waiver rows, this week's defensive add, streamer
+    switches, Strong-Drop cleanup. Their ORDER is action_priority's six
+    categorical dimensions compared lexicographically (Urgency,
+    Materiality, Perishability, Strategic fit, Evidence agreement, Cost) —
+    a Must Add is Immediate and so outranks any trade; a Strong Drop is
+    cheaper to reverse than any trade and so outranks an otherwise-equal
+    one — then kind order, then the kind's own quality rank (acceptance
+    tier and confidence for trades, percentile for waivers, reason count
+    for drops), then league name and headline, so the list is stable run
+    to run. No per-kind floors and no numeric boosts: the dimensions ARE
+    the arbitration, and `PriorityAction.priority` says which ones decided.
+    Every action carries its provenance card's For/Against reasons as
+    `why_now` / `against`. An empty result is a legitimate "nothing urgent
+    right now" — nothing is manufactured to fill the list.
     """
     actions: list[PriorityAction] = []
     for ld in leagues:
@@ -239,65 +243,93 @@ def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int 
             continue
         for note in ld.time_sensitive:
             if note.severity == "high":
-                actions.append(PriorityAction(
-                    league_name=ld.league.name, kind="alert",
+                actions.append(_priority_action(
+                    ld, report, ALERT, note.player_name,
                     headline=f"{note.player_name} — {note.note}",
                     detail=f"{ld.league.name} — check before this week's lineup locks.",
                 ))
         # A Bubble / Long Shot team inside its trade deadline window: the
-        # trades already generated for it are the time-boxed ones — they
-        # lead the trade list and say why. Nothing new is generated.
+        # trades already generated for it are the time-boxed ones — the
+        # priority key's Urgency dimension puts them ahead, and the detail
+        # says why. Nothing new is generated.
         deadline_urgent = ld.playoff is not None and ld.playoff.urgent
         for i, p in enumerate(ld.proposals):
             if p.acceptance_rating in ("High", "Good") and p.confidence in ("High", "Medium"):
                 tier_rank = 0 if p.acceptance_rating == "High" else 1
                 detail = f"{ld.league.name} — {p.acceptance_rating.lower()} acceptance likelihood, {p.trade_type.replace('_', ' ')}."
-                rank = tier_rank * 10 + _CONFIDENCE_RANK.get(p.confidence, 2)
                 if deadline_urgent:
                     detail = f"Deadline Window ({ld.playoff.label}, deadline week {ld.playoff.trade_deadline_week}) — {detail}"
-                    rank -= DEADLINE_WINDOW_RANK_BOOST
                 detail += _economics_note(ld.trade_economics[i] if i < len(ld.trade_economics) else None)
                 detail += _source_note_for(ld.source_views, [*p.give, *p.receive])
                 detail = _conflict_prefix(conflict_for(ld.conflicts, TRADE, str(i))) + detail
-                actions.append(PriorityAction(league_name=ld.league.name, kind="trade", headline=p.summary_line(), detail=detail, rank=rank))
+                actions.append(_priority_action(
+                    ld, report, TRADE, str(i), headline=p.summary_line(), detail=detail,
+                    rank=tier_rank * 10 + _CONFIDENCE_RANK.get(p.confidence, 2),
+                ))
         for t in ld.waiver_targets:
-            if t.priority_tier == "Must Add":
+            if t.priority_tier in (MUST_ADD, INSURANCE):
                 drop_note = f", drop {t.drop_candidate.name}" if t.drop_candidate else ""
                 pctl = (t.value.dynasty_value_percentile or t.value.redraft_ecr_percentile) if t.value else None
                 impact = ld.waiver_impacts.get(t.player_id)
                 impact_note = f" Impact: {'; '.join(impact.material_deltas())}." if impact is not None and impact.material_deltas() else ""
-                actions.append(PriorityAction(
-                    league_name=ld.league.name, kind="waiver",
+                advice = ld.faab.get(t.player_id)
+                faab_note = f" FAAB: ${advice.suggested_dollars} ({advice.posture})." if advice is not None else ""
+                actions.append(_priority_action(
+                    ld, report, WAIVER, t.player_id,
                     headline=f"Add {t.name}{drop_note}",
                     detail=_conflict_prefix(conflict_for(ld.conflicts, WAIVER, t.player_id))
-                    + f"{ld.league.name} — {t.reason}" + impact_note + _source_note_for(ld.source_views, [t]),
+                    + f"{ld.league.name} — {t.reason}" + impact_note + faab_note + _source_note_for(ld.source_views, [t]),
                     rank=-(pctl or 0),  # higher percentile ranks first (more negative sorts earlier)
+                ))
+        if ld.defensive_add is not None:
+            actions.append(_priority_action(
+                ld, report, DEFENSIVE_ADD, ld.defensive_add.target.player_id,
+                headline=f"Defensive add: {ld.defensive_add.target.name}",
+                detail=f"{ld.league.name} — {ld.defensive_add.describe()}",
+            ))
+        for plan in ld.streamers:
+            if plan.recommendation == STREAM_ADD:
+                actions.append(_priority_action(
+                    ld, report, STREAMER, plan.position,
+                    headline=f"Stream {plan.position}: {plan.describe()}",
+                    detail=f"{ld.league.name} — streamer switch for the next {len(plan.weeks)} week(s).",
                 ))
         for d in ld.drop_candidates:
             if d.priority == "Strong Drop":
-                actions.append(PriorityAction(
-                    league_name=ld.league.name, kind="roster",
+                actions.append(_priority_action(
+                    ld, report, DROP, d.entry.player_id,
                     headline=f"{d.priority}: {d.entry.name}",
                     detail=f"{ld.league.name} — {'; '.join(d.reasons)}",
                     rank=-len(d.reasons),  # more independent reasons = a more clear-cut cut, sorts first
                 ))
-    actions.sort(key=lambda a: (_ACTION_KIND_ORDER.get(a.kind, 9), a.rank))
+    actions.sort(key=_action_order)
+    return actions[:max_actions]
 
-    by_kind: dict[str, list[PriorityAction]] = {}
-    for a in actions:
-        by_kind.setdefault(a.kind, []).append(a)
-    selected: list[PriorityAction] = []
-    for kind, floor in _KIND_FLOOR.items():
-        selected.extend(by_kind.get(kind, [])[:floor])
-    selected_ids = {id(a) for a in selected}
-    for a in actions:
-        if len(selected) >= max_actions:
-            break
-        if id(a) not in selected_ids:
-            selected.append(a)
-            selected_ids.add(id(a))
-    selected.sort(key=lambda a: (_ACTION_KIND_ORDER.get(a.kind, 9), a.rank))
-    return selected[:max_actions]
+
+def _priority_action(
+    ld: LeagueReportData, report: WeeklyReportData | None, kind: str, key: str, *, headline: str, detail: str, rank: int = 0
+) -> PriorityAction:
+    """One candidate with its priority key and provenance attached. The key
+    is classified here (cheap, and pure over the report objects) so a
+    league built without the cross-league pass — a test, a partial run —
+    still gets ordered on the same dimensions."""
+    prov = ld.provenance.get((kind, key))
+    priority = ld.priorities.get((kind, key)) or classify(kind, ld, report, provenance=prov, key=key)
+    return PriorityAction(
+        league_name=ld.league.name, kind=_RENDER_KIND.get(kind, kind), headline=headline, detail=detail, rank=rank,
+        key=key, priority=priority,
+        why_now=[r.text for r in prov.reasons_for] if prov is not None else [],
+        against=[r.text for r in prov.reasons_against] if prov is not None else [],
+        context=[r.text for r in prov.context] if prov is not None else [],
+    )
+
+
+def _action_order(a: PriorityAction) -> tuple:
+    kind = next((k for k, v in _RENDER_KIND.items() if v == a.kind), a.kind)
+    return (
+        *(a.priority.sort_key() if a.priority is not None else (9, 9, 9, 9, 9, 9)),
+        KIND_ORDER.get(kind, len(KIND_ORDER)), a.rank, a.league_name, a.headline,
+    )
 
 
 def _conflict_prefix(conflict: Conflict | None) -> str:
@@ -984,7 +1016,6 @@ def build_weekly_report_data(
         source_freshness=engine.source_freshness(),
         ff_status=ff_dynasty_status(),
         leagues=league_data,
-        priority_actions=build_priority_actions(league_data),
         portfolio=portfolio,
         health=health,
         suppressed=suppressed,
@@ -993,6 +1024,21 @@ def build_weekly_report_data(
         usage_note=usage_note if not any(s.family == "nflverse_usage" and s.expected_absent for s in health.signals) else None,
         crosswalk_note=crosswalk_note,
     )
+    # Provenance reads every annotation above (conflicts and exposure
+    # included) and the priority key reads provenance; both need the
+    # report for the current week and the portfolio.
+    stale_sources = _freshness_by_source(health)
+    for ld in league_data:
+        if ld.error or not ld.drafted:
+            continue
+        try:
+            ld.provenance = build_provenance(ld, report, schedule=schedule, freshness_by_source=stale_sources)
+            ld.priorities = {
+                (kind, key): classify(kind, ld, report, provenance=prov, key=key) for (kind, key), prov in ld.provenance.items()
+            }
+        except Exception:
+            logger.exception("Provenance skipped for %s", ld.league.name)
+    report.priority_actions = build_priority_actions(league_data, report)
     report.snapshot = build_snapshot(report)
     # Skip today's own snapshot so a same-day re-run still diffs against
     # the previous day (daily_run overwrites today's file, keeping runs
@@ -1001,6 +1047,36 @@ def build_weekly_report_data(
     _attach_watchlist(report, now)
     _attach_ledger(report, storage, now)
     return report
+
+
+# Which decision modules a data family feeds, so a provenance reason can
+# carry the label of the source it rests on when that source is not fresh.
+_FAMILY_SOURCES = {
+    "ktc": ("market_velocity", "asset_value", "source_disagreement", "buyer_board"),
+    "fantasypros": ("source_disagreement", "valuation"),
+    "rotoballer": ("replacement_value", "move_impact", "lineup_leverage", "streamer_planner", "matchup_leverage", "opponent_blocker"),
+    "nflverse_schedule": ("schedule_window",),
+    "nflverse_usage": ("role_trends",),
+    "sleeper_weekly": ("waiver_engine", "league_economy"),
+}
+
+
+def _freshness_by_source(health: SignalHealthReport) -> dict[str, str]:
+    """{module: label} for every module fed by a family that is not Fresh
+    or Usable this run — the provenance layer appends the label to the
+    reasons that rest on it. Fresh sources add nothing."""
+    out: dict[str, str] = {}
+    for family, modules in _FAMILY_SOURCES.items():
+        members = health.by_family(family)
+        if not members:
+            continue
+        worst = max(members, key=lambda s: ("Fresh", "Usable", "Partial", "Stale", "Unavailable").index(s.label) if s.label in ("Fresh", "Usable", "Partial", "Stale", "Unavailable") else 0)
+        if worst.label in (FRESH, USABLE) and not worst.fallback:
+            continue
+        label = worst.label if not worst.fallback else f"{worst.label}, served from cache after a failed re-fetch"
+        for module in modules:
+            out[module] = f"{worst.display_name} {label}"
+    return out
 
 
 def _load_usage_layer(

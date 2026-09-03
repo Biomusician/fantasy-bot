@@ -146,6 +146,7 @@ def test_best_moves_carry_the_conflict_label_without_dropping_the_move():
     ld = _ld([qb, _p("rb", "RB")], proposals=[p], waiver_targets=[t], trade_economics=[TradeEconomics(ROUGHLY_EVEN, MAJOR_LINEUP_COST, -9.0, False)])
     ld.conflicts = detect_conflicts(ld)
     actions = build_priority_actions([ld])
-    assert [a.kind for a in actions] == ["trade", "waiver"]
+    # A Must Add is Immediate; a trade is Monitor — the priority key, not the kind, orders them.
+    assert [a.kind for a in actions] == ["waiver", "trade"]
     assert all(a.detail.startswith(CONFLICTED + ": ") for a in actions)
-    assert "Major Lineup Cost (-9.0/wk)" in actions[0].detail and "developmental hold" in actions[1].detail
+    assert "Major Lineup Cost (-9.0/wk)" in actions[1].detail and "developmental hold" in actions[0].detail

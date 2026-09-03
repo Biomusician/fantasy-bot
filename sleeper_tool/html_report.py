@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from html import escape as esc
 
+from sleeper_tool.action_priority import priority_line
 from sleeper_tool.asset_value import percentile_for_currency, value_label_for_currency
 from sleeper_tool.decision_delta import DecisionDelta
 from sleeper_tool.decision_outcomes import OBSERVED
@@ -263,7 +264,7 @@ def _conflict_block(conflict: Conflict | None) -> str:
 
 def _trade_card(
     p: TradeProposal, index: int, impact: MoveImpact | None = None, ladder: NegotiationLadder | None = None,
-    economics: TradeEconomics | None = None, conflict: Conflict | None = None,
+    economics: TradeEconomics | None = None, conflict: Conflict | None = None, provenance=None,
 ) -> str:
     give_chips = "".join(
         [*(_asset_chip(e.name, is_pick=False) for e in p.give), *(_asset_chip(pk.name, is_pick=True) for pk in p.give_picks)]
@@ -309,7 +310,7 @@ def _trade_card(
         {_economics_chips(economics)}
       </div>
       {f'<p class="muted status-reason">{esc(economics.scarcity_note)}</p>' if economics is not None and economics.scarcity_note else ""}
-      {_conflict_block(conflict)}
+      {_conflict_block(conflict)}{_provenance_block(provenance)}
       <p class="trade-target">To <strong>{target}</strong> &middot; {esc(value_label)}: {p.my_value_total:.0f} vs {p.their_value_total:.0f}</p>
       {_impact_block(impact)}
       {message_block}
@@ -702,7 +703,7 @@ def _league_panel(data: LeagueReportData) -> str:
         <section class="panel-block">
           <h3>Trade offers</h3>
           <div class="trade-grid">
-            {"".join(_trade_card(p, i, data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None, data.ladders.get(i - 1), data.trade_economics[i - 1] if i - 1 < len(data.trade_economics) else None, conflict_for(data.conflicts, TRADE, str(i - 1))) for i, p in enumerate(data.proposals, start=1)) if data.proposals else '<p class="empty-note">No trade offers cleared the value-match bar this week.</p>'}
+            {"".join(_trade_card(p, i, data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None, data.ladders.get(i - 1), data.trade_economics[i - 1] if i - 1 < len(data.trade_economics) else None, conflict_for(data.conflicts, TRADE, str(i - 1)), data.provenance.get((TRADE, str(i - 1)))) for i, p in enumerate(data.proposals, start=1)) if data.proposals else '<p class="empty-note">No trade offers cleared the value-match bar this week.</p>'}
           </div>
           {_consolidation_block(data.consolidations)}
         </section>
@@ -783,22 +784,41 @@ _ACTION_KIND_META = {
     "trade": ("&#128260;", "accent"),
     "waiver": ("&#9989;", "positive"),
     "roster": ("&#9986;", "caution"),
+    "defensive_add": ("&#128737;", "caution"),
+    "streamer": ("&#127926;", "neutral"),
 }
+_ACTION_KIND_LABEL = {"defensive_add": "Block", "streamer": "Stream"}
 
 
 def _priority_action_row(a: PriorityAction) -> str:
     icon, kind = _ACTION_KIND_META.get(a.kind, ("", "neutral"))
     league_slug = _slug(a.league_name)
+    priority = f'<span class="action-priority muted">{esc(priority_line(a.priority))}</span>' if a.priority is not None else ""
+    why = f'<span class="action-why"><b>Why now:</b> {esc(" · ".join(a.why_now))}</span>' if a.why_now else ""
+    against = f'<span class="action-why"><b>Against:</b> {esc(" · ".join(a.against))}</span>' if a.against else ""
     return f"""
     <a class="action-row" href="#{league_slug}" data-target="{league_slug}">
       <span class="action-icon" aria-hidden="true">{icon}</span>
       <span class="action-body">
         <span class="action-headline">{esc(a.headline)}</span>
         <span class="action-detail muted">{esc(a.detail)}</span>
+        {priority}{why}{against}
       </span>
-      {_chip(a.kind.capitalize(), kind)}
+      {_chip(_ACTION_KIND_LABEL.get(a.kind, a.kind.capitalize()), kind)}
     </a>
     """
+
+
+def _provenance_block(prov) -> str:
+    """The For / Against / Context card; texts are the provenance layer's."""
+    if prov is None or not prov.all_reasons:
+        return ""
+    rows = []
+    for label, reasons in (("For", prov.reasons_for), ("Against", prov.reasons_against), ("Context", prov.context)):
+        if reasons:
+            items = "".join(f"<li>{esc(r.text)} <span class=muted>[{esc(r.category)}]</span></li>" for r in reasons)
+            rows.append(f'<div class="why-row"><b>{label}:</b><ul>{items}</ul></div>')
+    return f'<div class="why-now"><span class="rationale-label">Why now</span>{"".join(rows)}</div>'
 
 
 def _priority_actions_section(actions: list[PriorityAction]) -> str:
@@ -990,6 +1010,10 @@ def _nav_items(report: WeeklyReportData) -> str:
 
 
 CSS = """
+.why-now { margin: 8px 0; padding: 8px 10px; background: var(--neutral-bg); border-radius: 6px; font-size: 0.92em; }
+.why-now .why-row { margin: 2px 0; }
+.why-now ul { margin: 2px 0 2px 16px; padding: 0; }
+.action-priority, .action-why { display: block; font-size: 0.85em; margin-top: 2px; }
 :root {
   --ground: #13161A;
   --surface: #1B1F24;

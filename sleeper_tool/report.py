@@ -3,6 +3,7 @@ league, meant to be actually read, not a raw data dump.
 """
 from __future__ import annotations
 
+from sleeper_tool.action_priority import priority_line
 from sleeper_tool.asset_value import percentile_for_currency, value_label_for_currency
 from sleeper_tool.config import LEAGUES, LeagueInfo
 from sleeper_tool.decision_delta import DecisionDelta
@@ -35,10 +36,31 @@ def _render_priority_actions(actions: list[PriorityAction]) -> list[str]:
         lines.append("Nothing urgent across any league — hold.")
         lines.append("")
         return lines
-    kind_label = {"alert": "ALERT", "trade": "TRADE", "waiver": "WAIVER"}
+    kind_label = {"alert": "ALERT", "trade": "TRADE", "waiver": "WAIVER", "roster": "ROSTER", "defensive_add": "BLOCK", "streamer": "STREAM"}
     for a in actions:
         lines.append(f"- **[{kind_label.get(a.kind, a.kind.upper())}]** {a.headline} — _{a.detail}_")
+        if a.priority is not None:
+            lines.append(f"  - Priority: {priority_line(a.priority)}")
+        if a.why_now:
+            lines.append(f"  - Why now: {' · '.join(a.why_now)}")
+        if a.against:
+            lines.append(f"  - Against: {' · '.join(a.against)}")
     lines.append("")
+    return lines
+
+
+def _render_provenance(prov) -> list[str]:
+    """The For / Against / Context card, one line each. Nothing here is
+    computed: the texts are the provenance layer's selections."""
+    if prov is None or not prov.all_reasons:
+        return []
+    lines = []
+    if prov.reasons_for:
+        lines.append(f"- **For:** {' · '.join(f'{r.text} [{r.category}]' for r in prov.reasons_for)}")
+    if prov.reasons_against:
+        lines.append(f"- **Against:** {' · '.join(f'{r.text} [{r.category}]' for r in prov.reasons_against)}")
+    if prov.context:
+        lines.append(f"- **Context:** {' · '.join(f'{r.text} [{r.category}]' for r in prov.context)}")
     return lines
 
 
@@ -176,7 +198,7 @@ def _render_conflict(conflict: Conflict) -> list[str]:
 
 def _render_trade_proposal(
     p: TradeProposal, index: int, impact: MoveImpact | None = None, ladder: NegotiationLadder | None = None,
-    economics: TradeEconomics | None = None, conflict: Conflict | None = None,
+    economics: TradeEconomics | None = None, conflict: Conflict | None = None, provenance=None,
 ) -> list[str]:
     lines = [f"**Offer {index} ({p.trade_type_label}): {p.summary_line()}**", ""]
     lines.append(
@@ -188,6 +210,11 @@ def _render_trade_proposal(
     lines.append("")
     if conflict is not None:
         lines.extend(_render_conflict(conflict))
+    why = _render_provenance(provenance)
+    if why:
+        lines.append("Why now:")
+        lines.extend(why)
+        lines.append("")
     if impact is not None:
         deltas = impact.material_deltas()
         lines.append("What actually changes:")
@@ -395,7 +422,7 @@ def render_league_section(data: LeagueReportData) -> list[str]:
             impact = data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None
             economics = data.trade_economics[i - 1] if i - 1 < len(data.trade_economics) else None
             conflict = conflict_for(data.conflicts, TRADE, str(i - 1))
-            trade_lines.extend(_render_trade_proposal(p, i, impact, data.ladders.get(i - 1), economics, conflict))
+            trade_lines.extend(_render_trade_proposal(p, i, impact, data.ladders.get(i - 1), economics, conflict, data.provenance.get((TRADE, str(i - 1)))))
             trade_lines.append("")
     else:
         trade_lines.append("No trade offers cleared the value-match bar this week.")
