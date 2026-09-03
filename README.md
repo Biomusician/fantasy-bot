@@ -352,12 +352,18 @@ deterministic.
 - **Replacement scarcity is a gap, not a supply count.** A position is
   Scarce when the best startable free agent sits far below the worst
   current starter league-wide (gap thresholds 10% / 30% / 50%); it says
-  nothing about how many usable free agents exist. Pre-draft leagues have
-  no replacement market at all (the "free agents" are the draft pool).
+  nothing about how many usable free agents exist. A starter projecting
+  below the wire (an abandoned roster's placeholder) doesn't set the
+  level. Pre-draft leagues have no replacement market at all (the "free
+  agents" are the draft pool).
 - **Source disagreement compares rank places, not values.** KTC dollars,
   FantasyPros ECR and RotoBaller points are never divided into each other;
-  20 / 40 positional places are the Disagreement / High cutoffs. The
-  FantasyPros min/max spread only exists for rows cached after 2026-09-02.
+  20 / 40 top-of-list positional places are the Disagreement / High
+  cutoffs, scaled down by 2% per place of depth (WR51 needs 40 raw places),
+  and a rank beyond the other source's list depth is "not comparable",
+  not a disagreement. In redraft the consensus pair IS the
+  market-vs-projection pair, so one clause is shown. The FantasyPros
+  min/max spread only exists for rows cached after 2026-09-02.
 - **Trade economics reuse existing verdicts.** Asset economics IS the
   engine's balance label; roster economics IS the move preview's weekly
   delta bucketed at +3 / -2 / -7. A trade below the preview bar gets asset
@@ -375,7 +381,10 @@ deterministic.
   early-season reports show no Defensive Add. That is the design.
 - **Consolidation search is bounded**: my 12 most valuable non-starters,
   4 targets per counterparty, value ratio 0.90-1.35, and the same fit /
-  acceptance helpers the trade engine uses.
+  acceptance helpers the trade engine uses. Consolidations are ordinary
+  proposals in the trade list (previews, economics, conflicts and Best
+  Moves apply); one of the two pieces may be a current starter whose slot
+  the incoming player refills, and the card says which.
 - **Stash board value is the pool-wide dynasty percentile** (40 / 60
   cutoffs), not a within-position rank; a full roster with no clogs makes
   every stash a Watch.
@@ -385,9 +394,13 @@ deterministic.
   `playoff_week_start` / `playoff_teams` / `playoff_round_type`, clamped to
   the schedule.
 - **Buyer-board scores are additive heuristics** (need +2/+1, timeline
-  ±1, economy ±1, scarcity +1, unfunded -2; Strong at 4, Possible at 2).
-- **Conflicts are mechanical.** Every Sell High of a QB out of a Very
+  ±1, economy ±1, scarcity +1, unfunded -2; Strong at 4, Possible at 2; an
+  Inactive Trader never rates Strong; a manager heavy at the position
+  isn't credited with a need there).
+- **Conflicts are mechanical.** A Sell High of a starting QB out of a Very
   Scarce Superflex market is a Conflicted Move by construction; the label
-  is information, not a veto.
+  is information, not a veto. A drop the tool itself lists as a drop
+  candidate, or a developmental player under the 40th dynasty percentile,
+  is never a conflict.
 - **The nflverse schedule is fetched at most once a day** and falls back
   to the stale cache or to the ranking sources' bye weeks when unavailable.

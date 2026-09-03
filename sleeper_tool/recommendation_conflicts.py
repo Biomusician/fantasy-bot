@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from sleeper_tool.formatting import ordinal
 from sleeper_tool.pick_opportunity import STRATEGIC
 from sleeper_tool.portfolio_exposure import VERY_HIGH
 from sleeper_tool.replacement_value import VERY_SCARCE
@@ -101,7 +102,7 @@ def detect_conflicts(ld) -> list[Conflict]:
             if drop.player_id in starters:
                 against.append(f"the drop, {drop.name}, is a current optimized starter")
             elif _is_dynasty_developmental(drop, ld.currency) and (drop.value.dynasty_value_percentile or 0) >= DEVELOPMENTAL_DROP_MIN_PERCENTILE:
-                against.append(f"the drop, {drop.name}, is a developmental hold worth keeping ({drop.value.dynasty_value_percentile:.0f}th percentile dynasty value)")
+                against.append(f"the drop, {drop.name}, is a developmental hold worth keeping ({ordinal(round(drop.value.dynasty_value_percentile))} percentile dynasty value)")
             if drop.player_id in bye_fills:
                 against.append(f"the drop, {drop.name}, is the named fill for your week {ld.bye_collision.week} bye hole")
         if _mentions_very_high([t.reason, *t.notes]):

@@ -24,11 +24,14 @@ replacement market, stash board, buyer board, schedule windows). `docs/DECISIONS
 records the reasoning behind every threshold and design choice of the tranche.
 
 A three-agent red-team review (value semantics; architecture/data flow; tests and real
-output) ran at the end of the tranche — see the review-fix commit(s) after `c2f8015`
-for what it found and what changed.
+output) ran at the end of the tranche; the review-fix commit after `91c72cd` lists every
+confirmed finding and its fix (consolidations folded into the proposal list, rank-scaled
+source gaps, replacement level ignoring abandoned rosters, conflict rules tightened,
+buyer-board scoring, streamer sequences, ~2x faster report build). `docs/DECISIONS.md`
+has the reasoning.
 
-Verified 2026-09-03: full suite passes (count in `CLAUDE.md`), `generate_report.py`
-rebuilds all 9 leagues from cache in ~10s (consolidation search is the new cost),
+Verified 2026-09-03: 366 tests pass in ~1.5s, `generate_report.py` rebuilds all 9
+leagues from cache in ~7s (the memoized consolidation search is the largest new cost),
 dashboard renders with the hierarchy intact (Best Moves → alerts/matchup →
 trades/waivers/streamers/defensive add → collapsed context).
 

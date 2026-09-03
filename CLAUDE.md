@@ -20,7 +20,7 @@ Individual stages: `scripts/pull_data.py` (sync only), `scripts/generate_report.
 .venv/Scripts/python.exe -m pytest tests/ -q
 ```
 
-356 tests, under two seconds, fully synthetic — no network. Keep it that way.
+366 tests, under two seconds, fully synthetic — no network. Keep it that way.
 
 ## Conventions
 

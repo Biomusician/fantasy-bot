@@ -75,6 +75,33 @@ mechanics; this file carries the reasoning that isn't obvious from the code.
   positions plus K/DEF), empty pre-draft, shared by insurance, replacement
   value, streamers, blocking and the stash board.
 
+### After the red-team review (2026-09-03)
+
+- **Consolidations are proposals, not a side list.** The first cut kept
+  2-for-1 offers in their own field, which silently opted them out of every
+  annotation pass, the preview, economics, conflicts and Best Moves. They
+  are now appended to the proposal list (trade type "consolidation") and
+  the dedicated block is a summary only.
+- **Rank gaps are scaled by depth and gated by list depth.** A fixed
+  20-place bar fired on 49 of 193 deep-list dynasty players and 0 of 95
+  top-24 players in the real cache: a "deep player" detector, not a
+  disagreement detector. The scaling constant (2% per place) and the
+  "beyond the other list's depth is not comparable" rule are the fix; the
+  thresholds stay stated in top-of-list places.
+- **The replacement level ignores starters below the wire.** One
+  abandoned roster's 1.3/wk placeholder set an "Abundant" RB market for a
+  whole league; a starter who projects below the best free agent is
+  simply a roster that hasn't picked him up.
+- **A scarce-market conflict needs the piece to play.** The first cut
+  flagged every Superflex QB sell-high; bench-surplus sales out of a
+  scarce market cost nothing and are no longer conflicts.
+- **Developmental-drop conflicts need value and not already be a drop
+  candidate.** 22 of 56 waiver rows carried the same label on the first
+  real run; dynasty benches are young by construction.
+- **A streamer sequence may beat a rostered best single.** The bye-cover
+  case (hold my QB, add a streamer for his bye week) is the module's
+  reason to exist and the first cut could never reach it.
+
 ## 2026-09-01/02 — First decision-layer tranche
 
 Recorded in the module docstrings, `README.md` "Known limitations" and the
