@@ -23,6 +23,7 @@ import requests
 
 from sleeper_tool.name_matching import build_name_index
 from sleeper_tool.rankings.cache import RankingSnapshot, get_or_fetch
+from sleeper_tool.rankings.freshness import ceiling_for
 
 ROTOBALLER_SPREADSHEETS: dict[str, str] = {
     "full_ppr": "ppr",
@@ -128,7 +129,13 @@ def _fetcher(spreadsheet_key: str):
 def get_rb_rankings(
     spreadsheet_key: str, *, force: bool = False, max_age: dt.timedelta = DEFAULT_MAX_AGE
 ) -> RankingSnapshot:
-    return get_or_fetch(f"rotoballer_{spreadsheet_key}", _fetcher(spreadsheet_key), max_age=max_age, force=force)
+    return get_or_fetch(
+        f"rotoballer_{spreadsheet_key}",
+        _fetcher(spreadsheet_key),
+        max_age=max_age,
+        force=force,
+        ceiling=ceiling_for("rotoballer"),
+    )
 
 
 def index_by_name(snapshot: RankingSnapshot) -> dict[str, dict]:

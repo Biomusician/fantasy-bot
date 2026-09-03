@@ -20,6 +20,7 @@ import requests
 
 from sleeper_tool.name_matching import build_name_index
 from sleeper_tool.rankings.cache import RankingSnapshot, get_or_fetch
+from sleeper_tool.rankings.freshness import ceiling_for
 
 FANTASYPROS_PAGES: dict[str, str] = {
     "redraft_full_ppr": "ppr-cheatsheets",
@@ -141,7 +142,13 @@ def _fetcher(page_key: str):
 def get_fp_rankings(
     page_key: str, *, force: bool = False, max_age: dt.timedelta = DEFAULT_MAX_AGE
 ) -> RankingSnapshot:
-    return get_or_fetch(f"fantasypros_{page_key}", _fetcher(page_key), max_age=max_age, force=force)
+    return get_or_fetch(
+        f"fantasypros_{page_key}",
+        _fetcher(page_key),
+        max_age=max_age,
+        force=force,
+        ceiling=ceiling_for("fantasypros"),
+    )
 
 
 def index_by_name(snapshot: RankingSnapshot) -> dict[str, dict]:

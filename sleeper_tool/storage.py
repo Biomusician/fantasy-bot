@@ -98,6 +98,15 @@ CREATE TABLE IF NOT EXISTS traded_picks (
 """
 
 
+# Tables carrying a fetched_at column, and the only identifiers
+# table_last_fetched/row_count will interpolate into SQL. `players` is
+# absent on purpose: it tracks freshness in `meta` (players_updated_at) via
+# players_last_updated().
+FETCHED_AT_TABLES = frozenset(
+    {"leagues", "league_users", "rosters", "matchups", "transactions", "trending", "traded_picks"}
+)
+
+
 def utcnow_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
@@ -364,13 +373,22 @@ class Storage:
     # -- trending -----------------------------------------------------------
 
     def save_trending(self, trend_type: str, players: list[dict]) -> None:
+        """Replace this trend type's list wholesale.
+
+        Sleeper's trending endpoint returns a ranked top-N snapshot, not a
+        set of durable rows. Upserting into the old list (what this used to
+        do) made the table an append-only union of every list ever fetched,
+        ordered by a raw count that isn't comparable across days — a player
+        who was hot last week and has since fallen off entirely kept his old
+        count and outranked today's genuine risers. Deleting first is what
+        makes get_trending's "today's list, best first" contract true.
+        """
         now = utcnow_iso()
         rows = [(trend_type, p["player_id"], p.get("count"), now) for p in players]
         with self._cursor() as cur:
+            cur.execute("DELETE FROM trending WHERE trend_type = ?", (trend_type,))
             cur.executemany(
-                "INSERT INTO trending (trend_type, player_id, count, fetched_at) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(trend_type, player_id) DO UPDATE SET "
-                "count=excluded.count, fetched_at=excluded.fetched_at",
+                "INSERT INTO trending (trend_type, player_id, count, fetched_at) VALUES (?, ?, ?, ?)",
                 rows,
             )
 
@@ -380,3 +398,29 @@ class Storage:
             (trend_type,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    # -- freshness (read-only) --------------------------------------------
+
+    def table_last_fetched(self, table: str) -> dt.datetime | None:
+        """Newest fetched_at in one table, or None if it's empty.
+
+        Table names are whitelisted rather than interpolated blind — SQLite
+        can't parameterize an identifier, so the whitelist is what keeps
+        this from being string-built SQL.
+        """
+        if table not in FETCHED_AT_TABLES:
+            raise ValueError(f"Unknown table {table!r}; known: {sorted(FETCHED_AT_TABLES)}")
+        row = self._conn.execute(f"SELECT MAX(fetched_at) AS m FROM {table}").fetchone()
+        raw = row["m"] if row else None
+        return dt.datetime.fromisoformat(raw) if raw else None
+
+    def latest_fetched_at(self, *tables: str) -> dt.datetime | None:
+        """Newest fetched_at across several tables — the age of a whole
+        family of data (see signal_health), not of one table."""
+        stamps = [s for s in (self.table_last_fetched(t) for t in tables) if s is not None]
+        return max(stamps) if stamps else None
+
+    def row_count(self, table: str) -> int:
+        if table not in FETCHED_AT_TABLES:
+            raise ValueError(f"Unknown table {table!r}; known: {sorted(FETCHED_AT_TABLES)}")
+        return self._conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()["c"]

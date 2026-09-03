@@ -18,6 +18,7 @@ import requests
 
 from sleeper_tool.name_matching import build_name_index
 from sleeper_tool.rankings.cache import RankingSnapshot, get_or_fetch
+from sleeper_tool.rankings.freshness import ceiling_for
 
 KTC_URL = "https://keeptradecut.com/dynasty-rankings"
 DEFAULT_MAX_AGE = dt.timedelta(hours=20)
@@ -121,7 +122,9 @@ def _fetch_and_parse() -> list[dict]:
 
 
 def get_ktc_rankings(*, force: bool = False, max_age: dt.timedelta = DEFAULT_MAX_AGE) -> RankingSnapshot:
-    return get_or_fetch("ktc_dynasty", _fetch_and_parse, max_age=max_age, force=force)
+    return get_or_fetch(
+        "ktc_dynasty", _fetch_and_parse, max_age=max_age, force=force, ceiling=ceiling_for("ktc")
+    )
 
 
 def index_by_name(snapshot: RankingSnapshot) -> dict[str, dict]:

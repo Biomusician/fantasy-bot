@@ -24,6 +24,7 @@ from dataclasses import dataclass
 import requests
 
 from sleeper_tool.rankings.cache import RankingSnapshot, get_or_fetch, load_snapshot
+from sleeper_tool.rankings.freshness import ceiling_for
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +151,13 @@ def load_schedule(season: int, *, force: bool = False) -> Schedule | None:
     if cached is not None and (cached.payload or {}).get("season") != season:
         force = True
     try:
-        snapshot: RankingSnapshot = get_or_fetch(SCHEDULE_SOURCE, lambda: fetch_schedule_rows(season), max_age=SCHEDULE_MAX_AGE, force=force)
+        snapshot: RankingSnapshot = get_or_fetch(
+            SCHEDULE_SOURCE,
+            lambda: fetch_schedule_rows(season),
+            max_age=SCHEDULE_MAX_AGE,
+            force=force,
+            ceiling=ceiling_for(SCHEDULE_SOURCE),
+        )
     except Exception as exc:  # no cache to fall back to
         logger.warning("NFL schedule unavailable for %s: %s", season, exc)
         return None
