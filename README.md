@@ -95,6 +95,55 @@ notes are hardcoded, not configurable via a UI.
   - *Decision delta*: "since last run" — only what changed vs. the last
     complete daily run (statuses, recommendation lists, roster moves,
     15%+ value swings).
+  - *Replacement market*: what each starting position is worth against
+    THIS league's waiver wire — the best startable free agent vs the
+    worst current starter league-wide — with Abundant / Normal / Scarce /
+    Very Scarce derived from that gap (no "QB is scarce in Superflex"
+    rule; the second QB slot produces it). Annotates trades, waivers,
+    clogs, bench surplus and pick units; highlights players whose generic
+    rank under- or overstates their edge here.
+  - *Source disagreement*: whether KTC, FantasyPros and RotoBaller agree
+    on a player, compared in within-position rank space (Strong /
+    Normal Consensus, Source / High Disagreement, Market Above Projection
+    / Projection Above Market), with the FantasyPros expert-panel spread
+    when it's wide.
+  - *Trade economics*: every trade gets two separate verdicts that are
+    never blended — asset economics (Favorable / Roughly Even /
+    Unfavorable from the engine's own balance) and roster economics
+    (Improves Lineup / Mostly Neutral / Costs Lineup / Major Lineup Cost
+    from the move preview). Opposite directions are a Strategic
+    Tradeoff.
+  - *Streaming planner*: for QB/TE/K/DEF, the best single player vs the
+    best one-switch two-player sequence over the next three weeks, byes
+    from the real NFL schedule (nflverse, cached daily), no opponent
+    adjustment invented; the single plan wins within 8%.
+  - *Market velocity*: Rising / Rapidly Rising / Falling / Rapidly
+    Falling / Stable from up to 28 days of decision snapshots, on
+    actionable players only; Insufficient History under three
+    observations.
+  - *Matchup leverage*: this week's projected gap vs your actual Sleeper
+    opponent (Strong Edge → Large Deficit); recommendations say how their
+    weekly gain relates to the gap.
+  - *Opponent blocking*: at most one Defensive Add per league per week,
+    only when the opponent has a real hole this week, the free agent is
+    worth 4+ to their lineup, and the drop costs you nothing you value.
+  - *Roster consolidation*: 2-for-1 offers for contenders and strong
+    middling teams where the incoming player enters your optimized
+    lineup by 3+ points/week, value-matched with the engine's numbers,
+    fragility flagged. Never 3-for-1.
+  - *Stash board* (dynasty/keeper): developmental free agents worth a
+    roster spot — Priority Stash or Watch — never described as lineup
+    help.
+  - *Schedule windows*: next-3 / remaining / fantasy-playoff windows from
+    the schedule and the league's own playoff settings; used only as a
+    tiebreak between near-equal players or to note a bye in a window.
+  - *Buyer board*: for each sell-high piece, the three counterparties
+    most likely to pay (need, timeline, league economy, scarcity,
+    fundability), feeding the sell-high proposals as annotations.
+  - *Recommendation conflicts*: when the tool's own signals oppose each
+    other on one move, it is labelled "Conflicted Move — Review
+    Manually" with reasons for and against — never suppressed or
+    re-scored.
 
 ## Setup
 
@@ -199,7 +248,20 @@ sleeper_tool/
   playoff_leverage.py                     Standings vs the playoff cut + deadline window
   pick_opportunity.py                      Strategic/Useful/Spendable pick classification
   negotiation_ladder.py                     Opening / fallback / walk-away per top trade
-  decision_delta.py                          "Since last run" snapshot diffing
+  decision_delta.py                          "Since last run" snapshot diffing (28 daily files kept)
+  replacement_value.py                        League-relative replacement levels + scarcity labels
+  source_disagreement.py                       KTC/FantasyPros/RotoBaller consensus in rank space
+  trade_opportunity_cost.py                     Asset economics vs roster economics per trade
+  nfl_schedule.py                                nflverse schedule, cached daily (the one non-ranking fetch)
+  streamer_planner.py                             QB/TE/K/DEF one-player vs two-player streaming plans
+  market_velocity.py                               Direction-of-travel labels from snapshot history
+  matchup_leverage.py                               This-week gap vs the real opponent
+  opponent_blocker.py                                At most one Defensive Add per league per week
+  roster_consolidation.py                             2-for-1 proposals for contenders
+  stash_board.py                                       Dynasty/keeper developmental free agents
+  schedule_window.py                                    Next-3 / remaining / playoff windows, tiebreaks only
+  buyer_board.py                                         Likely buyers for each sell-high piece
+  recommendation_conflicts.py                             "Conflicted Move" detection across signals
   report_data.py                  Shared data layer for both report formats
   report.py                        Markdown renderer
   html_report.py                    HTML dashboard renderer
@@ -218,8 +280,11 @@ data/                 SQLite DB, cached rankings, generated reports, run snapsho
 Tests cover the valuation and trade-matching logic specifically (name
 normalization, format derivation, positional need-ranking, buy-low
 filtering including the age-curve and decline-vs-overreaction checks,
-value-tolerance matching, and team-status classification) using synthetic
-data — they don't hit any live network endpoints, so they're fast and
+value-tolerance matching, and team-status classification) and every
+decision-layer module (thresholds at their exact boundaries, missing-data
+paths, pre-draft suppression, deterministic ordering) using synthetic
+data — they don't hit any live network endpoints (the NFL schedule tests
+use an inline CSV fixture and a temp cache), so they're fast and
 deterministic.
 
 ## Known limitations
@@ -284,3 +349,45 @@ deterministic.
 - **Bye cover is by position, not by simulation.** A waiver target is
   tagged as covering a bye hole when he plays the displaced starter's
   position, not by re-running the optimizer with him added.
+- **Replacement scarcity is a gap, not a supply count.** A position is
+  Scarce when the best startable free agent sits far below the worst
+  current starter league-wide (gap thresholds 10% / 30% / 50%); it says
+  nothing about how many usable free agents exist. Pre-draft leagues have
+  no replacement market at all (the "free agents" are the draft pool).
+- **Source disagreement compares rank places, not values.** KTC dollars,
+  FantasyPros ECR and RotoBaller points are never divided into each other;
+  20 / 40 positional places are the Disagreement / High cutoffs. The
+  FantasyPros min/max spread only exists for rows cached after 2026-09-02.
+- **Trade economics reuse existing verdicts.** Asset economics IS the
+  engine's balance label; roster economics IS the move preview's weekly
+  delta bucketed at +3 / -2 / -7. A trade below the preview bar gets asset
+  economics only. A Strategic Tradeoff needs a Favorable or Unfavorable
+  asset verdict — a Balanced trade with a Major Lineup Cost is reported as
+  exactly that, not as a tradeoff.
+- **Streaming plans have no opponent adjustment** (no points-allowed data
+  is fetched, none is invented) and model at most one switch inside the
+  three-week window. Nothing is suggested under a 3-point window gain.
+- **Market velocity is a direction, not a forecast.** Three daily
+  observations minimum, 8% / 15% total-move thresholds, consecutive
+  same-direction days required; no regression, no extrapolation.
+- **Opponent blocking needs a visible hole.** Before NFL byes start (and in
+  any week the opponent's lineup is intact) there is nothing to block, so
+  early-season reports show no Defensive Add. That is the design.
+- **Consolidation search is bounded**: my 12 most valuable non-starters,
+  4 targets per counterparty, value ratio 0.90-1.35, and the same fit /
+  acceptance helpers the trade engine uses.
+- **Stash board value is the pool-wide dynasty percentile** (40 / 60
+  cutoffs), not a within-position rank; a full roster with no clogs makes
+  every stash a Watch.
+- **Schedule windows never rate opponents.** Games played and byes per
+  window are all the schedule contributes; it breaks ties only when two
+  values are within 10%. Fantasy playoff weeks come from
+  `playoff_week_start` / `playoff_teams` / `playoff_round_type`, clamped to
+  the schedule.
+- **Buyer-board scores are additive heuristics** (need +2/+1, timeline
+  ±1, economy ±1, scarcity +1, unfunded -2; Strong at 4, Possible at 2).
+- **Conflicts are mechanical.** Every Sell High of a QB out of a Very
+  Scarce Superflex market is a Conflicted Move by construction; the label
+  is information, not a veto.
+- **The nflverse schedule is fetched at most once a day** and falls back
+  to the stale cache or to the ranking sources' bye weeks when unavailable.

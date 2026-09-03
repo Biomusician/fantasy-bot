@@ -20,7 +20,7 @@ Individual stages: `scripts/pull_data.py` (sync only), `scripts/generate_report.
 .venv/Scripts/python.exe -m pytest tests/ -q
 ```
 
-280 tests, well under a second, fully synthetic — no network. Keep it that way.
+356 tests, under two seconds, fully synthetic — no network. Keep it that way.
 
 ## Conventions
 
@@ -43,10 +43,20 @@ read from — put new derived data there, not in a renderer.
 `lineup_optimizer.py` is the single owner of "best legal starting lineup" (exact DP over
 the league's real slot list). Everything lineup-aware consumes it rather than deciding
 who starts on its own: `lineup_leverage.py`, `contender_insurance.py`, `bye_collision.py`,
-`move_impact.py`, `roster_clog.py`, `pick_opportunity.py`. The other decision modules
-(`portfolio_exposure.py`, `league_economy.py`, `playoff_leverage.py`,
-`negotiation_ladder.py`, `decision_delta.py`) are each one isolated file whose computation
-never lives in `trade_engine.py`/`waiver_engine.py` — those two only get thin hooks.
+`move_impact.py`, `roster_clog.py`, `pick_opportunity.py`, `replacement_value.py`,
+`streamer_planner.py`, `matchup_leverage.py`, `opponent_blocker.py`,
+`roster_consolidation.py`. The other decision modules (`portfolio_exposure.py`,
+`league_economy.py`, `playoff_leverage.py`, `negotiation_ladder.py`, `decision_delta.py`,
+`source_disagreement.py`, `trade_opportunity_cost.py`, `market_velocity.py`,
+`stash_board.py`, `schedule_window.py`, `buyer_board.py`, `recommendation_conflicts.py`)
+are each one isolated file whose computation never lives in
+`trade_engine.py`/`waiver_engine.py` — those two only get thin hooks. Annotations from the
+decision layer land on `WaiverTarget.notes`, `TradeProposal.rationale_*`/`caveats`, and
+`LadderStep.source_note`; renderers join them, never compute them.
+
+`nfl_schedule.py` is the one non-ranking external fetch (nflverse `games.csv`), cached in
+`data/rankings_cache/` for 24h; `schedule_window.py` and `streamer_planner.py` read it and
+degrade to the ranking sources' bye weeks without it.
 
 ## Constraints
 
@@ -59,9 +69,10 @@ never lives in `trade_engine.py`/`waiver_engine.py` — those two only get thin 
   "fixing" something that's a deliberate approximation.
 - `data/` holds generated output and one genuinely sensitive file
   (`data/yahoo_token.json`). Never read, print, or commit it.
-- `data/run_snapshots/` is the "since last run" baseline (one JSON per UTC day, last two
-  kept), written only by `scripts/daily_run.py` after a fully complete run. The report
-  scripts read it but never write it.
+- `data/run_snapshots/` is the "since last run" baseline and the market-velocity history
+  (one JSON per UTC day, last 28 kept, schema 2 with an additive `tracked` bucket),
+  written only by `scripts/daily_run.py` after a fully complete run. The report scripts
+  read it but never write it.
 
 ## Don't
 
