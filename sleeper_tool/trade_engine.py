@@ -78,7 +78,7 @@ DECLINE_CONFIRMATION_GAP = 10.0  # dynasty_pctl - redraft_pctl must clear this t
 POSITION_ORDER = ("QB", "RB", "WR", "TE")  # fixed order so need-ranking ties break deterministically
 MAX_CANDIDATES_PER_OPPONENT = 3  # how many buy-low candidates to try matching per opponent before giving up on them
 ACCEPTANCE_TIERS = ("Very Low", "Low", "Moderate", "Good", "High")
-_TRADE_TYPE_LABELS = {"buy_low": "Buy low", "sell_high": "Sell high", "pick_target": "Pick target"}
+_TRADE_TYPE_LABELS = {"buy_low": "Buy low", "sell_high": "Sell high", "pick_target": "Pick target", "consolidation": "Consolidation (2-for-1)"}
 
 DYNASTY_CURRENCY = "dynasty"
 REDRAFT_CURRENCY = "redraft"
