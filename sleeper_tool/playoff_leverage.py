@@ -108,8 +108,14 @@ def classify_playoff_leverage(
     else:
         label = LONG_SHOT
 
+    # Sleeper reports trade_deadline as an int, but the raw settings dict is
+    # untyped and report_data already coerces the same field elsewhere.
+    try:
+        deadline_week = int(trade_deadline) if trade_deadline is not None else None
+    except (TypeError, ValueError):
+        deadline_week = None
     deadline_window = (
-        trade_deadline is not None and current_week is not None and 0 <= trade_deadline - current_week <= DEADLINE_WINDOW_WEEKS
+        deadline_week is not None and current_week is not None and 0 <= deadline_week - current_week <= DEADLINE_WINDOW_WEEKS
     )
     record = f"{target.wins}-{target.losses}" + (f"-{target.ties}" if target.ties else "")
     inside = seed <= playoff_teams
@@ -125,5 +131,5 @@ def classify_playoff_leverage(
     return PlayoffLeverage(
         label=label, wins=target.wins, losses=target.losses, ties=target.ties, games_remaining=games_remaining,
         seed=seed, playoff_teams=playoff_teams, cut_wins=cut_wins, deadline_window=deadline_window,
-        trade_deadline_week=trade_deadline, reason=reason,
+        trade_deadline_week=deadline_week, reason=reason,
     )

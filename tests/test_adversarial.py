@@ -302,18 +302,6 @@ def test_the_snapshot_survives_a_league_with_no_valued_players(monkeypatch):
 # -- bugs found while writing these tests (failing on purpose) ----------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BUG: pick_opportunity.assess_picks line 177 builds a traded pick's origin as "
-        "`\"via \" + (src.team_name or src.owner_username)`. A roster whose owner has no "
-        "user row — an abandoned team, or a `/league/{id}/users` sync that returned "
-        "nothing — has both fields None, so this raises TypeError and "
-        "_safe_build_league_report_data blanks the ENTIRE league. The `else` branch of the "
-        "same expression already has a `f\"roster {id}\"` fallback; the roster-exists-but-is-"
-        "nameless case falls through it."
-    ),
-)
 def test_a_traded_pick_from_a_roster_with_no_user_record(monkeypatch):
     synth = make_synthetic_league()
     # The fixture already trades roster 3's 2027 2nd to me; drop roster 3's
@@ -324,16 +312,6 @@ def test_a_traded_pick_from_a_roster_with_no_user_record(monkeypatch):
     assert report.leagues[0].error is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BUG: playoff_leverage.classify_playoff_leverage line 112 computes "
-        "`trade_deadline - current_week` on the raw settings value, while "
-        "report_data.build_league_report_data guards the SAME field with `int(trade_deadline)` "
-        "twenty lines earlier. A non-int trade_deadline therefore raises TypeError and blanks "
-        "the whole league instead of just skipping the deadline window."
-    ),
-)
 def test_a_non_integer_trade_deadline_setting(monkeypatch):
     synth = make_synthetic_league(settings={"trade_deadline": "11"})
     report = _build(monkeypatch, synth)

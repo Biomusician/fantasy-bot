@@ -174,7 +174,10 @@ def assess_picks(
         origin = ""
         if pick.original_roster_id != my_roster.roster_id:
             src = rosters.get(pick.original_roster_id)
-            origin = "via " + ((src.team_name or src.owner_username) if src else f"roster {pick.original_roster_id}")
+            # A roster with no user row (abandoned team, or a users sync that
+            # returned nothing) has neither a team name nor a username.
+            named = (src.team_name or src.owner_username) if src is not None else None
+            origin = "via " + (named or f"roster {pick.original_roster_id}")
         if pick.round == 1:
             if team_status == REBUILD:
                 cls, why = STRATEGIC, "a rebuilding roster's first-round picks are its future starters"

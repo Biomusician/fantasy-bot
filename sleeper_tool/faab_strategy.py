@@ -423,7 +423,7 @@ def bid_detail(advice: FaabAdvice | None) -> str | None:
     outbid leverage, then the posture's own notes."""
     if advice is None or advice.tier not in (MUST_ADD, STRONG_ADD):
         return None
-    bits = [b for b in (advice.share_of_remaining_text, advice.leverage_text, *advice.notes) if b]
+    bits = [b for b in (advice.share_of_remaining_text, advice.leverage_text, advice.anchor_text, *advice.notes) if b]
     return "; ".join(bits) if bits else None
 
 
