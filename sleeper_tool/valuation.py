@@ -190,6 +190,25 @@ class PlayerValue:
         return len(self.sources_used) >= 2
 
 
+def _projection_for_format(rb_player: dict, fmt: LeagueFormat, position: str | None) -> float | None:
+    """RotoBaller publishes a full-PPR and a standard season total (and a
+    TE-premium column that, in every cached file so far, simply equals the
+    PPR one). A league's projection is the point on the line between the
+    two at its own PPR value — half PPR is halfway, not "standard" — and
+    the TE-premium column is used only for a TE, and only when it actually
+    differs from the PPR column, so it never silently promotes a
+    half-PPR league to full PPR for every position."""
+    ppr = rb_player.get("proj_points_ppr")
+    standard = rb_player.get("proj_points_standard")
+    te_prem = rb_player.get("proj_points_te_premium")
+    if fmt.te_premium_bonus > 0 and position == "TE" and te_prem is not None and te_prem != ppr:
+        return te_prem
+    if ppr is None or standard is None:
+        return ppr if ppr is not None and fmt.ppr >= 0.5 else (standard if standard is not None else ppr)
+    weight = min(max(fmt.ppr, 0.0), 1.0)
+    return standard + weight * (ppr - standard)
+
+
 def games_remaining(current_week: int | None) -> int:
     """Regular-season games still to be played from `current_week` on
     (1-indexed; None/preseason = the full season). Never below 1, so a
@@ -410,12 +429,7 @@ class ValuationEngine:
         rb_player = self._rb_indexes.get(self._rb_key(fmt), {}).get(key)
         if rb_player is not None:
             trend = rb_player.get("trend")
-            if fmt.te_premium_bonus > 0 and rb_player.get("proj_points_te_premium") is not None:
-                proj_points = rb_player["proj_points_te_premium"]
-            elif fmt.ppr >= 0.75:
-                proj_points = rb_player.get("proj_points_ppr")
-            else:
-                proj_points = rb_player.get("proj_points_standard")
+            proj_points = _projection_for_format(rb_player, fmt, position)
             if proj_points is not None:
                 sources.append("rotoballer")
             if bye_week is None:

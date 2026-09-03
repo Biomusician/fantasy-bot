@@ -98,6 +98,7 @@ logger = logging.getLogger(__name__)
 # The one free-agent pool every decision module shares: skill positions for
 # insurance/replacement, plus K and DEF for streaming.
 FREE_AGENT_POSITIONS = frozenset(SKILL_POSITIONS) | {"K", "DEF"}
+MATCHUP_NOTE_MIN_DELTA = 0.5  # projected weekly points a move must shift before it is related to this week's gap
 
 
 def describe_format(fmt: LeagueFormat) -> str:
@@ -300,8 +301,7 @@ def build_priority_actions(
                     ld, report, DROP, d.entry.player_id,
                     headline=f"{d.priority}: {d.entry.name}",
                     detail=f"{ld.league.name} — {'; '.join(d.reasons)}",
-                    rank=-len(d.reasons),  # more independent reasons = a more clear-cut cut, sorts first
-                ))
+                ))  # no reason-count rank: the annotation passes append reasons that aren't independent
     actions.sort(key=_action_order)
     return actions[:max_actions]
 
@@ -488,17 +488,23 @@ def build_league_report_data(
         waivers_note = "League is still pre-draft on Sleeper — waiver and insurance targets are suppressed until the draft."
     else:
         waiver_targets = get_waiver_targets(
-            storage, engine, league, my_roster, current_week=current_week, waiver_budget=waiver_budget, clog_ids=clog_ids
+            storage, engine, league, my_roster, current_week=current_week, waiver_budget=waiver_budget, clog_ids=clog_ids,
+            starter_ids=lineup.starter_ids if lineup is not None else None,
+            protected_ids=lineup.starter_ids if lineup is not None else (),
         )
     insurance: list[InsuranceRecommendation] = []
     if status_result.status == CONTENDER and lineup is not None and not pre_draft:
         skill_free_agents = [fa for fa in free_agents if fa.position in SKILL_POSITIONS]
         insurance = identify_fragile_starters(my_roster, skill_free_agents, team_status=status_result.status, lineup=lineup)
+        # Insurance is for a position the wire can't refill on the day: an
+        # Abundant or Normal market is its own insurance.
+        if replacement is not None:
+            insurance = [r for r in insurance if replacement.scarcity_of(r.starter.position) in (SCARCE, VERY_SCARCE)]
         trade_deadline = (league_data.get("settings") or {}).get("trade_deadline")
         deadline_passed = bool(trade_deadline) and current_week is not None and current_week > int(trade_deadline)
         waiver_targets = merge_insurance_into_waiver_targets(
             waiver_targets, insurance, my_roster, current_week=current_week, deadline_passed=deadline_passed,
-            waiver_budget=waiver_budget, clog_ids=clog_ids,
+            waiver_budget=waiver_budget, clog_ids=clog_ids, protected_ids=lineup.starter_ids,
         )
     time_sensitive = get_time_sensitive_notes(storage, my_roster, current_week=current_week)
     urgent_add_ids: set[str] = set()  # waiver targets that answer a bye hole (FAAB posture reads this)
@@ -514,15 +520,17 @@ def build_league_report_data(
             if t.position in covering:
                 t.reason = f"{t.reason}; would also cover your week {bye_collision.week} bye hole"
                 urgent_add_ids.add(t.player_id)
-    drop_candidates = identify_drop_candidates(my_roster, status_result.status, exclude_ids=proposed_give_ids)
+    lineup_leverage = build_lineup_leverage(my_roster, lineup=lineup, current_week=current_week) if lineup is not None else None
+    if lineup_leverage is not None:
+        _annotate_proposals_with_bench_surplus(proposals, lineup_leverage)
+    # Bench surplus is trade material by the report's own reading; the
+    # same player can't also be a drop candidate two sections later.
+    surplus_ids = frozenset(s.entry.player_id for s in lineup_leverage.bench_surplus) if lineup_leverage is not None else frozenset()
+    drop_candidates = identify_drop_candidates(my_roster, status_result.status, exclude_ids=proposed_give_ids | surplus_ids)
     # A clog that's already a drop candidate is surfaced there; listing him
     # twice under two headings is noise, not extra information.
     drop_ids = {d.entry.player_id for d in drop_candidates}
     roster_clogs = [c for c in roster_clogs if c.entry.player_id not in drop_ids]
-
-    lineup_leverage = build_lineup_leverage(my_roster, lineup=lineup, current_week=current_week) if lineup is not None else None
-    if lineup_leverage is not None:
-        _annotate_proposals_with_bench_surplus(proposals, lineup_leverage)
 
     replacement_clauses: dict[str, str] = {}
     if replacement is not None:
@@ -615,8 +623,8 @@ def build_league_report_data(
         before = snapshot_roster(my_roster, ctx, lineup=lineup, displayed_status=status_result.status)
         trade_impacts = [preview_trade(p, my_roster, before, ctx) for p in proposals]
         for t in waiver_targets:
-            if t.priority_tier not in PREVIEWED_WAIVER_TIERS:
-                continue
+            if t.priority_tier not in PREVIEWED_WAIVER_TIERS or t.priority_tier == INSURANCE:
+                continue  # an insurance row previewed as a live swap benches the starter it insures
             add_entry = _entry_from_target(t, all_players)
             drop_id = t.drop_candidate.player_id if t.drop_candidate else None
             label = f"Add {t.name}" + (f", drop {t.drop_candidate.name}" if t.drop_candidate else "")
@@ -628,7 +636,8 @@ def build_league_report_data(
         _annotate_proposals_with_replacement(proposals, replacement, currency, games_remaining(current_week), trade_economics)
     if matchup is not None:
         for impact in (*trade_impacts, *waiver_impacts.values()):
-            if impact is not None:
+            # "+0.0 against a 17.8 edge" is not a fact about the move.
+            if impact is not None and abs(impact.weekly_points_delta) >= MATCHUP_NOTE_MIN_DELTA:
                 impact.matchup_note = matchup.effect_clause(impact.weekly_points_delta)
     streamers = plan_streams(my_roster, free_agents, schedule=schedule, current_week=current_week, lineup=lineup)
 
@@ -713,7 +722,9 @@ def _build_faab_advice(
             scarcity=market.scarcity_of(t.position) if market is not None else None,
             role_label=trend.label if trend is not None else None,
             substitutes=count_substitutes(free_agents, t.position, pctl_of(t), percentile_of=pctl_of, exclude_ids={t.player_id}),
-            need_urgency=bool(t.fills_need) or t.priority_tier == INSURANCE or t.player_id in urgent_ids,
+            # A relative 'need' (two of four positions are always the two weakest) is not urgency;
+            # only an insurance row or a bye-hole cover is.
+            need_urgency=t.priority_tier == INSURANCE or t.player_id in urgent_ids,
             suggested_pct=t.suggested_faab_pct,
         )
         advice = faab_advise(ctx, facts)
@@ -965,6 +976,7 @@ def build_weekly_report_data(
         schedule_snapshot=load_snapshot("nflverse_schedule") if with_nfl_schedule else None,
         usage_health=cached_health(season) if (season is not None and with_usage) else None,
         now=now,
+        current_week=current_week,
     )
     suppressed = suppressed_features(health)
     for feature, why in suppressed.items():

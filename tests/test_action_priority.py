@@ -116,7 +116,8 @@ def test_urgency_rules_at_their_boundaries():
 
     ld = _ld(waiver_targets=[_target("must"), _target("strong", tier="Strong Add"), _target("mod", tier="Moderate")])
     assert classify(WAIVER, ld, _report(), key="must").urgency == IMMEDIATE
-    assert classify(WAIVER, ld, _report(), key="strong").urgency == THIS_WEEK
+    # A Strong Add with no measured gain is Marginal, and a Marginal claim is not this week's business.
+    assert classify(WAIVER, ld, _report(), key="strong").urgency == MONITOR
     assert classify(WAIVER, ld, _report(), key="mod").urgency == MONITOR
 
     ordinary = _ld(proposals=[_proposal(receive=[_p("in")])], trade_economics=[None], trade_impacts=[None])
@@ -131,11 +132,11 @@ def test_urgency_rules_at_their_boundaries():
 def test_a_next_week_bye_hole_fill_is_immediate_even_below_must_add():
     from sleeper_tool.bye_collision import ByeCollision, ByeHole
 
-    rb = _p("rb", "RB")
-    target = _target("cover", tier="Moderate", reason="depth; would also cover your week 6 bye hole")
+    wr = _p("wr", "WR")  # the target is a WR: cover is by position, not by the sentence the annotator wrote
+    target = _target("cover", tier="Moderate", reason="depth")
     bye = ByeCollision(
-        week=6, holes=[ByeHole(week=6, slot="RB", normal_starter=rb, normal_projection=10.0, replacement=None, replacement_projection=0.0)],
-        starters_on_bye=[rb], weeks_scanned=[5, 6],
+        week=6, holes=[ByeHole(week=6, slot="WR", normal_starter=wr, normal_projection=10.0, replacement=None, replacement_projection=0.0)],
+        starters_on_bye=[wr], weeks_scanned=[5, 6],
     )
     ld = _ld(waiver_targets=[target], bye_collision=bye)
     assert classify(WAIVER, ld, _report(current_week=5), key="cover").urgency == IMMEDIATE
@@ -152,9 +153,9 @@ def test_materiality_sits_exactly_on_its_named_cutoffs():
         trade_impacts=[_impact(MAJOR_WEEKLY_POINTS), _impact(MEANINGFUL_WEEKLY_POINTS), _impact(MEANINGFUL_WEEKLY_POINTS - 0.1)],
     )
     assert [classify(TRADE, ld, _report(), key=str(i)).materiality for i in range(3)] == [MAJOR, MEANINGFUL, MARGINAL]
-    # A loss of the same size is just as material as a gain.
+    # A loss is not a gain: materiality is what a move ADDS; the cost rides on the Risk reason.
     losing = _ld(proposals=[_proposal(give=[_p("a")])], trade_economics=[None], trade_impacts=[_impact(-MAJOR_WEEKLY_POINTS)])
-    assert classify(TRADE, losing, _report(), key="0").materiality == MAJOR
+    assert classify(TRADE, losing, _report(), key="0").materiality == MARGINAL
 
 
 def test_materiality_without_a_preview_falls_back_to_the_tier_or_the_economics():
@@ -163,7 +164,7 @@ def test_materiality_without_a_preview_falls_back_to_the_tier_or_the_economics()
         trade_economics=[TradeEconomics(ROUGHLY_EVEN, MAJOR_LINEUP_COST, None, False)], trade_impacts=[None],
         waiver_targets=[_target("must"), _target("mod", tier="Moderate")],
     )
-    assert classify(TRADE, ld, _report(), key="0").materiality == MAJOR
+    assert classify(TRADE, ld, _report(), key="0").materiality == MARGINAL  # a Major Lineup Cost is a cost, not a gain
     assert classify(WAIVER, ld, _report(), key="must").materiality == MEANINGFUL
     assert classify(WAIVER, ld, _report(), key="mod").materiality == MARGINAL
 
@@ -192,10 +193,12 @@ def test_a_streamer_is_measured_per_week_over_the_window():
 # -- perishability, strategic fit, evidence, cost ----------------------------
 def test_perishability_by_kind():
     ld = _ld(
-        waiver_targets=[_target("trending", tier="Moderate", trend=9), _target("quiet", tier="Moderate", trend=0)],
+        waiver_targets=[_target("trending", tier="Strong Add", trend=9), _target("quiet", tier="Moderate", trend=0), _target("mod_trend", tier="Moderate", trend=9)],
         proposals=[_proposal(receive=[_p("in")])], trade_economics=[None], trade_impacts=[None],
     )
     assert classify(WAIVER, ld, _report(), key="trending").perishability == LIKELY_TO_DISAPPEAR
+    # Every trending row has a count; only a paid tier that is also trending is gone by Wednesday.
+    assert classify(WAIVER, ld, _report(), key="mod_trend").perishability == TIME_SENSITIVE
     assert classify(WAIVER, ld, _report(), key="quiet").perishability == TIME_SENSITIVE
     assert classify(TRADE, ld, _report(), key="0").perishability == "Durable"
     urgent = _ld(proposals=[_proposal(receive=[_p("in")])], trade_economics=[None], trade_impacts=[None], playoff=_deadline())
@@ -227,7 +230,12 @@ def test_incoming_picks_count_as_a_rebuild_fit():
 
 def test_evidence_counts_provenance_reasons_and_a_conflict_is_always_mixed():
     ld = _ld(proposals=[_proposal(receive=[_p("in")])], trade_economics=[None], trade_impacts=[None])
-    assert classify(TRADE, ld, _report(), key="0", provenance=_provenance(fors=2)).evidence == MULTIPLE_AGREE
+    # Agreement is between sources: two reasons from one module are one voice.
+    from sleeper_tool.recommendation_provenance import FOR, Provenance, Reason
+    two_sources = Provenance(kind="trade", key="0", subject="s", reasons_for=[Reason("Roster", FOR, "a", "move_impact"), Reason("Market", FOR, "b", "market_velocity")])
+    assert classify(TRADE, ld, _report(), key="0", provenance=two_sources).evidence == MULTIPLE_AGREE
+    one_source = Provenance(kind="trade", key="0", subject="s", reasons_for=[Reason("Roster", FOR, "a", "trade_engine"), Reason("Roster", FOR, "b", "trade_engine")])
+    assert classify(TRADE, ld, _report(), key="0", provenance=one_source).evidence == SINGLE
     assert classify(TRADE, ld, _report(), key="0", provenance=_provenance(fors=1)).evidence == SINGLE
     assert classify(TRADE, ld, _report(), key="0", provenance=_provenance(fors=3, againsts=1)).evidence == MIXED
     assert classify(TRADE, ld, _report(), key="0").evidence == SINGLE
@@ -259,7 +267,7 @@ def test_a_major_lineup_cost_makes_even_a_non_trade_high():
     ld = _ld(proposals=[_proposal(give=[_p("qb", "QB", 340)])],
              trade_economics=[TradeEconomics(ROUGHLY_EVEN, MAJOR_LINEUP_COST, -9.0, False)], trade_impacts=[_impact(-9.0)])
     key = classify(TRADE, ld, _report(), key="0")
-    assert key.cost == HIGH_IRREVERSIBLE and key.materiality == MAJOR
+    assert key.cost == HIGH_IRREVERSIBLE and key.materiality == MARGINAL  # the cost is on Cost and Risk, never Materiality
 
 
 # -- the key itself ----------------------------------------------------------
@@ -355,4 +363,4 @@ def test_an_unknown_key_classifies_without_a_subject_rather_than_raising():
     key = classify(TRADE, ld, _report(), key="7")
     assert key.materiality == MARGINAL and key.urgency == MONITOR
     assert classify(WAIVER, ld, _report(), key=None).urgency == MONITOR
-    assert classify(STREAMER, None, None, key="TE").urgency == THIS_WEEK
+    assert classify(STREAMER, None, None, key="TE").urgency == MONITOR  # no measured gain: not this week's business

@@ -187,8 +187,9 @@ def test_market_cross_reads_labels_only():
     assert market_cross(nothing, value_direction="up", velocity_label="Rising", source_direction="up") is None
     # Labels that carry no direction ("Insufficient History", "Unmeasurable") are silence, not flat.
     assert market_cross(rising, value_direction=None, velocity_label="Insufficient History", source_direction=None) is None
-    # The market disagreeing with itself has no cross to report.
-    assert market_cross(rising, value_direction="up", velocity_label="Falling", source_direction=None) is None
+    # One market vote: the measured direction of travel (velocity) outranks the value direction.
+    assert market_cross(rising, value_direction="up", velocity_label="Falling", source_direction=None) == ROLE_AHEAD
+    assert market_cross(rising, value_direction=None, velocity_label="Insufficient History", source_direction="up") == CONFIRM
 
 
 def test_prior_season_baseline_is_labelled_and_never_reaches_a_trend():

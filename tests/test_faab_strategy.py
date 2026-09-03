@@ -231,14 +231,15 @@ def test_no_leverage_line_without_other_managers_budgets():
 
 
 def test_anchor_reports_the_seasons_actual_winning_bids():
-    advice = advise(ctx(league_bids=[0, 2, 4, 16]), facts(tier=MODERATE, suggested_pct=5))
-    assert "median $3" in advice.anchor_text
+    # $0 claims went through unopposed; only contested bids anchor the price.
+    advice = advise(ctx(league_bids=[0, 0, 2, 4, 16]), facts(tier=MODERATE, suggested_pct=5))
+    assert "median $4" in advice.anchor_text
     assert "max $16" in advice.anchor_text
 
 
 def test_anchor_overshoot_is_a_note_not_a_cap():
     advice = advise(
-        ctx(league_bids=[0, 2, 16]),
+        ctx(league_bids=[0, 1, 2, 16]),
         facts(tier=MUST_ADD, scarcity=SCARCE, substitutes=2, suggested_pct=35),
     )
     assert advice.suggested_dollars == 35  # unchanged: the anchor never caps

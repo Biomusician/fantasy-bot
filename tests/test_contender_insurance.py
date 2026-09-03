@@ -28,7 +28,7 @@ def test_flags_a_starter_whose_loss_drops_the_slot_below_65_percent_and_a_free_a
     # Losing rb1: rb3 (50) steps in -> replacement 50/200 = 25% -> fragile.
     # Losing qb1: nobody -> replacement 0 -> fragile.
     recs = identify_fragile_starters(
-        r, [_fa("fa_rb", "RB", 120), _fa("fa_qb", "QB", 200), _fa("fa_wr", "WR", 400)],
+        r, [_fa("fa_rb", "RB", 120), _fa("fa_qb", "QB", 200), _fa("fa_wr", "WR", 150)],
         team_status=CONTENDER, max_recommendations=10,
     )
     by_starter = {x.starter.player_id: x for x in recs}

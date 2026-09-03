@@ -38,6 +38,7 @@ SOURCE_WINDOWS: dict[str, tuple[dt.timedelta, dt.timedelta, dt.timedelta]] = {
     "sleeper_players": (20 * _H, 2 * _D, 7 * _D),
     "sleeper_league": (36 * _H, 3 * _D, 10 * _D),
     "sleeper_weekly": (36 * _H, 8 * _D, 21 * _D),
+    "sleeper_trending": (36 * _H, 8 * _D, 21 * _D),
     # The Dynasty Pass CSV is a manual export; ff_dynasty_pass.py already
     # refuses to read one over a week old, so usable and ceiling coincide.
     "ff_dynasty_pass": (2 * _D, 7 * _D, 7 * _D),
@@ -48,6 +49,7 @@ SOURCE_WINDOWS: dict[str, tuple[dt.timedelta, dt.timedelta, dt.timedelta]] = {
 # ranked players, the FantasyPros lists 300-600, RotoBaller ~600, the
 # nflverse schedule ~285 regular+post games, Sleeper ~11k players.
 MIN_COVERAGE: dict[str, int] = {
+    "nflverse_usage": 200,  # a season file with fewer player-weeks than one NFL week parsed badly
     "ktc": 400,
     "fantasypros": 300,
     "rotoballer": 300,

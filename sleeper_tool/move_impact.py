@@ -40,6 +40,7 @@ from sleeper_tool.team_status import classify_team_status
 from sleeper_tool.trade_engine import identify_depth_needs
 from sleeper_tool.trade_rating import ACCEPTANCE_TIERS
 from sleeper_tool.trade_types import TradeProposal
+from sleeper_tool.waiver_engine import INSURANCE, MUST_ADD, STRONG_ADD
 from sleeper_tool.valuation import games_remaining
 
 MATERIAL_WEEKLY_POINTS = 2.0
@@ -53,7 +54,7 @@ MIN_ACCEPTANCE_FOR_PREVIEW = "Moderate"
 # Every row a reader might actually claim gets a preview: the two paid
 # tiers and the contender-insurance rows. Moderate and below are cheap
 # streaming reads and would only add noise (and one optimizer solve each).
-PREVIEWED_WAIVER_TIERS = frozenset({"Must Add", "Strong Add", "Insurance"})
+PREVIEWED_WAIVER_TIERS = frozenset({MUST_ADD, STRONG_ADD, INSURANCE})
 
 
 @dataclass
@@ -76,6 +77,7 @@ class MoveImpact:
     lineup_in: list[str] = field(default_factory=list)  # names entering the optimized lineup
     lineup_out: list[str] = field(default_factory=list)
     matchup_note: str | None = None  # set by report_data from matchup_leverage; how the weekly delta relates to this week's gap
+    pure_add: bool = False  # a free-agent add with no player leaving: status and roster-value deltas are tautologies there
 
     @property
     def weekly_points_delta(self) -> float:
@@ -94,9 +96,9 @@ class MoveImpact:
             b = ", ".join(self.before.depth_needs) or "none"
             a = ", ".join(self.after.depth_needs) or "none"
             out.append(f"depth needs {b} → {a}")
-        if self._status_change_is_material():
+        if self._status_change_is_material() and not self.pure_add:
             out.append(f"team status {self.before.displayed_status or self.before.status} → {self.after.status}")
-        if self.before.roster_value:
+        if self.before.roster_value and not self.pure_add:
             rel = (self.after.roster_value - self.before.roster_value) / self.before.roster_value
             if abs(rel) >= MATERIAL_VALUE_RATIO:
                 out.append(f"total roster value {rel:+.0%}")
@@ -180,11 +182,12 @@ def snapshot_roster(
     )
 
 
-def _impact(label: str, after_roster: ValuedRoster, before: RosterSnapshot, ctx: PreviewContext) -> MoveImpact:
+def _impact(label: str, after_roster: ValuedRoster, before: RosterSnapshot, ctx: PreviewContext, *, pure_add: bool = False) -> MoveImpact:
     after = snapshot_roster(after_roster, ctx)
     names_before = {a.player_id: a.name for a in before.lineup.assignments}
     names_after = {a.player_id: a.name for a in after.lineup.assignments}
     return MoveImpact(
+        pure_add=pure_add,
         label=label,
         before=before,
         after=after,
@@ -225,4 +228,4 @@ def preview_add_drop(
     my_after = roster_after_moves(
         my_roster, add_entries=[add_entry], remove_player_ids=[drop_player_id] if drop_player_id else []
     )
-    return _impact(label, my_after, before, ctx)
+    return _impact(label, my_after, before, ctx, pure_add=drop_player_id is None)

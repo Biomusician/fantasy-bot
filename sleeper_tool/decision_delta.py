@@ -131,11 +131,19 @@ def _tracked_values(ld, current_week: int | None) -> dict[str, dict[str, Any]]:
 
 
 def is_complete_run(report, sync_failures: int = 0) -> bool:
-    """Every league synced, none errored, and no roster was built with a
+    """Every league synced, none errored, no roster was built with a
     player missing from the player cache — a roster short one player
-    would make the next delta report him as 'joined your roster'."""
+    would make the next delta report him as 'joined your roster' — and no
+    ranking source was served from a failed re-fetch or is missing, so a
+    source outage never becomes a snapshot that market velocity later
+    reads as a price move."""
     if sync_failures or any(ld.error for ld in report.leagues):
         return False
+    health = getattr(report, "health", None)
+    if health is not None:
+        for signal in health.signals:
+            if signal.family in ("ktc", "fantasypros", "rotoballer") and (signal.fallback or signal.label == "Unavailable"):
+                return False
     return not any(ld.roster is not None and ld.roster.skipped_player_count for ld in report.leagues)
 
 
@@ -167,10 +175,10 @@ def load_latest_snapshot(snapshot_dir: Path = DEFAULT_SNAPSHOT_DIR, *, before_da
             snapshot = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             logger.warning("Ignoring unreadable snapshot %s: %s", path, exc)
-            return None
+            continue
         if snapshot.get("schema") != SNAPSHOT_SCHEMA:
             logger.warning("Ignoring snapshot %s: schema %s, expected %s", path, snapshot.get("schema"), SNAPSHOT_SCHEMA)
-            return None
+            continue
         return snapshot
     return None
 

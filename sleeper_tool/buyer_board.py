@@ -101,10 +101,14 @@ def score_buyer(
     reasons: list[str] = []
     pos = piece.position or "?"
     heavy = POSITION_HEAVY in economy_labels and pos in heavy_positions
+    # One positional-need fact, scored once: a position is a top need
+    # precisely because a piece upgrades it, so the two readings never add.
     if piece_fits(their, piece, currency):
         score += 2
         reasons.append(f"upgrades their {pos}")
-    if not heavy and pos in identify_needs(their)[:TOP_NEEDS]:
+        if not heavy and pos in identify_needs(their)[:TOP_NEEDS]:
+            reasons.append(f"{pos} is a top need")
+    elif not heavy and pos in identify_needs(their)[:TOP_NEEDS]:
         score += 1
         reasons.append(f"{pos} is a top need")
     timeline_fit = status_fit([piece], [], their_status)

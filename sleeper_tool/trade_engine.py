@@ -76,6 +76,9 @@ from sleeper_tool.trade_rating import ACCEPTANCE_TIERS, proposal_confidence, rat
 from sleeper_tool.trade_types import DropCandidate, OpponentFit, TradeProposal
 
 SELL_HIGH_TREND = "rising"
+# Within-position percentile points an incoming piece must clear the weakest
+# starter by before the rationale calls it more than a marginal swap.
+CLEAR_STARTER_MIN_GAP = 10
 BUY_LOW_TREND = "down"
 VALUE_TOLERANCE = 0.20  # accept offers where value ratio is within +/-20%
 ELITE_ASSET_PERCENTILE = 90.0  # bypass age filtering for a clear top-tier asset regardless of team timeline
@@ -432,6 +435,8 @@ def _roster_impact_note(
     weak_phrase = _pctl_phrase(weakest.value, currency)
     if incoming_pctl > weak_pctl:
         gap = round(incoming_pctl - weak_pctl)
+        if gap < CLEAR_STARTER_MIN_GAP:
+            return f"This edges past {possessive} current starting {position}, {weakest.name} ({weak_phrase}) — a marginal upgrade, {gap} point{'s' if gap != 1 else ''} within position."
         return f"This clears {possessive} current starting {position}, {weakest.name} ({weak_phrase}) — a {gap}-point jump, not a marginal swap."
     gap = round(weak_pctl - incoming_pctl)
     return f"This slots in as depth behind {weakest.name} ({weak_phrase}) at {position}, {gap} points back — not an immediate upgrade for {possessive} lineup."
@@ -833,9 +838,11 @@ def _build_sell_high_rationale(
         # isn't always available (redraft currency, or the sources happen
         # to agree) — the plain trend label still says something, just
         # without the magnitude the sharper check provides.
+        # The percentile is where he sits, not evidence that he is peaking —
+        # it stays off this sentence (the card header already shows it).
         mine.append(
-            f"{sell_entry.name} is trending up right now ({ordinal_pct(percentile_for_currency(sell_entry.value, currency))} "
-            f"in {label}) — a good window to sell before performance regresses toward his underlying value profile."
+            f"{sell_entry.name} is trending up on the projection source right now — a window to sell before "
+            "performance regresses toward his underlying value profile."
         )
     if receive:
         primary = max(receive, key=lambda e: need_percentile(e.value, currency) or 0)
@@ -1024,6 +1031,8 @@ def _benefit_reason(
         weakest_starter_pctl = need_percentile(weakest_starter.value, currency) or 0
         if piece_pctl > weakest_starter_pctl:
             gap = round(piece_pctl - weakest_starter_pctl)
+            if gap < CLEAR_STARTER_MIN_GAP:
+                return f"since he'd edge past {weakest_starter.name} at {pos}"
             return f"since he'd clear {weakest_starter.name} at {pos} by {gap} points, not just marginally better"
     weakest = weakest_rosterable_percentile(their_roster, pos, currency, exclude_player_id=exclude_player_id)
     if weakest is None:

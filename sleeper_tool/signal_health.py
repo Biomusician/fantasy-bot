@@ -67,7 +67,10 @@ OPTIONAL_FAMILIES = frozenset({"ff_dynasty_pass"})
 # rows (settings, rosters, users, traded picks) are re-pulled every sync and
 # drift slowly; weekly rows are the ones that make this week's advice.
 SLEEPER_LEAGUE_TABLES = ("leagues", "rosters", "league_users", "traded_picks")
-SLEEPER_WEEKLY_TABLES = ("matchups", "transactions", "trending")
+SLEEPER_WEEKLY_TABLES = ("matchups", "transactions")
+# Trending is its own family: sync keeps yesterday's list when Sleeper
+# returns an empty one, so a MAX across the weekly tables would mask it.
+SLEEPER_TRENDING_TABLES = ("trending",)
 
 # feature -> families it cannot be computed without. A feature is suppressed
 # when ANY required family is Unavailable; a merely Stale family still
@@ -81,7 +84,7 @@ FEATURE_REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "matchup_leverage": ("rotoballer", "fantasypros"),
     "streamer_planner": ("rotoballer", "fantasypros"),
     "schedule_windows": ("nflverse_schedule",),
-    "waiver_trending": ("sleeper_weekly",),
+    "waiver_trending": ("sleeper_trending",),
     "roster_clog": ("sleeper_weekly",),
     "role_trends": ("nflverse_usage",),
     "roster_analysis": ("sleeper_league", "sleeper_players"),
@@ -321,6 +324,7 @@ def _sleeper_signals(storage, now: dt.datetime) -> list[SignalHealth]:
             _unavailable("sleeper_players", "sleeper_players", "no storage supplied"),
             _unavailable("sleeper_league", "sleeper_league", "no storage supplied"),
             _unavailable("sleeper_weekly", "sleeper_weekly", "no storage supplied"),
+            _unavailable("sleeper_trending", "sleeper_trending", "no storage supplied"),
         ]
 
     signals: list[SignalHealth] = []
@@ -351,6 +355,7 @@ def _sleeper_signals(storage, now: dt.datetime) -> list[SignalHealth]:
     for family, tables in (
         ("sleeper_league", SLEEPER_LEAGUE_TABLES),
         ("sleeper_weekly", SLEEPER_WEEKLY_TABLES),
+        ("sleeper_trending", SLEEPER_TRENDING_TABLES),
     ):
         fetched_at = storage.latest_fetched_at(*tables)
         age = _age(now, fetched_at)
@@ -378,7 +383,12 @@ def _schedule_signal(schedule_snapshot, now: dt.datetime) -> SignalHealth:
     return _snapshot_signal("nflverse_schedule", "nflverse_schedule", schedule_snapshot, now)
 
 
-def _usage_signal(usage_health, now: dt.datetime) -> SignalHealth:
+# The usage feed is rebuilt after each game; a file that is a week or more
+# behind the league's current week is stale however recently it was fetched.
+USAGE_MAX_WEEKS_BEHIND = 1
+
+
+def _usage_signal(usage_health, now: dt.datetime, current_week: int | None = None) -> SignalHealth:
     """The nflverse weekly-usage feed, read duck-typed so this module doesn't
     depend on the module that owns it (fetched_at, latest_week, rows,
     absent, stale)."""
@@ -394,9 +404,13 @@ def _usage_signal(usage_health, now: dt.datetime) -> SignalHealth:
     rows = getattr(usage_health, "rows", None)
     latest_week = getattr(usage_health, "latest_week", None)
     label = label_for(
-        age, SOURCE_WINDOWS.get("nflverse_usage"), parse_ok=bool(rows)
+        age, SOURCE_WINDOWS.get("nflverse_usage"), coverage=rows, floor=MIN_COVERAGE.get("nflverse_usage"), parse_ok=bool(rows)
     )
     details = []
+    if current_week is not None and latest_week is not None and latest_week < current_week - USAGE_MAX_WEEKS_BEHIND:
+        details.append(f"{current_week - latest_week} weeks behind the league's current week")
+        if label in (FRESH, USABLE):
+            label = STALE
     # The owning module can know the feed is behind the current NFL week even
     # when the file itself was downloaded minutes ago — trust it over the age.
     if getattr(usage_health, "stale", False):
@@ -448,6 +462,7 @@ def build_health(
     schedule_snapshot=None,
     usage_health=None,
     now: dt.datetime | None = None,
+    current_week: int | None = None,
 ) -> SignalHealthReport:
     """Grade every input this run had. Everything is optional and a missing
     input grades Unavailable — this must never be the thing that fails a run.
@@ -462,7 +477,7 @@ def build_health(
     signals.extend(_ranking_signals(engine, now))
     signals.extend(_sleeper_signals(storage, now))
     signals.append(_schedule_signal(schedule_snapshot, now))
-    signals.append(_usage_signal(usage_health, now))
+    signals.append(_usage_signal(usage_health, now, current_week))
     signals.append(_ff_signal())
     signals.sort(key=lambda s: (s.family, s.source))
 

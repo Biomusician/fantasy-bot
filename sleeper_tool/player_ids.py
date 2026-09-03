@@ -71,6 +71,7 @@ class CrosswalkReport:
     matched_by_source: Counter = field(default_factory=Counter)
     unmatched: list[dict] = field(default_factory=list)
     ambiguous: list[dict] = field(default_factory=list)
+    collisions: list[dict] = field(default_factory=list)  # one gsis id claimed by several Sleeper ids
 
     @property
     def total(self) -> int:
@@ -81,6 +82,7 @@ class CrosswalkReport:
         return (
             f"{self.total - len(self.unmatched)}/{self.total} matched ({by_source or 'none'}); "
             f"{len(self.unmatched)} unmatched, {len(self.ambiguous)} ambiguous"
+            + (f", {len(self.collisions)} gsis collision(s)" if self.collisions else "")
         )
 
 
@@ -237,6 +239,20 @@ def build_crosswalk(
         out[sleeper_id] = PlayerIds(sleeper_id=sleeper_id, gsis_id=gsis, pfr_id=pfr, source=source or SOURCE_NFLVERSE_NAME)
         report.matched_by_source[source or SOURCE_NFLVERSE_NAME] += 1
 
+    # Two Sleeper ids on one gsis id: neither claim is trustworthy (a
+    # duplicated Sleeper record or a stale DynastyProcess row), so both
+    # are demoted to unmatched and counted as a collision.
+    claims: dict[str, list[str]] = {}
+    for sleeper_id, ids in out.items():
+        if ids.gsis_id:
+            claims.setdefault(ids.gsis_id, []).append(sleeper_id)
+    for gsis, sleeper_ids in sorted(claims.items()):
+        if len(sleeper_ids) > 1:
+            report.collisions.append({"gsis_id": gsis, "sleeper_ids": sorted(sleeper_ids)})
+            for sleeper_id in sleeper_ids:
+                dropped = out.pop(sleeper_id)
+                report.matched_by_source[dropped.source] -= 1
+                report.unmatched.append({"sleeper_id": sleeper_id, "name": _sleeper_name(players.get(sleeper_id) or {}), "position": None, "team": None, "reason": f"gsis id {gsis} claimed by {len(sleeper_ids)} Sleeper ids"})
     if report.unmatched:
         logger.warning("Player id crosswalk: %s", report.describe())
     return out, report

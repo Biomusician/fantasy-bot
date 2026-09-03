@@ -360,7 +360,14 @@ def _leverage_text(ctx: FaabContext, dollars: int) -> str | None:
     return f"Only {can} of {len(others)} other managers can outbid ${dollars}"
 
 
+def _contested(bids: Sequence[int]) -> list[int]:
+    """A $0 claim went through unopposed; it says nothing about what a
+    contested player costs here."""
+    return [b for b in bids if b > 0]
+
+
 def _anchor_text(bids: Sequence[int]) -> str | None:
+    bids = _contested(bids)
     if not bids:
         return None
     plural = "" if len(bids) == 1 else "s"
@@ -392,7 +399,8 @@ def advise(ctx: FaabContext, facts: TargetFacts) -> FaabAdvice | None:
 
     notes = list(reasons)
     anchor = _anchor_text(ctx.league_bids)
-    max_bid = max(ctx.league_bids) if len(ctx.league_bids) >= ANCHOR_MIN_BIDS else 0
+    contested = _contested(ctx.league_bids)
+    max_bid = max(contested) if len(contested) >= ANCHOR_MIN_BIDS else 0
     if max_bid > 0 and dollars > max_bid * ANCHOR_OVERSHOOT_RATIO:
         notes.append(
             f"${dollars} is more than {ANCHOR_OVERSHOOT_RATIO:g}x the largest winning bid this league has paid "

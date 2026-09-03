@@ -28,6 +28,7 @@ from typing import Any
 
 from sleeper_tool.decision_delta import _stable_value
 
+MAX_OBSERVATION_GAP_DAYS = 2  # observations further apart than this are not consecutive days
 MIN_OBSERVATIONS = 3
 DIRECTIONAL_MIN_MOVE = 0.08
 RAPID_MIN_MOVE = 0.15
@@ -83,6 +84,14 @@ def _longest_run(moves: list[float], direction: int) -> int:
     return best
 
 
+def _days_between(a: str, b: str) -> int:
+    try:
+        import datetime as _dt
+        return abs((_dt.date.fromisoformat(b[:10]) - _dt.date.fromisoformat(a[:10])).days)
+    except (TypeError, ValueError):
+        return 0
+
+
 def classify_velocity(observations: list[tuple[str, float]]) -> Velocity:
     """`observations`: (date, value) pairs, oldest first, one per day."""
     n = len(observations)
@@ -94,7 +103,14 @@ def classify_velocity(observations: list[tuple[str, float]]) -> Velocity:
         return Velocity(UNMEASURABLE, n, None, first_date, last_date)
     total = (last - first) / first
     direction = _sign(total)
-    moves = [b - a for (_, a), (_, b) in zip(observations, observations[1:]) if b != a]
+    # A gap in the daily record (the cron down for a week) is not a
+    # consecutive day: the run of same-direction moves breaks there.
+    moves: list[float] = []
+    for (d0, a), (d1, b) in zip(observations, observations[1:]):
+        if _days_between(d0, d1) > MAX_OBSERVATION_GAP_DAYS:
+            moves.append(0.0)  # a zero move resets every run below
+        elif b != a:
+            moves.append(b - a)
     label = STABLE
     if direction and abs(total) >= RAPID_MIN_MOVE and moves and all(_sign(m) == direction for m in moves):
         label = RAPIDLY_RISING if direction > 0 else RAPIDLY_FALLING

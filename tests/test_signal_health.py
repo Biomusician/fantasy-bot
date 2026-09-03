@@ -154,6 +154,7 @@ def test_everything_missing_is_unavailable_and_degraded():
         "sleeper_players",
         "sleeper_league",
         "sleeper_weekly",
+        "sleeper_trending",
         "ff_dynasty_pass",
     }
     assert all(s.detail for s in report.signals)
@@ -448,7 +449,7 @@ def test_describe_says_so_when_nothing_is_wrong(tmp_path):
     assert report.degraded is False
     assert report.notes == []
     assert report.describe().startswith("Signal health: all sources fresh")
-    assert [s.label for s in report.signals if s.family != "ff_dynasty_pass"] == [sh.FRESH] * 8
+    assert [s.label for s in report.signals if s.family != "ff_dynasty_pass"] == [sh.FRESH] * 9
 
 
 def test_the_optional_csv_alone_never_degrades_a_run(monkeypatch):

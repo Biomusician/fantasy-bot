@@ -225,9 +225,11 @@ def _covers_next_week_bye(target, ld, report) -> bool:
     week's waiver move."""
     bye = getattr(ld, "bye_collision", None)
     current_week = getattr(report, "current_week", None) if report is not None else None
-    if bye is None or current_week is None:
+    if bye is None or current_week is None or bye.week != current_week + 1:
         return False
-    return bye.week == current_week + 1 and "bye hole" in (target.reason or "")
+    fills = {hole.replacement.player_id for hole in bye.holes if getattr(hole, "replacement", None) is not None}
+    covering = {getattr(getattr(hole, "normal_starter", None), "position", None) for hole in bye.holes}
+    return target.player_id in fills or target.position in covering
 
 
 def classify_materiality(kind: str, subject, ld, key: str | None = None) -> str:
@@ -235,16 +237,16 @@ def classify_materiality(kind: str, subject, ld, key: str | None = None) -> str:
     opponent's gain for a block, the window gain per week for a streamer.
     Without any of those, a move is Marginal unless its own tier says it
     is not."""
+    # Materiality is the GAIN a move makes; a lineup cost is carried by the
+    # Risk reason and the conflict, never promoted as if it were a gain.
     impact = _impact(kind, key, ld)
     if impact is not None:
-        return _materiality_of(abs(impact.weekly_points_delta))
+        return _materiality_of(max(impact.weekly_points_delta, 0.0))
     if kind == TRADE:
         economics = _economics(kind, key, ld)
         if economics is not None and economics.weekly_delta is not None:
-            return _materiality_of(abs(economics.weekly_delta))
-        if economics is not None and economics.roster_economics == MAJOR_LINEUP_COST:
-            return MAJOR
-        if economics is not None and economics.roster_economics in (IMPROVES_LINEUP, COSTS_LINEUP):
+            return _materiality_of(max(economics.weekly_delta, 0.0))
+        if economics is not None and economics.roster_economics == IMPROVES_LINEUP:
             return MEANINGFUL
     if kind == DEFENSIVE_ADD and subject is not None:
         return _materiality_of(abs(subject.opponent_gain))
@@ -273,7 +275,10 @@ def classify_perishability(kind: str, subject, ld) -> str:
     Wednesday; a block and a streamer expire with the week; a trade offer
     and a stash are still there next week."""
     if kind == WAIVER and subject is not None:
-        if subject.priority_tier == MUST_ADD or subject.trend_count:
+        # Every trending-derived row has a nonzero count, so the count alone
+        # discriminates nothing; only a paid tier that is also trending is
+        # the kind of add that is gone by Wednesday.
+        if subject.priority_tier == MUST_ADD or (subject.priority_tier == STRONG_ADD and subject.trend_count):
             return LIKELY_TO_DISAPPEAR
         return TIME_SENSITIVE
     if kind in (DEFENSIVE_ADD, STREAMER, ALERT):
@@ -331,7 +336,10 @@ def classify_evidence(kind: str, key: str | None, ld, provenance) -> str:
         return SINGLE
     if provenance.reasons_against:
         return MIXED
-    return MULTIPLE_AGREE if len(provenance.reasons_for) >= MIN_REASONS_FOR_AGREEMENT else SINGLE
+    # Agreement is between SOURCES: three clauses of one engine's sentence
+    # are one module agreeing with itself.
+    sources = {r.source for r in provenance.reasons_for}
+    return MULTIPLE_AGREE if len(sources) >= MIN_REASONS_FOR_AGREEMENT else SINGLE
 
 
 def _conflict(kind: str, key: str | None, ld):
@@ -369,9 +377,18 @@ def classify(kind: str, ld, report, *, provenance=None, key: str | None = None) 
     name); `provenance` is that recommendation's Provenance card, used
     only for the Evidence dimension."""
     subject = _subject(kind, key, ld)
+    urgency = classify_urgency(kind, subject, ld, report)
+    materiality = classify_materiality(kind, subject, ld, key)
+    # A marginal claim or switch is not this week's business just because
+    # its tier says so: without a Must Add or a measured gain it is a
+    # Monitor, so a Major trade is never outranked by a +0.0 add.
+    if urgency == THIS_WEEK and materiality == MARGINAL and kind in (WAIVER, STREAMER, DEFENSIVE_ADD):
+        tier = getattr(subject, "priority_tier", None)
+        if tier != MUST_ADD:
+            urgency = MONITOR
     return PriorityKey(
-        urgency=classify_urgency(kind, subject, ld, report),
-        materiality=classify_materiality(kind, subject, ld, key),
+        urgency=urgency,
+        materiality=materiality,
         perishability=classify_perishability(kind, subject, ld),
         strategic_fit=classify_strategic_fit(kind, subject, ld),
         evidence=classify_evidence(kind, key, ld, provenance),

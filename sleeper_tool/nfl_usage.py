@@ -47,6 +47,7 @@ from typing import Callable, Iterable
 import requests
 
 from sleeper_tool.nfl_schedule import normalize_team
+from sleeper_tool.rankings.freshness import ceiling_for
 from sleeper_tool.rankings.cache import get_or_fetch, load_snapshot
 
 logger = logging.getLogger(__name__)
@@ -402,7 +403,10 @@ def _fetch_payload(url: str, parse, season: int | None, fetch: Callable[[str], b
 
 def _load_asset(source: str, url: str, parse, *, season: int | None, max_age: dt.timedelta, force: bool, fetch: Callable[[str], bytes]) -> tuple[dict | None, dt.datetime | None]:
     try:
-        snapshot = get_or_fetch(source, lambda: _fetch_payload(url, parse, season, fetch), max_age=max_age, force=force)
+        snapshot = get_or_fetch(
+            source, lambda: _fetch_payload(url, parse, season, fetch), max_age=max_age, force=force,
+            ceiling=ceiling_for("nflverse_usage"),
+        )
     except Exception as exc:  # nothing cached to fall back to
         logger.warning("nflverse asset unavailable (%s): %s", source, exc)
         return None, None

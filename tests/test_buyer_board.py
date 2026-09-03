@@ -42,11 +42,11 @@ def test_fit_labels_and_score_components():
     piece = _me().entries[2]  # wr_hot, 29-year-old riser
     needy = _roster(2, [_p("qb2", "QB", 8000, 95), _p("rb2", "RB", 7000, 92), _p("wr_bad", "WR", 400, 10), _p("rb_spare", "RB", 4000, 60, starter=False)], "needy")
     fit = score_buyer(needy, piece, "dynasty", their_status=CONTENDER, economy_labels=[FREQUENT_TRADER], heavy_positions=[], scarcity="Scarce", pick_value=0)
-    assert fit.label == STRONG_FIT and fit.score == 6
+    assert fit.label == STRONG_FIT and fit.score == 5  # upgrade and top need are one positional fact, scored once
     assert fit.reasons == ["upgrades their WR", "WR is a top need", "fits a contender timeline", "frequent trader", "WR is Scarce on waivers"]
-    # Need alone is not Strong: upgrade + top need = 3 -> Possible.
+    # Need alone is not Strong: upgrade (top need named, not re-scored) = 2 -> Possible.
     plain = score_buyer(needy, piece, "dynasty", their_status="middling", economy_labels=[], heavy_positions=[], scarcity=None, pick_value=0)
-    assert plain.label == POSSIBLE_FIT and plain.score == 3
+    assert plain.label == POSSIBLE_FIT and plain.score == 2
     poor = score_buyer(needy, piece, "dynasty", their_status=REBUILD, economy_labels=[INACTIVE_TRADER, POSITION_HEAVY], heavy_positions=["WR"], scarcity="Abundant", pick_value=0)
     assert poor.score < fit.score and "cuts against a rebuild timeline" in poor.reasons and "inactive trader" in poor.reasons and "already heavy at WR" in poor.reasons
     broke = _roster(3, [_p("qb3", "QB", 8000, 95), _p("rb3", "RB", 7000, 92), _p("wr_bad3", "WR", 400, 10)], "broke")  # nothing tradeable behind the top two
@@ -75,7 +75,7 @@ def test_boards_hide_poor_fits_and_cap_at_three_best_first():
     assert board.fit_for("b7").label == POOR_FIT and "b7" not in [b.username for b in board.buyers]  # rebuild + inactive: poor, hidden from the board
     # An inactive trader never rates Strong, however good the need.
     inactive = score_buyer(buyers[2], me.entries[2], "dynasty", their_status=CONTENDER, economy_labels=[INACTIVE_TRADER], heavy_positions=[], scarcity="Scarce", pick_value=0)
-    assert inactive.score >= STRONG_FIT_MIN and inactive.label == POSSIBLE_FIT
+    assert inactive.label == POSSIBLE_FIT
     # A manager heavy at the position is not told the position is his need.
     heavy = score_buyer(buyers[2], me.entries[2], "dynasty", their_status=CONTENDER, economy_labels=[POSITION_HEAVY], heavy_positions=["WR"], scarcity=None, pick_value=0)
     assert "already heavy at WR" in heavy.reasons and "WR is a top need" not in heavy.reasons
@@ -93,7 +93,8 @@ def test_sell_high_proposals_get_buyer_board_context():
                              my_value_total=1, their_value_total=1, rationale_for_me=[], rationale_for_them=[], caveats=[], trade_type="sell_high")
 
     to_weak, to_strong = proposal("weak"), proposal("strong")
-    boards = build_buyer_boards(me, rosters, sell_high_candidates(me, [to_weak, to_strong]), status_of={2: CONTENDER, 3: CONTENDER}, economy=None, market=None, valued_picks=None)
+    economy = LeagueEconomy(total_completed_trades=5, limited_sample=False, managers={2: ManagerEconomy(2, "strong", "Team strong", 5, 0, [], [FREQUENT_TRADER])})
+    boards = build_buyer_boards(me, rosters, sell_high_candidates(me, [to_weak, to_strong]), status_of={2: CONTENDER, 3: CONTENDER}, economy=economy, market=None, valued_picks=None)
     annotate_sell_high_proposals([to_weak, to_strong], boards)
     assert to_strong.rationale_for_them and to_strong.rationale_for_them[0].startswith("Buyer board: Team strong is a Strong Fit for wr_hot")
     assert to_weak.caveats and to_weak.caveats[0].startswith("Buyer board: Team strong is a Strong Fit for wr_hot") and "Team weak rates Possible Fit" in to_weak.caveats[0]

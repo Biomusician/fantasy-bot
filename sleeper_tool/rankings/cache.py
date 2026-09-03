@@ -26,6 +26,12 @@ CACHE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "rankings_c
 last_fetch_outcome: dict[str, str] = {}
 
 
+def _aware(stamp: dt.datetime) -> dt.datetime:
+    """A hand-edited or older cache file may carry a naive timestamp; read
+    it as UTC rather than failing every age comparison downstream."""
+    return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=dt.timezone.utc)
+
+
 @dataclass
 class RankingSnapshot:
     source: str
@@ -46,7 +52,7 @@ class RankingSnapshot:
     def from_json(cls, data: dict) -> "RankingSnapshot":
         return cls(
             source=data["source"],
-            fetched_at=dt.datetime.fromisoformat(data["fetched_at"]),
+            fetched_at=_aware(dt.datetime.fromisoformat(data["fetched_at"])),
             payload=data["payload"],
         )
 

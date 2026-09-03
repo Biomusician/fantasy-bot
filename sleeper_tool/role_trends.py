@@ -223,10 +223,9 @@ def teammate_overtaking(
         if other_id == gsis_id or leader.opportunity_share is None:
             continue
         before = baseline.get(other_id)
-        before_share = before.opportunity_share if before is not None else 0.0
-        if before_share is None:
-            continue
-        gain = leader.opportunity_share - before_share
+        if before is None or before.opportunity_share is None:
+            continue  # no baseline rows is missing data, not a 0% share
+        gain = leader.opportunity_share - before.opportunity_share
         if _at_least(gain, loss) and _at_least(gain, TEAMMATE_OVERTAKE_MIN_GAIN) and (best is None or gain > best[0]):
             best = (gain, leader.name or other_id)
     if best is None:
@@ -386,13 +385,16 @@ def market_cross(trend: RoleTrend, *, value_direction: str | None, velocity_labe
     role_dir = _role_direction(trend.label)
     if role_dir is None:
         return None
-    dirs = [d for d in (_direction(value_direction), _direction(velocity_label), _direction(source_direction)) if d is not None]
-    if not dirs:
+    # One market vote, not three readings of the same KTC snapshot: the
+    # measured direction of travel (velocity) when there is one, else the
+    # explicit value direction, else the cross-sectional source direction.
+    market_dir = None
+    for candidate in (velocity_label, value_direction, source_direction):
+        market_dir = _direction(candidate)
+        if market_dir is not None:
+            break
+    if market_dir is None:
         return None
-    ups, downs = dirs.count(UP), dirs.count(DOWN)
-    if ups and downs:
-        return None  # the market itself is split; no cross to report
-    market_dir = UP if ups else DOWN if downs else FLAT
 
     if role_dir == FLAT and market_dir == FLAT:
         return None

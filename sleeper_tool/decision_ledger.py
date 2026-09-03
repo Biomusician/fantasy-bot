@@ -530,8 +530,14 @@ def _as_datetime(iso: str) -> dt.datetime | None:
     return moment if moment.tzinfo else moment.replace(tzinfo=dt.timezone.utc)
 
 
+def _effective_ms(t: dict) -> int:
+    """When a transaction took effect: a waiver claim is queued at
+    `created` and processed at `status_updated`, hours or days later."""
+    return int(t.get("status_updated") or t.get("created") or 0)
+
+
 def _sorted_transactions(transactions: Sequence[dict]) -> list[dict]:
-    return sorted(transactions, key=lambda t: (t.get("created") or 0, str(t.get("transaction_id") or "")))
+    return sorted(transactions, key=lambda t: (_effective_ms(t), str(t.get("transaction_id") or "")))
 
 
 def _rostered_by(rosters: Sequence[dict]) -> dict[str, int]:
@@ -603,12 +609,14 @@ def observe(
         first_seen = _as_datetime(entry.run_id)
         expired = first_seen is not None and now >= first_seen + dt.timedelta(days=OBSERVATION_WINDOW_DAYS)
 
-        if not txs or not rosters or my_roster_id is None or first_ms is None:
+        # An EMPTY transaction list is an answer (nothing happened); only a
+        # missing one, or missing rosters, is unable to determine.
+        if txs is None or not rosters or my_roster_id is None or first_ms is None:
             _resolve(entry, UNABLE_TO_DETERMINE, _missing_detail(txs, rosters, my_roster_id), now, close=expired)
             counts[UNABLE_TO_DETERMINE] = counts.get(UNABLE_TO_DETERMINE, 0) + 1
             continue
 
-        rows = [t for t in _sorted_transactions(txs) if (t.get("created") or 0) >= first_ms]
+        rows = [t for t in _sorted_transactions(txs) if _effective_ms(t) >= first_ms]
         rostered = _rostered_by(rosters)
         if entry.action in _TRADE_ACTIONS:
             outcome, detail = _observe_trade(entry, rows, my_roster_id)
@@ -647,6 +655,16 @@ def _observe_add(
     pids = [str(p) for p in entry.receive_ids] or [str(p) for p in entry.player_ids]
     if not pids:
         return None, None
+    # Where he is NOW settles it before any transaction history does: a
+    # rival's add that was later reversed must not close the entry.
+    if any(_same_roster(rostered.get(pid), my_roster_id) for pid in pids if pid in rostered):
+        mine = [tx for tx in rows if tx.get("status") == "complete" and any(_same_roster((tx.get("adds") or {}).get(pid), my_roster_id) for pid in pids)]
+        if mine:
+            bid = (mine[-1].get("settings") or {}).get("waiver_bid")
+            if bid is not None:
+                entry.paid_bid = int(bid)
+            kind = mine[-1].get("type") or "transaction"
+            return COMPLETED, f"added via {kind}" + (f" for ${entry.paid_bid} FAAB" if entry.paid_bid is not None else "")
     for tx in rows:
         adds = tx.get("adds") or {}
         for pid in pids:

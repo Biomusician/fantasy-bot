@@ -84,7 +84,21 @@ def get_rostered_player_ids(storage: Storage, league: LeagueInfo) -> set[str]:
     return rostered
 
 
-def _roster_impact_note(my_roster: ValuedRoster, position: str | None, new_pctl: float | None, currency: str) -> str | None:
+def _starters_at(my_roster: ValuedRoster, position: str, starter_ids: Collection[str] | None) -> list[RosterEntry]:
+    """Who currently starts at a position. The optimizer's starter ids when
+    the caller has them (lineup_optimizer owns "who starts"); Sleeper's own
+    set-lineup flag only as the fallback for callers without a lineup."""
+    entries = my_roster.by_position(position)
+    if starter_ids is not None:
+        ids = set(starter_ids)
+        return [e for e in entries if e.player_id in ids]
+    return [e for e in entries if e.is_starter]
+
+
+def _roster_impact_note(
+    my_roster: ValuedRoster, position: str | None, new_pctl: float | None, currency: str,
+    starter_ids: Collection[str] | None = None,
+) -> str | None:
     """A concrete comparison against what I'd actually be replacing, not
     just an abstract "fills a need" label — names the current starter
     and the specific percentile gap, or says plainly that the position is
@@ -102,7 +116,7 @@ def _roster_impact_note(my_roster: ValuedRoster, position: str | None, new_pctl:
     """
     if not position:
         return None
-    starters_here = [e for e in my_roster.by_position(position) if e.is_starter]
+    starters_here = _starters_at(my_roster, position, starter_ids)
     if not starters_here:
         return f"you have nobody currently starting at {position}"
     weakest_starter = min(starters_here, key=lambda e: _display_percentile(e.value, currency) or 0)
@@ -181,14 +195,17 @@ def _find_drop_candidate(
     return min(non_need_pool, key=_sort_key)
 
 
-def _upgrades_starter(my_roster: ValuedRoster, position: str | None, new_pctl: float | None, currency: str) -> bool | None:
+def _upgrades_starter(
+    my_roster: ValuedRoster, position: str | None, new_pctl: float | None, currency: str,
+    starter_ids: Collection[str] | None = None,
+) -> bool | None:
     """Would he beat my weakest current starter at the position? None when
     nobody starts there or a percentile is missing (an empty slot IS an
     upgrade, so callers treat None as not-a-demotion). The same comparison
     _roster_impact_note phrases; kept as a bool so the tier can read it."""
     if not position:
         return None
-    starters_here = [e for e in my_roster.by_position(position) if e.is_starter]
+    starters_here = _starters_at(my_roster, position, starter_ids)
     if not starters_here:
         return None
     weak_pctl = _display_percentile(min(starters_here, key=lambda e: _display_percentile(e.value, currency) or 0).value, currency)
@@ -214,9 +231,19 @@ def _priority_tier(fills_need: bool, pctl: float | None, trend_rank: int, upgrad
     return MONITOR
 
 
-def _horizon(value: PlayerValue, years_exp: int | None, currency: str, fills_need: bool, pctl: float | None) -> str:
+def _horizon(
+    value: PlayerValue, years_exp: int | None, currency: str, fills_need: bool, pctl: float | None,
+    upgrades_starter: bool | None = None,
+) -> str:
+    """`upgrades_starter` False means he would sit behind the starter he is
+    supposedly needed for: that is a Stash (dynasty) or a Streamer, never
+    a Season Starter — the same demotion _priority_tier applies."""
     if value.trend == "rising" and years_exp is not None and years_exp <= BREAKOUT_YEARS_EXP_THRESHOLD:
         return BREAKOUT
+    if upgrades_starter is False:
+        if currency == DYNASTY_CURRENCY and (pctl or 0) >= STASH_MIN_PERCENTILE:
+            return STASH
+        return STREAMER
     # A need-filling, rosterable-or-better add is a real hold, not a
     # this-week-only churn play — regardless of currency. Previously this
     # fell through to STREAMER for every add that wasn't a young breakout,
@@ -256,9 +283,15 @@ def get_waiver_targets(
     current_week: int | None = None,
     waiver_budget: int | None = None,
     clog_ids: Collection[str] = (),
+    starter_ids: Collection[str] | None = None,
+    protected_ids: Collection[str] = (),
 ) -> list[WaiverTarget]:
     """`clog_ids`: roster_clog's dead-weight players, preferred as the drop
-    paired with each add (see _find_drop_candidate)."""
+    paired with each add (see _find_drop_candidate). `starter_ids`: the
+    optimizer's starters, so "your current starting X" and the
+    beats-the-starter test read the real lineup rather than Sleeper's
+    set-lineup flag. `protected_ids` (typically those same starters) are
+    never offered as the paired drop."""
     if not my_roster.entries:
         # No roster yet usually means the league hasn't drafted (redraft
         # leagues start empty) — nothing meaningful to recommend yet.
@@ -307,7 +340,7 @@ def get_waiver_targets(
         # your starter" comparison instead of generic trend-count
         # boilerplate — the same generic-vs-concrete gap trade_engine's
         # _benefit_reason was rewritten to close for trade messages.
-        impact_note = _roster_impact_note(my_roster, position, pctl, currency)
+        impact_note = _roster_impact_note(my_roster, position, pctl, currency, starter_ids)
         reason_bits = []
         if impact_note:
             reason_bits.append(impact_note)
@@ -332,8 +365,9 @@ def get_waiver_targets(
             qualifier = "within-position " if currency == DYNASTY_CURRENCY and value.dynasty_positional_percentile is not None else ""
             reason_bits.append(f"{ordinal_pct(pctl)} {qualifier}{value_label_for_currency(currency)}")
 
-        tier = _priority_tier(fills_need, pctl, trend_rank, _upgrades_starter(my_roster, position, pctl, currency))
-        horizon = _horizon(value, pdata.get("years_exp"), currency, fills_need, pctl)
+        upgrades = _upgrades_starter(my_roster, position, pctl, currency, starter_ids)
+        tier = _priority_tier(fills_need, pctl, trend_rank, upgrades)
+        horizon = _horizon(value, pdata.get("years_exp"), currency, fills_need, pctl, upgrades)
         faab_pct = _suggested_faab_pct(tier, waiver_budget, my_roster.waiver_budget_used)
 
         targets.append(
@@ -364,11 +398,19 @@ def get_waiver_targets(
     # bench cut before a higher-priority target at the same position ever
     # got a chance at it, which is backwards: the row a user is most likely
     # to actually act on is the one that most needs an actionable pairing.
-    recommended_drop_ids: set[str] = set()
+    recommended_drop_ids: set[str] = set(protected_ids)
     for t in targets:
         drop_candidate = _find_drop_candidate(
             my_roster, t.position, needs_ranked[:2], currency, exclude_ids=recommended_drop_ids, preferred_ids=clog_ids
         )
+        # Never cut a same-position player who is better than the add: a
+        # worse QB for a better one is a loss whatever the trending count
+        # says (and in a Very Scarce market it is an unrecoverable one).
+        if drop_candidate is not None and drop_candidate.position == t.position:
+            drop_pctl = _display_percentile(drop_candidate.value, currency)
+            add_pctl = _display_percentile(t.value, currency)
+            if drop_pctl is not None and add_pctl is not None and drop_pctl > add_pctl:
+                drop_candidate = None
         if drop_candidate is not None:
             recommended_drop_ids.add(drop_candidate.player_id)
         t.drop_candidate = drop_candidate

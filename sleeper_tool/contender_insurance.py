@@ -161,6 +161,11 @@ def identify_fragile_starters(
         needed = INSURANCE_MIN_IMPROVEMENT * replacement if replacement > 0 else 0.0
         if improvement <= needed:
             continue
+        if restored >= a.projection:
+            # The "insurance" would out-project the starter he insures —
+            # that is a straight upgrade the waiver engine already handles,
+            # not cover for an injury.
+            continue
         found.append(
             InsuranceRecommendation(
                 starter=by_id[a.player_id], slot=a.slot, starter_projection=a.projection,
@@ -181,8 +186,10 @@ def merge_insurance_into_waiver_targets(
     deadline_passed: bool,
     waiver_budget: int | None = None,
     clog_ids=(),
+    protected_ids=(),
 ) -> list[WaiverTarget]:
-    """The thin hook into the waiver list. Each insurance candidate becomes
+    """The thin hook into the waiver list. `protected_ids` (the optimized
+    starters) are never offered as the paired drop. Each insurance candidate becomes
     an INSURANCE-tier WaiverTarget with its own paired drop (and FAAB
     suggestion where the league bids); a candidate who is ALREADY a
     trending target just gets the insurance note added to that row instead
@@ -196,7 +203,7 @@ def merge_insurance_into_waiver_targets(
     needs = identify_needs(my_roster)[:2]
     per_week = games_remaining(current_week)
     existing = {t.player_id: t for t in targets}
-    taken_drops = {t.drop_candidate.player_id for t in targets if t.drop_candidate}
+    taken_drops = {t.drop_candidate.player_id for t in targets if t.drop_candidate} | set(protected_ids)
 
     # One row per candidate: the same free agent is often the best cover
     # for two starters at once (the lone decent RB on waivers), and two
