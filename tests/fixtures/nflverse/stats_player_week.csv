@@ -1,0 +1,13 @@
+player_id,player_display_name,position,position_group,season,week,season_type,team,opponent_team,completions,attempts,carries,rushing_yards,receptions,targets,receiving_yards,receiving_air_yards,target_share,air_yards_share,fantasy_points_ppr
+00-0000001,Rise Receiver,WR,WR,2025,1,REG,KC,LA,0,0,0,0,3,5,40,50,0.1667,0.2083,7.0
+00-0000001,Rise Receiver,WR,WR,2025,2,REG,KC,LA,0,0,0,0,6,10,80,110,0.3333,0.4783,14.0
+00-0000002,Bye Back,RB,RB,2025,1,REG,KC,LA,0,0,12,50,1,2,10,5,0.0667,0.0208,7.0
+00-0000003,Traded Wideout,WR,WR,2025,1,REG,KC,LA,0,0,0,0,2,4,20,30,0.1333,0.125,4.0
+00-0000003,Traded Wideout,WR,WR,2025,2,REG,LA,KC,0,0,0,0,5,9,60,70,0.3,0.3182,11.0
+00-0000004,No Snap Tight End,TE,TE,2025,1,REG,LA,KC,0,0,0,0,4,6,44,40,0.2,0.16,8.4
+00-0000009,Deep Lineman,DT,DL,2025,1,REG,KC,LA,0,0,0,0,0,0,0,0,0,0,0.0
+00-0000001,Rise Receiver,WR,WR,2025,19,POST,KC,LA,0,0,0,0,9,12,120,140,0.4,0.45,21.0
+00-0000001,Rise Receiver,WR,WR,2024,1,REG,KC,LA,0,0,0,0,1,1,5,5,0.03,0.02,1.5
+00-0000005,Broken Week,WR,WR,2025,,REG,KC,LA,0,0,0,0,1,1,5,5,0.03,0.02,1.5
+,Missing Id,WR,WR,2025,3,REG,KC,LA,0,0,0,0,1,1,5,5,0.03,0.02,1.5
+00-0000006,Missing Team,WR,WR,2025,3,REG,,LA,0,0,0,0,1,1,5,5,0.03,0.02,1.5

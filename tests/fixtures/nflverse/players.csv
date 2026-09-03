@@ -1,0 +1,10 @@
+gsis_id,display_name,position,position_group,latest_team,status,pfr_id,last_season
+00-0000001,Rise Receiver,WR,WR,KC,ACT,RiseR00,2025
+00-0000002,Bye Back,RB,RB,KC,ACT,ByeBa00,2025
+00-0000003,Traded Wideout,WR,WR,LA,ACT,TradW00,2025
+00-0000004,No Snap Tight End,TE,TE,LA,ACT,NoSnT00,2025
+00-0000007,Name Twin,WR,WR,DAL,ACT,TwinA00,2025
+00-0000008,Name Twin,WR,WR,DAL,ACT,TwinB00,2025
+00-0000010,Cut Player,WR,WR,NYJ,CUT,CutPl00,2024
+00-0000011,Active Namematch,TE,TE,NYJ,ACT,ActNa00,2025
+00-0000012,Anchor Lineman,OT,OL,KC,ACT,LineM00,2025
