@@ -130,8 +130,24 @@ class PreviewContext:
     engine: object = None
 
     @classmethod
-    def build(cls, rosters: dict[int, ValuedRoster], *, current_week: int | None, storage=None, engine=None) -> "PreviewContext":
-        normalized = {rid: with_optimized_starters(r) if r.entries else r for rid, r in rosters.items()}
+    def build(
+        cls,
+        rosters: dict[int, ValuedRoster],
+        *,
+        current_week: int | None,
+        storage=None,
+        engine=None,
+        lineups: dict[int, LineupResult] | None = None,
+    ) -> "PreviewContext":
+        """`lineups` may carry already-optimized STRUCTURAL lineups by
+        roster_id (what with_optimized_starters would compute anyway); any
+        roster missing from it is optimized here. Passing the report's
+        shared map avoids re-solving every roster's lineup a third time."""
+        lineups = lineups or {}
+        normalized = {
+            rid: with_optimized_starters(r, lineups.get(rid)) if r.entries else r
+            for rid, r in rosters.items()
+        }
         return cls(rosters=rosters, normalized=normalized, current_week=current_week, storage=storage, engine=engine)
 
 

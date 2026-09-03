@@ -134,3 +134,19 @@ def test_waiver_preview_can_show_a_depth_need_being_filled():
     impact = preview_add_drop("Add fa", _p("fa", "TE", 100, pctl=70.0), "wr2", mine, before, ctx)
     assert impact.after.depth_needs == []
     assert "depth needs TE → none" in impact.material_deltas()
+
+
+def test_preview_context_accepts_a_prebuilt_lineup_map():
+    # report_data solves every roster's structural lineup once and passes
+    # the map in; the normalized rosters must be identical either way.
+    from sleeper_tool.lineup_optimizer import optimize_lineup
+
+    mine = make_roster(
+        roster_id=1, entries=[_p("qb1", "QB", 300), _p("rb1", "RB", 200), _p("rb2", "RB", 150), _p("wr1", "WR", 180)],
+        fmt=make_format(roster_positions=POSITIONS), league=make_league_info(),
+    )
+    rosters = {1: mine}
+    shared = {rid: optimize_lineup(r) for rid, r in rosters.items()}
+    with_map = PreviewContext.build(rosters, current_week=1, lineups=shared)
+    without = PreviewContext.build(rosters, current_week=1)
+    assert with_map.normalized == without.normalized

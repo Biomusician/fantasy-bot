@@ -1,4 +1,13 @@
-from sleeper_tool.valuation import LeagueFormat, PlayerValue, derive_league_format, scale_proj_points_for_games_remaining
+import datetime as dt
+
+from sleeper_tool.rankings.cache import RankingSnapshot
+from sleeper_tool.valuation import (
+    LeagueFormat,
+    PlayerValue,
+    ValuationEngine,
+    derive_league_format,
+    scale_proj_points_for_games_remaining,
+)
 
 
 def test_derive_league_format_handles_explicit_none_scoring_settings():
@@ -141,3 +150,98 @@ def test_panel_disagreement_threshold_grows_with_rank_depth():
 
     assert panel_disagreement_threshold(10) > panel_disagreement_threshold(2)
     assert panel_disagreement_threshold(100) > panel_disagreement_threshold(10)
+
+
+# --- Missing ranking sources ---------------------------------------------
+#
+# rankings.cache now refuses to serve a cached snapshot past its freshness
+# ceiling, so "this source is simply gone for this run" is a real state the
+# engine has to survive rather than a hypothetical. `None` for a source means
+# absent; omitting the argument entirely still means "fetch it".
+
+
+def _ktc_snapshot(rows):
+    return RankingSnapshot(source="ktc_dynasty", fetched_at=dt.datetime(2026, 9, 1, tzinfo=dt.timezone.utc), payload=rows)
+
+
+def _ktc_row(name, position, value, rank, pos_rank):
+    block = {"value": value, "rank": rank, "positional_rank": pos_rank}
+    return {"name": name, "position": position, "one_qb": block, "superflex": block}
+
+
+def _snapshot(source, rows):
+    return RankingSnapshot(source=source, fetched_at=dt.datetime(2026, 9, 1, tzinfo=dt.timezone.utc), payload=rows)
+
+
+def _fmt():
+    return derive_league_format({"scoring_settings": {"rec": 1.0}, "roster_positions": ["QB", "RB", "WR", "TE", "BN"]})
+
+
+def test_engine_with_every_source_absent_still_values_a_player():
+    engine = ValuationEngine(ktc_snapshot=None, fp_snapshots=None, rb_snapshots=None)
+    pv = engine.value_player("Ja'Marr Chase", _fmt(), position="WR")
+    assert pv.dynasty_value is None
+    assert pv.dynasty_rank is None
+    assert pv.dynasty_value_percentile is None
+    assert pv.proj_points is None
+    assert pv.sources_used == []
+    assert pv.cross_source_agreement == "insufficient_data"
+    assert engine.missing_sources == ["ktc_dynasty"]
+    assert engine.source_freshness() == {}
+
+
+def test_absent_ktc_leaves_the_other_sources_working():
+    engine = ValuationEngine(
+        ktc_snapshot=None,
+        fp_snapshots={"dynasty_1qb": _snapshot("fp", [{"name": "Bijan Robinson", "rank_ecr": 3, "position": "RB"}])},
+        rb_snapshots={"full_ppr": _snapshot("rb", [{"name": "Bijan Robinson", "proj_points_ppr": 260.0}])},
+    )
+    pv = engine.value_player("Bijan Robinson", _fmt(), position="RB")
+    assert pv.dynasty_value is None
+    assert pv.dynasty_ecr_rank == 3
+    assert pv.proj_points == 260.0
+    assert set(pv.sources_used) == {"fantasypros_dynasty", "rotoballer"}
+    assert engine.missing_sources == ["ktc_dynasty"]
+    assert set(engine.source_freshness()) == {"fantasypros_dynasty_1qb", "rotoballer_full_ppr"}
+
+
+def test_one_dead_fantasypros_page_does_not_take_the_others_down(monkeypatch):
+    from sleeper_tool.rankings import fantasypros
+
+    def fake_fp(page_key):
+        if page_key == "dynasty_1qb":
+            raise RuntimeError("cached snapshot is past its ceiling")
+        return _snapshot(f"fp_{page_key}", [{"name": "Puka Nacua", "rank_ecr": 9, "position": "WR"}])
+
+    monkeypatch.setattr(fantasypros, "get_fp_rankings", fake_fp)
+    engine = ValuationEngine(
+        ktc_snapshot=_ktc_snapshot([_ktc_row("Puka Nacua", "WR", 7000, 8, 4)]),
+        rb_snapshots=None,
+    )
+    assert engine.missing_sources == ["fantasypros_dynasty_1qb"]
+    assert engine.fp_snapshots["dynasty_1qb"] is None
+    assert engine.fp_snapshots["dynasty_superflex"] is not None
+    # The absent page is the dynasty one this 1QB league would have used, so
+    # the ECR rank drops out while KTC and the other pages carry on.
+    pv = engine.value_player("Puka Nacua", _fmt(), position="WR")
+    assert pv.dynasty_value == 7000
+    assert pv.dynasty_ecr_rank is None
+    assert pv.redraft_ecr_rank == 9
+    assert "fantasypros_dynasty_1qb" not in engine.source_freshness()
+
+
+def test_absent_source_is_reported_absent_not_stale():
+    engine = ValuationEngine(
+        ktc_snapshot=_ktc_snapshot([_ktc_row("Jayden Daniels", "QB", 8000, 5, 2)]),
+        fp_snapshots={"dynasty_1qb": None},
+        rb_snapshots={"full_ppr": None},
+    )
+    # Omitted, never given a fabricated age.
+    assert list(engine.source_freshness()) == ["ktc_dynasty"]
+    assert engine.missing_sources == ["fantasypros_dynasty_1qb", "rotoballer_full_ppr"]
+    assert engine.snapshots_for(_fmt())["fp_dynasty"] is None
+
+
+def test_snapshots_for_reports_absent_ktc_as_none():
+    engine = ValuationEngine(ktc_snapshot=None, fp_snapshots=None, rb_snapshots=None)
+    assert engine.snapshots_for(_fmt())["ktc"] is None

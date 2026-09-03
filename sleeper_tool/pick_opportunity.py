@@ -120,10 +120,17 @@ def _unit_stats(roster: ValuedRoster, lineup: LineupResult, position: str, curre
 
 
 def position_units(
-    my_roster: ValuedRoster, rosters: dict[int, ValuedRoster], *, my_lineup: LineupResult | None = None
+    my_roster: ValuedRoster,
+    rosters: dict[int, ValuedRoster],
+    *,
+    my_lineup: LineupResult | None = None,
+    lineups: dict[int, LineupResult] | None = None,
 ) -> list[PositionUnit]:
+    """`lineups` may carry already-optimized structural lineups by roster_id
+    (the report builds one map per league); the rest are optimized here.
+    `my_lineup` still wins for my own roster."""
     currency = value_currency(my_roster)
-    lineups: dict[int, LineupResult] = {}
+    lineups = dict(lineups or {})  # copied: the loop below fills it in
     if my_lineup is not None:
         lineups[my_roster.roster_id] = my_lineup
     units: list[PositionUnit] = []
@@ -153,10 +160,11 @@ def assess_picks(
     *,
     team_status: str,
     my_lineup: LineupResult | None = None,
+    lineups: dict[int, LineupResult] | None = None,
 ) -> PickOpportunity | None:
     if value_currency(my_roster) != DYNASTY_CURRENCY or not my_picks:
         return None
-    units = position_units(my_roster, rosters, my_lineup=my_lineup)
+    units = position_units(my_roster, rosters, my_lineup=my_lineup, lineups=lineups)
     weak_aging = [u.position for u in units if u.weak_aging]
     bottom = [u.position for u in units if u.bottom_three]
     assessments: list[PickAssessment] = []

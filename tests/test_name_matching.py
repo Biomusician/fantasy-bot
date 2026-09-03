@@ -37,3 +37,15 @@ def test_build_name_index_skips_blank_names():
     players = [{"name": ""}, {"name": "Valid Name"}]
     index = build_name_index(players, name_key="name")
     assert len(index) == 1
+
+
+def test_normalize_name_is_memoized_without_changing_answers():
+    # The hot path calls this ~85k times per run over ~2.5k distinct names,
+    # so it is cached. Guard: the cache must never see a non-str key, and
+    # repeat calls must agree with the first one.
+    first = normalize_name("Amon-Ra St. Brown")
+    assert normalize_name("Amon-Ra St. Brown") == first == "amon ra st brown"
+    assert normalize_name(None) == ""
+    assert normalize_name("") == ""
+    assert normalize_name(0) == ""  # falsy non-str short-circuits before the cache
+    assert normalize_name(12) == "12"  # truthy non-str is coerced, not crashed on

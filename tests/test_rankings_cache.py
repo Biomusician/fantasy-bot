@@ -162,3 +162,22 @@ def test_fallback_flag_is_not_persisted_to_disk():
     assert served.served_from_fallback is True
     # A fresh read of the same file knows nothing about how it was once served.
     assert load_snapshot("not_persisted").served_from_fallback is False
+
+
+def test_ktc_index_by_name_is_memoized_per_snapshot():
+    # value_owned_picks rebuilds this ~500-key index once per roster per
+    # team-status classification — a hundred times a run off one snapshot.
+    from sleeper_tool.rankings import ktc
+
+    now = dt.datetime.now(dt.timezone.utc)
+    snap = cache_module.RankingSnapshot(source="ktc_dynasty", fetched_at=now, payload=[{"name": "Bijan Robinson"}])
+    first = ktc.index_by_name(snap)
+    assert ktc.index_by_name(snap) is first  # same object, not just equal
+
+    # A different snapshot (a re-fetch) must rebuild rather than serve the
+    # previous one's index.
+    other = cache_module.RankingSnapshot(source="ktc_dynasty", fetched_at=now, payload=[{"name": "Puka Nacua"}])
+    rebuilt = ktc.index_by_name(other)
+    assert rebuilt is not first
+    assert set(rebuilt) == {"puka nacua"}
+    assert set(ktc.index_by_name(snap)) == {"bijan robinson"}

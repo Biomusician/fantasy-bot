@@ -84,11 +84,23 @@ def find_defensive_add(
     current_week: int,
     protected_ids: Collection[str],
     clog_ids: Collection[str] = (),
+    opponent_week_lineup: LineupResult | None = None,
+    my_week_lineup: LineupResult | None = None,
+    opponent_structural_lineup: LineupResult | None = None,
 ) -> DefensiveAdd | None:
+    """The three optional lineups are pure caching: the report has already
+    solved all of them (the matchup's two this-week lineups and the shared
+    structural map), and re-solving them here is the single most expensive
+    thing this module does. The `_week_` ones must have been built for THIS
+    `current_week` with exclude_game_day_out=True, the structural one with
+    plain defaults — pass nothing and they're computed here."""
     if not free_agents or not opponent.entries or not starter_slots_for(opponent):
         return None
-    opp_week = optimize_lineup(opponent, nfl_week=current_week, exclude_game_day_out=True)
-    hole = opponent_hole(opponent, opp_week, optimize_lineup(opponent))
+    opp_week = opponent_week_lineup if opponent_week_lineup is not None else optimize_lineup(
+        opponent, nfl_week=current_week, exclude_game_day_out=True
+    )
+    opp_structural = opponent_structural_lineup if opponent_structural_lineup is not None else optimize_lineup(opponent)
+    hole = opponent_hole(opponent, opp_week, opp_structural)
     if hole is None:
         return None
     per_week = games_remaining(current_week)  # optimizer totals are rest-of-season; the block is about one week
@@ -116,7 +128,9 @@ def find_defensive_add(
         if drop is None or drop.player_id in set(protected_ids):
             return None
 
-    my_week = optimize_lineup(my_roster, nfl_week=current_week, exclude_game_day_out=True)
+    my_week = my_week_lineup if my_week_lineup is not None else optimize_lineup(
+        my_roster, nfl_week=current_week, exclude_game_day_out=True
+    )
     my_after = optimize_lineup_after_moves(
         my_roster, add_entries=[target], remove_player_ids=[drop.player_id] if drop else (),
         nfl_week=current_week, exclude_game_day_out=True,

@@ -329,7 +329,13 @@ def build_league_report_data(
         )
 
     currency = value_currency(my_roster)
-    status_result = classify_team_status(my_roster.roster_id, rosters, currency, storage=storage, engine=engine)
+    # Every roster in this league is classified below, and each
+    # classification prices the whole league's draft picks against the same
+    # KTC snapshot. Compute that once and hand it down.
+    valued_picks = get_valued_picks_by_roster(rosters, currency, storage, engine)
+    status_result = classify_team_status(
+        my_roster.roster_id, rosters, currency, storage=storage, engine=engine, valued_picks=valued_picks
+    )
     proposals = generate_trade_proposals(league, rosters, status_result=status_result, storage=storage, engine=engine)
     league_data = storage.get_league(league.league_id) or {}
     waiver_budget = (league_data.get("settings") or {}).get("waiver_budget")
@@ -342,11 +348,20 @@ def build_league_report_data(
     # list this optimizer can't model (an unknown slot type, an empty
     # roster_positions payload) keeps its trades, waivers, alerts and
     # status — none of which need a lineup — and skips the rest.
+    # One structural lineup per roster, solved once and shared with every
+    # consumer that would otherwise re-solve the same league from scratch
+    # (the replacement market, the preview context, the pick-opportunity
+    # units). The optimizer is a bitmask DP and is by a wide margin the
+    # most expensive thing in the run; this is the same league, so the
+    # answers are identical, not approximations of each other.
     try:
-        lineup: LineupResult | None = optimize_lineup(my_roster)
+        lineups: dict[int, LineupResult] = {
+            rid: optimize_lineup(r) for rid, r in rosters.items() if r.entries
+        }
     except UnsupportedSlotError as exc:
         logger.warning("%s: lineup-based features skipped — %s", league.name, exc)
-        lineup = None
+        lineups = {}
+    lineup: LineupResult | None = lineups.get(my_roster.roster_id)
     # A league still pre-draft on Sleeper (keepers rostered, draft to come)
     # has no waiver wire yet: every "free agent" is about to be drafted, so
     # adds and insurance from that pool would be fiction. Trades and lineup
@@ -366,10 +381,12 @@ def build_league_report_data(
         )
         free_agents = [fa for fa in all_free_agents if fa.value.proj_points is not None]
         replacement = build_replacement_market(
-            my_roster, rosters, free_agents, current_week=current_week, lineups={my_roster.roster_id: lineup}
+            my_roster, rosters, free_agents, current_week=current_week, lineups=lineups
         )
     status_of = {
-        r.roster_id: classify_team_status(r.roster_id, rosters, currency, storage=storage, engine=engine).status
+        r.roster_id: classify_team_status(
+            r.roster_id, rosters, currency, storage=storage, engine=engine, valued_picks=valued_picks
+        ).status
         for r in rosters.values()
         if r.entries
     }
@@ -457,6 +474,10 @@ def build_league_report_data(
         defensive_add = find_defensive_add(
             my_roster, rosters[matchup.opponent_roster_id], free_agents,
             current_week=current_week, protected_ids=protected, clog_ids=clog_ids,
+            # The matchup already solved both this-week lineups for the same
+            # week with the same exclusions; `lineups` holds the structural one.
+            opponent_week_lineup=matchup.opponent_lineup, my_week_lineup=matchup.my_lineup,
+            opponent_structural_lineup=lineups.get(matchup.opponent_roster_id),
         )
 
     stash = build_stash_board(
@@ -489,7 +510,6 @@ def build_league_report_data(
     )
 
     pick_opportunity = None
-    valued_picks = get_valued_picks_by_roster(rosters, currency, storage, engine)
     ladders = build_ladders(
         proposals, my_roster, rosters, (valued_picks or {}).get(my_roster.roster_id, []),
         my_status=status_result.status, status_of=status_of,
@@ -506,7 +526,7 @@ def build_league_report_data(
     if valued_picks is not None and lineup is not None:
         pick_opportunity = assess_picks(
             my_roster, rosters, valued_picks.get(my_roster.roster_id, []),
-            team_status=status_result.status, my_lineup=lineup,
+            team_status=status_result.status, my_lineup=lineup, lineups=lineups,
         )
         if pick_opportunity is not None:
             _annotate_proposals_with_pick_opportunity(proposals, pick_opportunity)
@@ -514,7 +534,7 @@ def build_league_report_data(
     trade_impacts: list[MoveImpact | None] = [None] * len(proposals)
     waiver_impacts: dict[str, MoveImpact] = {}
     if lineup is not None:
-        ctx = PreviewContext.build(rosters, current_week=current_week, storage=storage, engine=engine)
+        ctx = PreviewContext.build(rosters, current_week=current_week, storage=storage, engine=engine, lineups=lineups)
         before = snapshot_roster(my_roster, ctx, lineup=lineup, displayed_status=status_result.status)
         trade_impacts = [preview_trade(p, my_roster, before, ctx) for p in proposals]
         for t in waiver_targets:

@@ -99,3 +99,26 @@ def test_a_pick_acquired_from_another_team_is_labelled_with_its_origin():
     result = assess_picks(mine, rosters, [theirs, _pick(1)], team_status=CONTENDER)
     names = [a.display_name for a in result.assessments]
     assert names == ["2027 Mid 1", "2027 Early 1st (via Bishop Sycamores)"] or names == ["2027 Early 1st (via Bishop Sycamores)", "2027 Mid 1"]
+
+
+def test_shared_lineup_map_matches_optimizing_in_place():
+    # The report solves one structural lineup per roster and hands the map
+    # down; the units must come out identical to solving them here.
+    from sleeper_tool.lineup_optimizer import optimize_lineup
+
+    mine, rosters = _league(my_rb_age=29, my_rb_pctl=20)
+    shared = {rid: optimize_lineup(r) for rid, r in rosters.items()}
+    assert position_units(mine, rosters, lineups=shared) == position_units(mine, rosters)
+    assert (
+        assess_picks(mine, rosters, [_pick(1)], team_status=CONTENDER, lineups=shared).assessments
+        == assess_picks(mine, rosters, [_pick(1)], team_status=CONTENDER).assessments
+    )
+
+
+def test_shared_lineup_map_is_not_mutated_by_the_caller():
+    # position_units fills in the rosters it wasn't given; it must do that
+    # in its own copy, since the report reuses the same map afterwards.
+    mine, rosters = _league(my_rb_age=29, my_rb_pctl=20)
+    shared = {}
+    position_units(mine, rosters, lineups=shared)
+    assert shared == {}

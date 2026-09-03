@@ -78,3 +78,19 @@ def test_best_opponent_gain_wins_deterministically_and_pre_draft_pool_is_empty()
     add = find_defensive_add(me, them, fas, current_week=1, protected_ids=set())
     assert add.target.player_id == "fa_a"  # the WR fills the hole (+10/wk); the RB would only displace rb2 (+5/wk)
     assert find_defensive_add(me, them, [], current_week=1, protected_ids=set()) is None
+
+
+def test_prebuilt_lineups_give_the_same_defensive_add():
+    # report_data has already solved the matchup's two this-week lineups and
+    # the opponent's structural one; passing them in must be pure caching.
+    them = _roster(2, [_p("qb2", "QB", 340), _p("rb2", "RB", 170), _p("wr2", "WR", 170, bye=1)], "them")
+    me = _me(_p("bench", "WR", 34, starter=False, pctl=10.0))
+    fa = _p("fa_wr", "WR", 170, starter=False)
+    plain = find_defensive_add(me, them, [fa], current_week=1, protected_ids=set())
+    cached = find_defensive_add(
+        me, them, [fa], current_week=1, protected_ids=set(),
+        opponent_week_lineup=optimize_lineup(them, nfl_week=1, exclude_game_day_out=True),
+        my_week_lineup=optimize_lineup(me, nfl_week=1, exclude_game_day_out=True),
+        opponent_structural_lineup=optimize_lineup(them),
+    )
+    assert plain == cached

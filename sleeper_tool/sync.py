@@ -77,6 +77,23 @@ def sync_league(
         return LeagueSyncResult(league, ok=False, error=str(exc))
 
 
+def save_trending_if_nonempty(storage: Storage, trend_type: str, rows: list[dict]) -> bool:
+    """Persist a trending list only if it has rows. save_trending REPLACES
+    the table, so a momentary empty response from Sleeper (a blip, a
+    throttle, a deploy) would otherwise wipe a signal the waiver engine
+    reads and leave nothing until tomorrow's run. Yesterday's list is stale
+    but real; an empty one is just missing. Returns whether it saved.
+    """
+    if not rows:
+        logger.warning(
+            "Sleeper returned no trending %s players; keeping the previously stored list rather than clearing it",
+            trend_type,
+        )
+        return False
+    storage.save_trending(trend_type, rows)
+    return True
+
+
 def sync_leagues(
     client: SleeperClient,
     storage: Storage,
@@ -88,10 +105,8 @@ def sync_leagues(
     if refresh_players:
         ensure_players_cached(client, storage)
 
-    trending_add = client.get_trending_players(trend_type="add", limit=50)
-    storage.save_trending("add", trending_add)
-    trending_drop = client.get_trending_players(trend_type="drop", limit=50)
-    storage.save_trending("drop", trending_drop)
+    for trend_type in ("add", "drop"):
+        save_trending_if_nonempty(storage, trend_type, client.get_trending_players(trend_type=trend_type, limit=50))
 
     week = current_week(client)
     storage.set_meta("current_week", str(week))

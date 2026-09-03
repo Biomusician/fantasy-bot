@@ -127,6 +127,21 @@ def get_ktc_rankings(*, force: bool = False, max_age: dt.timedelta = DEFAULT_MAX
     )
 
 
+# The last (snapshot, index) pair built. A report run holds exactly one KTC
+# snapshot but rebuilds this ~500-key index a hundred times over —
+# draft_picks.value_owned_picks calls it once per roster, once per
+# classify_team_status. Keyed on object identity (`is`), and the snapshot
+# itself is held so its id can't be recycled onto a different object; a
+# re-fetch produces a new snapshot and rebuilds.
+_last_index: tuple[RankingSnapshot, dict[str, dict]] | None = None
+
+
 def index_by_name(snapshot: RankingSnapshot) -> dict[str, dict]:
-    """Normalized-name lookup -> KTC player dict."""
-    return build_name_index(snapshot.payload, name_key="name")
+    """Normalized-name lookup -> KTC player dict. Memoized per snapshot
+    object; callers must treat the result as read-only."""
+    global _last_index
+    if _last_index is not None and _last_index[0] is snapshot:
+        return _last_index[1]
+    index = build_name_index(snapshot.payload, name_key="name")
+    _last_index = (snapshot, index)
+    return index

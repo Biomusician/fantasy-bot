@@ -162,6 +162,11 @@ def get_valued_picks_by_roster(
     """
     if currency != "dynasty" or storage is None or engine is None:
         return None
+    if getattr(engine, "ktc_snapshot", None) is None:
+        # KTC is the only thing that prices picks; without it every pick
+        # would be valued None, which reads as "you own no draft capital"
+        # rather than "we can't tell". Say "doesn't apply" instead.
+        return None
 
     any_roster = next(iter(rosters.values()))
     league_id = any_roster.league.league_id
@@ -212,7 +217,17 @@ def classify_team_status(
     *,
     storage=None,
     engine=None,
+    valued_picks: dict[int, list[OwnedPick]] | None = None,
 ) -> TeamStatusResult:
+    """`valued_picks` is get_valued_picks_by_roster's answer for THIS
+    `rosters` dict, precomputed by a caller that needs it anyway (the
+    report classifies every roster in the league, and the pick valuation is
+    identical every time). None means "work it out here" — which is also
+    what a league with no usable pick data legitimately produces, so both
+    paths end up in the same place. Never pass a map computed against a
+    different roster set: pick tiers are estimated from roster strength,
+    so a hypothetical roster's picks are genuinely different picks.
+    """
     if target_roster_id not in rosters:
         # Not reachable from any current call site (each passes a
         # roster_id sourced from iterating this same `rosters` dict), but
@@ -227,7 +242,8 @@ def classify_team_status(
 
     score = strength_pctl
     pick_note = ""
-    valued_picks = get_valued_picks_by_roster(rosters, currency, storage, engine)
+    if valued_picks is None:
+        valued_picks = get_valued_picks_by_roster(rosters, currency, storage, engine)
     if valued_picks is not None:
         pick_values = {rid: sum(p.value or 0 for p in picks) for rid, picks in valued_picks.items()}
         pick_pctl = _rank_percentile({rid: float(v) for rid, v in pick_values.items()}, target_roster_id)

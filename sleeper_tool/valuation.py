@@ -16,12 +16,22 @@ flex slot in {"SUPER_FLEX", "QB"}), not from the handoff doc's labels.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 from dataclasses import dataclass, field
 
 from sleeper_tool.name_matching import normalize_name
 from sleeper_tool.rankings import fantasypros, ktc, rotoballer
 from sleeper_tool.rankings.cache import RankingSnapshot
 from sleeper_tool.rankings.ff_dynasty_pass import FFRankingRow
+
+logger = logging.getLogger(__name__)
+
+# "The caller didn't supply this source, so fetch it." Distinct from None,
+# which means "this source is deliberately absent" — a dead page, or a
+# cached snapshot past the freshness ceiling rankings.cache now refuses to
+# serve. The two used to be the same value (`arg or fetch()`), which made
+# an absent source impossible to construct and therefore untestable.
+_FETCH: object = object()
 
 # Documented approximations for scoring axes KTC/RotoBaller don't natively
 # model — see the comment where they're applied in ValuationEngine.value_player.
@@ -231,14 +241,23 @@ def _ktc_value_for_format(ktc_player: dict, fmt: LeagueFormat) -> tuple[int, int
 class ValuationEngine:
     """Loads all ranking sources once and answers per-league, per-player
     valuation queries against them. Construct one per report run.
+
+    Any source may be absent. A source is absent when its fetch raised
+    (including rankings.cache refusing a cached snapshot that is past its
+    freshness ceiling) or when the caller passed None for it explicitly.
+    Each source is fetched under its own try/except so one dead page can't
+    take the other two down, and every absent source is named in
+    `missing_sources` for the health layer. Absent KTC means every
+    PlayerValue comes back with dynasty_value/rank None — the same shape
+    value_player already produces for a player KTC simply doesn't list.
     """
 
     def __init__(
         self,
         *,
-        ktc_snapshot: RankingSnapshot | None = None,
-        fp_snapshots: dict[str, RankingSnapshot] | None = None,
-        rb_snapshots: dict[str, RankingSnapshot] | None = None,
+        ktc_snapshot: RankingSnapshot | None = _FETCH,  # type: ignore[assignment]
+        fp_snapshots: dict[str, RankingSnapshot | None] | None = _FETCH,  # type: ignore[assignment]
+        rb_snapshots: dict[str, RankingSnapshot | None] | None = _FETCH,  # type: ignore[assignment]
         ff_rows: list[FFRankingRow] | None = None,
         current_week: int | None = None,
     ) -> None:
@@ -250,31 +269,73 @@ class ValuationEngine:
         # Scaling by games remaining turns it into a rest-of-season number.
         # current_week is 1-indexed (week 1 = 17 games remaining).
         self.current_week = current_week
-        self.ktc_snapshot = ktc_snapshot or ktc.get_ktc_rankings()
-        self._ktc_index = ktc.index_by_name(self.ktc_snapshot)
+        self.missing_sources: list[str] = []
 
-        self.fp_snapshots = fp_snapshots or {
-            key: fantasypros.get_fp_rankings(key) for key in fantasypros.FANTASYPROS_PAGES
-        }
-        self._fp_indexes = {key: fantasypros.index_by_name(snap) for key, snap in self.fp_snapshots.items()}
+        self.ktc_snapshot: RankingSnapshot | None = self._resolve("ktc_dynasty", ktc_snapshot, ktc.get_ktc_rankings)
+        self._ktc_index = ktc.index_by_name(self.ktc_snapshot) if self.ktc_snapshot is not None else {}
 
-        self.rb_snapshots = rb_snapshots or {
-            key: rotoballer.get_rb_rankings(key) for key in rotoballer.ROTOBALLER_SPREADSHEETS
+        self.fp_snapshots = self._resolve_group(
+            "fantasypros_", fp_snapshots, fantasypros.FANTASYPROS_PAGES, fantasypros.get_fp_rankings
+        )
+        self._fp_indexes = {
+            key: fantasypros.index_by_name(snap) for key, snap in self.fp_snapshots.items() if snap is not None
         }
-        self._rb_indexes = {key: rotoballer.index_by_name(snap) for key, snap in self.rb_snapshots.items()}
+
+        self.rb_snapshots = self._resolve_group(
+            "rotoballer_", rb_snapshots, rotoballer.ROTOBALLER_SPREADSHEETS, rotoballer.get_rb_rankings
+        )
+        self._rb_indexes = {
+            key: rotoballer.index_by_name(snap) for key, snap in self.rb_snapshots.items() if snap is not None
+        }
 
         self._ff_index: dict[str, FFRankingRow] = {}
         if ff_rows:
             for row in ff_rows:
                 self._ff_index[normalize_name(row.player_name)] = row
 
-        self._ktc_pool_size = len(self.ktc_snapshot.payload)
-        self._fp_pool_sizes = {key: len(snap.payload) for key, snap in self.fp_snapshots.items()}
+        ktc_payload = self.ktc_snapshot.payload if self.ktc_snapshot is not None else []
+        self._ktc_pool_size = len(ktc_payload)
+        self._fp_pool_sizes = {
+            key: len(snap.payload) for key, snap in self.fp_snapshots.items() if snap is not None
+        }
         self._ktc_position_pool_sizes: dict[str, int] = {}
-        for p in self.ktc_snapshot.payload:
+        for p in ktc_payload:
             pos = p.get("position")
             if pos:
                 self._ktc_position_pool_sizes[pos] = self._ktc_position_pool_sizes.get(pos, 0) + 1
+
+    def _resolve(self, name: str, supplied, fetch_fn) -> RankingSnapshot | None:
+        """One source. `supplied is _FETCH` means go and get it; None means
+        the caller is telling us it's gone. Either way an absent source is
+        recorded rather than raised — a report built on two of three sources
+        beats no report at all, and signal_health says which ones are out."""
+        if supplied is _FETCH:
+            try:
+                return fetch_fn()
+            except Exception as exc:
+                logger.warning("Ranking source %s is unavailable: %s", name, exc)
+                supplied = None
+        if supplied is None:
+            self.missing_sources.append(name)
+        return supplied
+
+    def _resolve_group(self, prefix: str, supplied, keys, fetch_fn) -> dict[str, RankingSnapshot | None]:
+        """A whole family of pages (every FantasyPros list, every RotoBaller
+        sheet), each fetched independently so one dead page leaves the rest
+        intact. Absent members stay in the dict as None so the key set still
+        describes the sources this engine expects to have."""
+        if supplied is not _FETCH:
+            group: dict[str, RankingSnapshot | None] = dict(supplied or {})
+        else:
+            group = {}
+            for key in keys:
+                try:
+                    group[key] = fetch_fn(key)
+                except Exception as exc:
+                    logger.warning("Ranking source %s%s is unavailable: %s", prefix, key, exc)
+                    group[key] = None
+        self.missing_sources.extend(f"{prefix}{key}" for key, snap in group.items() if snap is None)
+        return group
 
     @staticmethod
     def _percentile(rank: int | None, pool_size: int) -> float | None:
@@ -468,9 +529,15 @@ class ValuationEngine:
         )
 
     def source_freshness(self) -> dict[str, dt.timedelta]:
-        freshness = {"ktc_dynasty": self.ktc_snapshot.age()}
-        for key, snap in self.fp_snapshots.items():
-            freshness[f"fantasypros_{key}"] = snap.age()
-        for key, snap in self.rb_snapshots.items():
-            freshness[f"rotoballer_{key}"] = snap.age()
+        """Age of every source this engine actually has. An absent source is
+        omitted rather than given a fake age — the renderers print this as a
+        "how old is the data" table, where a zero or None would read as
+        "fresh". `missing_sources` is where absence is reported."""
+        freshness: dict[str, dt.timedelta] = {}
+        if self.ktc_snapshot is not None:
+            freshness["ktc_dynasty"] = self.ktc_snapshot.age()
+        for prefix, snapshots in (("fantasypros_", self.fp_snapshots), ("rotoballer_", self.rb_snapshots)):
+            for key, snap in snapshots.items():
+                if snap is not None:
+                    freshness[f"{prefix}{key}"] = snap.age()
         return freshness
