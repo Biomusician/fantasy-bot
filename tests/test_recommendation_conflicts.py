@@ -148,5 +148,6 @@ def test_best_moves_carry_the_conflict_label_without_dropping_the_move():
     actions = build_priority_actions([ld])
     # A Must Add is Immediate; a trade is Monitor — the priority key, not the kind, orders them.
     assert [a.kind for a in actions] == ["waiver", "trade"]
-    assert all(a.detail.startswith(CONFLICTED + ": ") for a in actions)
-    assert "Major Lineup Cost (-9.0/wk)" in actions[1].detail and "developmental hold" in actions[0].detail
+    # The conflict rides on its own field; the detail is never prefixed with the banner.
+    assert all(a.conflict_note and not a.detail.startswith(CONFLICTED) for a in actions)
+    assert "Major Lineup Cost (-9.0/wk)" in actions[1].conflict_note and "developmental hold" in actions[0].conflict_note

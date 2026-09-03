@@ -120,19 +120,19 @@ def _percentile(pv: PlayerValue, currency: str) -> float | None:
     return pv.dynasty_value_percentile if currency == "dynasty" else pv.redraft_ecr_percentile
 
 
-def _avg_percentile(entries, currency: str) -> float | None:
+def avg_percentile(entries, currency: str) -> float | None:
     pctls = [p for p in (_percentile(e.value, currency) for e in entries) if p is not None]
     return sum(pctls) / len(pctls) if pctls else None
 
 
 def _roster_strength(roster: ValuedRoster, currency: str) -> float:
     starters = roster.starters() or roster.entries
-    starter_pctl = _avg_percentile(starters, currency)
+    starter_pctl = avg_percentile(starters, currency)
     if starter_pctl is None:
         return 0.0
 
     bench_pool = roster.bench() + [e for e in roster.entries if e.is_taxi]
-    bench_pctl = _avg_percentile(bench_pool, currency)
+    bench_pctl = avg_percentile(bench_pool, currency)
     if bench_pctl is None:
         return starter_pctl
     return (1 - BENCH_STRENGTH_WEIGHT) * starter_pctl + BENCH_STRENGTH_WEIGHT * bench_pctl

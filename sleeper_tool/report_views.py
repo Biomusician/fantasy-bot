@@ -88,7 +88,11 @@ def scarcity_fact(text: str) -> tuple | None:
     positions = tuple(p for p in POSITION_TOKENS if re.search(rf"\b{p}\b", text))
     if not positions:
         return None
-    return ("scarcity", positions, level)
+    # A per-player measured edge ("+4.2/wk over the best free-agent RB") is
+    # not the same fact as the market label it mentions; only two market
+    # sentences, or two per-player ones, are the same fact.
+    has_number = bool(re.search(r"\d+\.\d/wk", text))
+    return ("scarcity", positions, level, has_number)
 
 
 def source_fact(text: str) -> tuple | None:
@@ -106,6 +110,9 @@ def source_fact(text: str) -> tuple | None:
             return ("sources", _normalized(subject))
     if lowered.startswith("sources:"):
         return ("sources", "")  # a waiver note: the row already names the player
+    panel = re.match(r"^(.+?): fantasypros' own expert panel", lowered)
+    if panel:
+        return ("sources", _normalized(panel.group(1)))
     return None
 
 
@@ -156,6 +163,7 @@ MAX_IMPACT_DELTAS = 4
 MAX_WHY_NOW = 3
 MAX_AGAINST = 2
 WAIVER_LEAD_CLAUSES = 2
+ORDERING_NOTE = "Ordered by how soon each must be decided, then by how much it changes; ties by kind, then league."
 
 
 def clauses(text: str, sep: str = "; ") -> list[str]:
@@ -189,9 +197,10 @@ def action_view(action) -> ActionView:
     into `detail`; here it becomes a flag plus a trailing note, so the row
     can lead with what to actually do."""
     detail = (action.detail or "").strip()
-    conflicted = detail.startswith(_BANNER)
-    banner = ""
-    if conflicted:
+    stated = (getattr(action, "conflict_note", "") or "").strip()
+    conflicted = bool(stated) or detail.startswith(_BANNER)
+    banner = stated
+    if conflicted and not stated:
         head, sep, rest = detail.partition(". ")
         if sep:
             banner, detail = head, rest.strip()
@@ -275,11 +284,22 @@ class WaiverRow:
     details: list[str] = field(default_factory=list)
 
 
-def waiver_row_view(target, *, impact=None, conflict=None, faab_detail: str | None = None) -> WaiverRow:
+def waiver_row_view(target, *, impact=None, conflict=None, faab_detail: str | None = None, seen_leads: set | None = None) -> WaiverRow:
     """`target.reason` is a semicolon-joined list of clauses; the first two
-    are the answer to "why him", the rest is supporting detail."""
+    are the answer to "why him", the rest is supporting detail. With
+    `seen_leads` (shared across one table), a lead the previous rows already
+    showed word for word steps aside for the row's next clause, so a column
+    of eight identical sentences becomes a column of what differs."""
     parts = clauses(target.reason or "")
     lead, rest = split_visible(parts, WAIVER_LEAD_CLAUSES)
+    if seen_leads is not None and parts:
+        # Clause by clause: "depth behind your starting QB, X" repeats on
+        # every QB row; the clause that differs is the one worth the slot.
+        fresh = [c for c in parts if _flat(c) not in seen_leads]
+        if fresh:
+            lead = fresh[:WAIVER_LEAD_CLAUSES]
+            rest = [c for c in parts if c not in lead]
+        seen_leads.update(_flat(c) for c in lead)
     row = WaiverRow(lead="; ".join(lead))
 
     seen = claim(set(), lead)
@@ -368,6 +388,19 @@ class HealthBanner:
     degraded: bool
     label: str
     text: str
+
+
+def health_state(report) -> str:
+    """The one phrase both section headings use, so neither can disagree
+    with the banner: degraded / usable, with gaps / all sources fresh or usable."""
+    health = getattr(report, "health", None)
+    if health is None:
+        return ""
+    if health.degraded:
+        return "degraded"
+    if getattr(report, "suppressed", None):
+        return "usable, with gaps"
+    return "all sources fresh or usable"
 
 
 def health_banner(report) -> HealthBanner | None:

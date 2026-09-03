@@ -54,7 +54,7 @@ from sleeper_tool.waiver_engine import (
     INSURANCE,
     STASH,
     WaiverTarget,
-    _find_drop_candidate,
+    find_drop_candidate,
     _suggested_faab_pct,
     get_rostered_player_ids,
 )
@@ -225,7 +225,7 @@ def merge_insurance_into_waiver_targets(
         if row is not None:
             row.reason = f"{row.reason}; also {note}"
             continue
-        drop = _find_drop_candidate(my_roster, candidate.position, needs, currency, exclude_ids=taken_drops, preferred_ids=clog_ids)
+        drop = find_drop_candidate(my_roster, candidate.position, needs, currency, exclude_ids=taken_drops, preferred_ids=clog_ids)
         if drop is not None:
             taken_drops.add(drop.player_id)
         insurance_rows.append(

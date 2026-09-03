@@ -50,7 +50,7 @@ from sleeper_tool.asset_value import (
 )
 from sleeper_tool.config import LeagueInfo, MY_USER_ID
 from sleeper_tool.draft_picks import OwnedPick, pick_key
-from sleeper_tool.formatting import ordinal_pct
+from sleeper_tool.formatting import article, ordinal_pct
 from sleeper_tool.owner_profiles import get_owner_profile
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
 from sleeper_tool.roster_assets import (
@@ -437,7 +437,7 @@ def _roster_impact_note(
         gap = round(incoming_pctl - weak_pctl)
         if gap < CLEAR_STARTER_MIN_GAP:
             return f"This edges past {possessive} current starting {position}, {weakest.name} ({weak_phrase}) — a marginal upgrade, {gap} point{'s' if gap != 1 else ''} within position."
-        return f"This clears {possessive} current starting {position}, {weakest.name} ({weak_phrase}) — a {gap}-point jump, not a marginal swap."
+        return f"This clears {possessive} current starting {position}, {weakest.name} ({weak_phrase}) — {article(gap)} {gap}-point jump, not a marginal swap."
     gap = round(weak_pctl - incoming_pctl)
     return f"This slots in as depth behind {weakest.name} ({weak_phrase}) at {position}, {gap} points back — not an immediate upgrade for {possessive} lineup."
 

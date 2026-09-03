@@ -28,7 +28,7 @@ from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup, optimiz
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
 from sleeper_tool.trade_engine import identify_needs
 from sleeper_tool.valuation import games_remaining
-from sleeper_tool.waiver_engine import _find_drop_candidate
+from sleeper_tool.waiver_engine import find_drop_candidate
 
 OPPONENT_GAIN_MIN = 4.0  # projected points to the opponent's this-week lineup
 MAX_CANDIDATES = 12  # free agents tried, best projections first
@@ -121,7 +121,7 @@ def find_defensive_add(
 
     drop: RosterEntry | None = None
     if roster_is_full(my_roster):
-        drop = _find_drop_candidate(
+        drop = find_drop_candidate(
             my_roster, target.position, identify_needs(my_roster), value_currency(my_roster),
             exclude_ids=set(protected_ids), preferred_ids=clog_ids,
         )

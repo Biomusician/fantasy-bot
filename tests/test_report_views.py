@@ -56,7 +56,14 @@ from sleeper_tool.waiver_engine import WaiverTarget
     ],
 )
 def test_scarcity_fact_recognises_every_phrasing(text, expected):
-    assert scarcity_fact(text) == expected
+    assert scarcity_fact(text)[:3] == expected  # the fourth element says whether a per-player number is stated
+
+
+def test_a_measured_per_player_edge_is_not_the_same_fact_as_the_market_label():
+    market = scarcity_fact("RB market is Very Scarce here: an add at this position matters more than his rank alone suggests")
+    player = scarcity_fact("Replacement context: Bijan Robinson is +4.2/wk over the best free-agent RB (Very Scarce market)")
+    assert market[:3] == player[:3] and market != player
+    assert market[3] is False and player[3] is True
 
 
 @pytest.mark.parametrize(

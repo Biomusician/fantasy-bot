@@ -198,6 +198,8 @@ _CONTAINS_CATEGORIES: tuple[tuple[str, str, str], ...] = (
 # a trade and "not an immediate upgrade" as evidence for one.
 _CONTEXT_ONLY_MARKERS = (
     "not an immediate upgrade",
+    "treat pick values as approximate",
+    "as approximate",
     "treat these offers as more approximate",
     "well outside the startup-relevant player pool",
     "KTC only models",
@@ -317,12 +319,12 @@ def _piece_role_reasons(card: _Card, ld, entry, *, incoming: bool) -> None:
         if d:
             wants_up = incoming
             direction = FOR if (d > 0) == wants_up else AGAINST
-            card.add(ROLE, direction, f"{entry.name}: {_role_text(trend)}", "role_trend", fact=("role", entry.player_id))
+            card.add(ROLE, direction, f"{entry.name}: {_role_text(trend)}", "role_trends", fact=("role", entry.player_id))
     label = markets.get(entry.player_id)
     if label in (ROLE_AHEAD_OF_MARKET, MARKET_AHEAD_OF_ROLE):
         ahead = label == ROLE_AHEAD_OF_MARKET
         direction = FOR if ahead == incoming else AGAINST
-        card.add(ROLE, direction, f"{entry.name}: {label}", "role_trend", fact=("role_market", entry.player_id), priority=1)
+        card.add(ROLE, direction, f"{entry.name}: {label}", "role_trends", fact=("role_market", entry.player_id), priority=1)
 
 
 def _piece_schedule_reason(card: _Card, ld, entry, schedule) -> None:
@@ -366,7 +368,11 @@ def _trade_card(ld, report, index: int, proposal, *, schedule, freshness_by_sour
     # Risk first: the tool contradicting itself is the reason that must survive the cap.
     if conflict is not None:
         for i, text in enumerate(conflict.reasons_against):
-            card.add(RISK, AGAINST, text, "recommendation_conflicts", fact=("conflict", text), priority=i)
+            # Keyed on the FACT the reason states (a scarcity, an exposure),
+            # so the same fact arriving again as an economics note or a
+            # harvested caveat is one reason, not two dressings of one.
+            category, _ = classify_annotation(text, default=(RISK, "recommendation_conflicts"))
+            card.add(RISK, AGAINST, text, "recommendation_conflicts", fact=_fact_for(category, text), priority=i)
     elif econ is not None and econ.roster_economics == MAJOR_LINEUP_COST:
         delta = f" ({econ.weekly_delta:+.1f}/wk)" if econ.weekly_delta is not None else ""
         card.add(RISK, AGAINST, f"{MAJOR_LINEUP_COST}{delta}", "trade_opportunity_cost", fact=("major_cost",))
@@ -385,8 +391,6 @@ def _trade_card(ld, report, index: int, proposal, *, schedule, freshness_by_sour
             d = impact.weekly_points_delta
             direction = FOR if d >= MATERIAL_WEEKLY_POINTS else (AGAINST if d <= -MATERIAL_WEEKLY_POINTS else CONTEXT)
             card.add(ROSTER, direction, text, "move_impact", fact=("impact",))
-        if impact.matchup_note:
-            card.add(OPPONENT, CONTEXT, impact.matchup_note, "matchup_leverage", fact=("matchup",))
 
     if econ is not None:
         if econ.asset_economics == FAVORABLE:
@@ -456,7 +460,8 @@ def _waiver_card(ld, report, target, *, schedule, freshness_by_source) -> Proven
     conflict = conflict_for(getattr(ld, "conflicts", None) or [], WAIVER, target.player_id)
     if conflict is not None:
         for i, text in enumerate(conflict.reasons_against):
-            card.add(RISK, AGAINST, text, "recommendation_conflicts", fact=("conflict", text), priority=i)
+            category, _ = classify_annotation(text, default=(RISK, "recommendation_conflicts"))
+            card.add(RISK, AGAINST, text, "recommendation_conflicts", fact=_fact_for(category, text), priority=i)
 
     clauses = [c.strip() for c in (target.reason or "").split(";") if c.strip()]
     if clauses:
@@ -472,12 +477,14 @@ def _waiver_card(ld, report, target, *, schedule, freshness_by_source) -> Proven
         d = impact.weekly_points_delta
         direction = FOR if d >= MATERIAL_WEEKLY_POINTS else (AGAINST if d <= -MATERIAL_WEEKLY_POINTS else CONTEXT)
         card.add(ROSTER, direction, f"Move Impact: {'; '.join(impact.material_deltas())}", "move_impact", fact=("impact",))
-        if impact.matchup_note:
-            card.add(OPPONENT, CONTEXT, impact.matchup_note, "matchup_leverage", fact=("matchup",))
 
     view = (getattr(ld, "source_views", None) or {}).get(target.player_id)
+    # The annotator that wrote a note says which side it argues for
+    # (ld.note_directions); the prose heuristics are only the fallback for
+    # a note written without one.
+    stated = getattr(ld, "note_directions", None) or {}
     for i, note in enumerate(target.notes):
-        direction = _waiver_note_direction(note, view)
+        direction = stated.get((target.player_id, note)) or _waiver_note_direction(note, view)
         card.add_annotation(note, direction, default=(ROSTER, "waiver_engine"), priority=i + 1)
 
     _piece_role_reasons(card, ld, target, incoming=True)

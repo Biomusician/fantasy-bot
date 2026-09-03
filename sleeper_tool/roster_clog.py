@@ -57,7 +57,7 @@ class RosterClog:
     composite_rank: float
 
 
-def _is_dynasty_developmental(entry: RosterEntry, currency: str) -> bool:
+def is_dynasty_developmental(entry: RosterEntry, currency: str) -> bool:
     """Rookies (or unknown experience) are always exempt; second- and
     third-year players only while still inside their position's young-
     player age — a 28-year-old late bloomer with two seasons isn't upside."""
@@ -100,7 +100,7 @@ def identify_roster_clogs(
             continue
         if entry.is_reserve or entry.is_taxi or entry.injury_status == "IR":
             continue
-        if _is_dynasty_developmental(entry, currency) or not entry.value.is_corroborated:
+        if is_dynasty_developmental(entry, currency) or not entry.value.is_corroborated:
             continue
         if entry.value.proj_points is None:
             continue  # no projection: "projects below everyone" would be a data gap, not a finding

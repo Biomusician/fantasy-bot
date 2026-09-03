@@ -74,18 +74,20 @@ class PositionMarket:
     scarcity: str
     gap: float | None  # (starter - waiver) / starter
 
-    def describe(self) -> str:
+    def detail(self) -> str:
+        """The comparison behind the label, without the label — a renderer
+        that shows the label as a chip uses this for the sentence."""
         if self.waiver_replacement is None:
-            return f"{self.position}: {self.scarcity} — no startable free agent at all"
+            return "no startable free agent at all"
         starter = (
             f"worst current starter {self.starter_replacement.name} at {self.starter_replacement_projection:.1f}/wk"
             if self.starter_replacement is not None
             else "no current starter league-wide"
         )
-        return (
-            f"{self.position}: {self.scarcity} — best free agent {self.waiver_replacement.name} projects "
-            f"{self.waiver_replacement_projection:.1f}/wk vs {starter}"
-        )
+        return f"best free agent {self.waiver_replacement.name} projects {self.waiver_replacement_projection:.1f}/wk vs {starter}"
+
+    def describe(self) -> str:
+        return f"{self.position}: {self.scarcity} — {self.detail()}"
 
 
 @dataclass

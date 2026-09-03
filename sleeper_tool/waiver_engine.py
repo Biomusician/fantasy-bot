@@ -141,7 +141,7 @@ def _display_percentile(value: PlayerValue, currency: str) -> float | None:
     return percentile_for_currency(value, currency)
 
 
-def _find_drop_candidate(
+def find_drop_candidate(
     my_roster: ValuedRoster,
     target_position: str | None,
     my_needs: list[str],
@@ -287,7 +287,7 @@ def get_waiver_targets(
     protected_ids: Collection[str] = (),
 ) -> list[WaiverTarget]:
     """`clog_ids`: roster_clog's dead-weight players, preferred as the drop
-    paired with each add (see _find_drop_candidate). `starter_ids`: the
+    paired with each add (see find_drop_candidate). `starter_ids`: the
     optimizer's starters, so "your current starting X" and the
     beats-the-starter test read the real lineup rather than Sleeper's
     set-lineup flag. `protected_ids` (typically those same starters) are
@@ -400,7 +400,7 @@ def get_waiver_targets(
     # to actually act on is the one that most needs an actionable pairing.
     recommended_drop_ids: set[str] = set(protected_ids)
     for t in targets:
-        drop_candidate = _find_drop_candidate(
+        drop_candidate = find_drop_candidate(
             my_roster, t.position, needs_ranked[:2], currency, exclude_ids=recommended_drop_ids, preferred_ids=clog_ids
         )
         # Never cut a same-position player who is better than the add: a

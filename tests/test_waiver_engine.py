@@ -12,7 +12,7 @@ from sleeper_tool.waiver_engine import (
     STRONG_ADD,
     TimeSensitiveNote,
     WaiverTarget,
-    _find_drop_candidate,
+    find_drop_candidate,
     _horizon,
     _priority_tier,
     _roster_impact_note,
@@ -158,14 +158,14 @@ def test_suggested_faab_pct_zero_when_budget_exhausted():
     assert _suggested_faab_pct(MUST_ADD, waiver_budget=100, waiver_budget_used=100) == 0
 
 
-# -- _find_drop_candidate -------------------------------------------------------
+# -- find_drop_candidate -------------------------------------------------------
 
 
 def test_find_drop_candidate_prefers_same_position_non_need_bench():
     weak_wr = make_entry(player_id="wr-weak", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=15.0))
     weak_rb = make_entry(player_id="rb-weak", position="RB", is_starter=False, value=make_value(position="RB", dynasty_value_percentile=25.0))
     roster = make_roster(entries=[weak_wr, weak_rb])
-    drop = _find_drop_candidate(roster, target_position="WR", my_needs=["QB"], currency="dynasty")
+    drop = find_drop_candidate(roster, target_position="WR", my_needs=["QB"], currency="dynasty")
     assert drop.player_id == "wr-weak"
 
 
@@ -173,7 +173,7 @@ def test_find_drop_candidate_avoids_a_need_position_when_alternative_exists():
     need_position_bench = make_entry(player_id="te-need", position="TE", is_starter=False, value=make_value(position="TE", dynasty_value_percentile=10.0))
     non_need_bench = make_entry(player_id="wr-surplus", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=40.0))
     roster = make_roster(entries=[need_position_bench, non_need_bench])
-    drop = _find_drop_candidate(roster, target_position="RB", my_needs=["TE"], currency="dynasty")
+    drop = find_drop_candidate(roster, target_position="RB", my_needs=["TE"], currency="dynasty")
     assert drop.player_id == "wr-surplus"  # avoids cutting the TE (a declared need) even though it's weaker in raw value
 
 
@@ -187,7 +187,7 @@ def test_find_drop_candidate_still_suggests_same_position_bench_even_when_that_p
     weak_same_pos = make_entry(player_id="rb-weak", position="RB", is_starter=False, value=make_value(position="RB", dynasty_value_percentile=15.0))
     unrelated_bench = make_entry(player_id="wr-fine", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=55.0))
     roster = make_roster(entries=[weak_same_pos, unrelated_bench])
-    drop = _find_drop_candidate(roster, target_position="RB", my_needs=["TE", "RB"], currency="dynasty")
+    drop = find_drop_candidate(roster, target_position="RB", my_needs=["TE", "RB"], currency="dynasty")
     assert drop.player_id == "rb-weak"
 
 
@@ -198,9 +198,9 @@ def test_find_drop_candidate_respects_exclude_ids_for_cross_target_dedup():
     weakest = make_entry(player_id="wr-weakest", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=10.0))
     second_weakest = make_entry(player_id="wr-second", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=25.0))
     roster = make_roster(entries=[weakest, second_weakest])
-    first_drop = _find_drop_candidate(roster, target_position="WR", my_needs=[], currency="dynasty")
+    first_drop = find_drop_candidate(roster, target_position="WR", my_needs=[], currency="dynasty")
     assert first_drop.player_id == "wr-weakest"
-    second_drop = _find_drop_candidate(
+    second_drop = find_drop_candidate(
         roster, target_position="WR", my_needs=[], currency="dynasty", exclude_ids={first_drop.player_id}
     )
     assert second_drop.player_id == "wr-second"
@@ -214,20 +214,20 @@ def test_find_drop_candidate_ranks_unknown_valuation_after_a_known_low_one():
     unranked = make_entry(player_id="wr-unranked", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=None))
     known_low = make_entry(player_id="wr-known-low", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=20.0))
     roster = make_roster(entries=[unranked, known_low])
-    drop = _find_drop_candidate(roster, target_position="WR", my_needs=[], currency="dynasty")
+    drop = find_drop_candidate(roster, target_position="WR", my_needs=[], currency="dynasty")
     assert drop.player_id == "wr-known-low"
 
 
 def test_find_drop_candidate_never_suggests_a_rising_player():
     rising = make_entry(player_id="hot", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=5.0, trend="rising"))
     roster = make_roster(entries=[rising])
-    assert _find_drop_candidate(roster, target_position="WR", my_needs=[], currency="dynasty") is None
+    assert find_drop_candidate(roster, target_position="WR", my_needs=[], currency="dynasty") is None
 
 
 def test_find_drop_candidate_none_when_bench_is_empty():
     starter_only = make_entry(player_id="s1", position="WR", is_starter=True, value=make_value(position="WR"))
     roster = make_roster(entries=[starter_only])
-    assert _find_drop_candidate(roster, target_position="WR", my_needs=[], currency="dynasty") is None
+    assert find_drop_candidate(roster, target_position="WR", my_needs=[], currency="dynasty") is None
 
 
 # -- get_time_sensitive_notes: structured severity -----------------------------

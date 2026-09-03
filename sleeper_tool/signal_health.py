@@ -525,6 +525,53 @@ def build_health(
     )
 
 
+LABEL_ORDER = (FRESH, USABLE, PARTIAL, STALE, UNAVAILABLE)  # best to worst
+
+# Which decision modules a data family feeds, so a provenance reason can carry
+# the label of the source it rests on when that source is not fresh. The
+# value numbers themselves (trade_engine, trade_opportunity_cost) rest on the
+# ranking sources just as much as the disagreement clause does.
+FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
+    "ktc": ("market_velocity", "source_disagreement", "buyer_board", "trade_engine", "trade_opportunity_cost", "recommendation_conflicts"),
+    "fantasypros": ("source_disagreement", "trade_engine", "trade_opportunity_cost"),
+    "rotoballer": ("replacement_value", "move_impact", "lineup_leverage", "streamer_planner", "matchup_leverage", "opponent_blocker", "trade_engine"),
+    "nflverse_schedule": ("schedule_window",),
+    "nflverse_usage": ("role_trends",),
+    "sleeper_trending": ("waiver_engine",),
+    "sleeper_weekly": ("league_economy",),
+}
+
+
+def worse_label(labels) -> str | None:
+    """The worst of several labels; an unknown label counts as the worst."""
+    worst = None
+    for label in labels:
+        rank = LABEL_ORDER.index(label) if label in LABEL_ORDER else len(LABEL_ORDER)
+        if worst is None or rank > worst[0]:
+            worst = (rank, label)
+    return worst[1] if worst else None
+
+
+def freshness_by_source(report: SignalHealthReport) -> dict[str, str]:
+    """{module: label} for every module fed by a family that is not Fresh or
+    Usable this run — the provenance layer appends the label to the reasons
+    that rest on it. Fresh sources add nothing."""
+    out: dict[str, str] = {}
+    for family, modules in FAMILY_SOURCES.items():
+        members = report.by_family(family)
+        if not members:
+            continue
+        label = worse_label(s.label for s in members)
+        fallback = any(s.fallback for s in members)
+        if label in (FRESH, USABLE) and not fallback:
+            continue
+        shown = next(s for s in members if s.label == label)
+        text = f"{shown.display_name} {label}" + (", served from cache after a failed re-fetch" if fallback else "")
+        for module in modules:
+            out[module] = text
+    return out
+
+
 def suppressed_features(report: SignalHealthReport) -> dict[str, str]:
     """Features whose required data isn't there, and why. The orchestrator
     decides what to do with this; nothing here hides anything by itself."""

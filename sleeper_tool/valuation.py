@@ -246,7 +246,7 @@ def composite_overall_rank(pv: PlayerValue, currency: str) -> float | None:
     return float(pv.redraft_ecr_rank) if pv.redraft_ecr_rank else None
 
 
-def _ktc_value_for_format(ktc_player: dict, fmt: LeagueFormat) -> tuple[int, int, int]:
+def ktc_value_for_format(ktc_player: dict, fmt: LeagueFormat) -> tuple[int, int, int]:
     """Returns (value, overall_rank, positional_rank) for this league's exact format."""
     side = "superflex" if fmt.is_superflex else "one_qb"
     tier = fmt.te_premium_tier
@@ -407,7 +407,7 @@ class ValuationEngine:
         dynasty_value = dynasty_rank = dynasty_pos_rank = None
         ktc_player = self._ktc_index.get(key)
         if ktc_player is not None:
-            dynasty_value, dynasty_rank, dynasty_pos_rank = _ktc_value_for_format(ktc_player, fmt)
+            dynasty_value, dynasty_rank, dynasty_pos_rank = ktc_value_for_format(ktc_player, fmt)
             sources.append("ktc")
 
         dynasty_ecr_rank = None

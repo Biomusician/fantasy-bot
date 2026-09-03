@@ -143,6 +143,7 @@ class Action(NamedTuple):
     priority_key: PriorityKey
     headline: str
     detail: str
+    rank: int = 0  # the kind's own quality order (acceptance tier, percentile), after the six dimensions and kind
 
 
 # -- subject lookup ----------------------------------------------------------
@@ -407,7 +408,7 @@ def _as_action(a) -> Action:
 
 
 def _order_key(a: Action) -> tuple:
-    return (*a.priority_key.sort_key(), KIND_ORDER.get(a.kind, len(KIND_ORDER)), _league_name(a.ld), a.headline)
+    return (*a.priority_key.sort_key(), KIND_ORDER.get(a.kind, len(KIND_ORDER)), a.rank, _league_name(a.ld), a.headline)
 
 
 def rank_actions(actions) -> list[Action]:

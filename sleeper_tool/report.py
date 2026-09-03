@@ -24,7 +24,7 @@ from sleeper_tool.negotiation_ladder import NegotiationLadder
 from sleeper_tool.pick_opportunity import PickOpportunity
 from sleeper_tool.recommendation_conflicts import CONFLICTED, TRADE, WAIVER, Conflict, conflict_for
 from sleeper_tool.portfolio_exposure import PortfolioExposure
-from sleeper_tool.replacement_value import ReplacementMarket
+from sleeper_tool.replacement_value import SCARCE, VERY_SCARCE, ReplacementMarket
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
 from sleeper_tool.report_views import (
     CONFIDENCE_LEGEND,
@@ -39,6 +39,9 @@ from sleeper_tool.report_views import (
     lineup_units,
     split_visible,
     waiver_row_view,
+    health_state,
+    ORDERING_NOTE,
+    fact_of,
     without_repeats,
 )
 from sleeper_tool.roster_analysis import ValuedRoster
@@ -83,6 +86,8 @@ def _render_priority_actions(actions: list[PriorityAction]) -> list[str]:
         lines.append("Nothing urgent across any league — hold.")
         lines.append("")
         return lines
+    lines.append(f"_{ORDERING_NOTE}_")
+    lines.append("")
     for a in actions:
         v = action_view(a)
         flag = " · ⚠️ **Conflicted**" if v.conflicted else ""
@@ -102,18 +107,22 @@ def _render_priority_actions(actions: list[PriorityAction]) -> list[str]:
     return lines
 
 
-def _render_provenance(prov) -> list[str]:
-    """The For / Against / Context card, one line each. Nothing here is
-    computed: the texts are the provenance layer's selections."""
+def _render_provenance(prov, seen: set | None = None, *, include_context: bool = True) -> list[str]:
+    """The For / Against (/ Context) card, one line each. Nothing here is
+    computed: the texts are the provenance layer's selections, minus any
+    fact `seen` already put on screen (the economics line)."""
     if prov is None or not prov.all_reasons:
         return []
+    seen = seen if seen is not None else set()
     lines = []
-    if prov.reasons_for:
-        lines.append(f"- **For:** {' · '.join(f'{r.text} [{r.category}]' for r in prov.reasons_for)}")
-    if prov.reasons_against:
-        lines.append(f"- **Against:** {' · '.join(f'{r.text} [{r.category}]' for r in prov.reasons_against)}")
-    if prov.context:
-        lines.append(f"- **Context:** {' · '.join(f'{r.text} [{r.category}]' for r in prov.context)}")
+    groups = [("For", prov.reasons_for), ("Against", prov.reasons_against)]
+    if include_context:
+        groups.append(("Context", prov.context))
+    for label, reasons in groups:
+        kept = [r for r in reasons if fact_of(r.text) not in seen]
+        claim(seen, [r.text for r in kept])
+        if kept:
+            lines.append(f"- **{label}:** {' · '.join(f'{r.text} [{r.category}]' for r in kept)}")
     return lines
 
 
@@ -301,23 +310,24 @@ def _render_trade_proposal(
     seen: set = set()
     if economics is not None:
         claim(seen, [economics.scarcity_note])
-    why = _render_provenance(provenance)
+    why = _render_provenance(provenance, seen, include_context=False)
     if why:
         lines.append("Why now:")
         lines.extend(why)
         lines.append("")
-        claim(seen, [r.text for r in provenance.all_reasons])
+    context = _render_provenance(provenance, seen) if provenance is not None and provenance.context else []
+    context = [c for c in context if c.startswith("- **Context:**")]
 
     more: list[str] = []
     if impact is not None:
-        deltas, more = split_visible(impact.material_deltas(), MAX_IMPACT_DELTAS)
+        deltas, more = split_visible(without_repeats(impact.material_deltas(), seen), MAX_IMPACT_DELTAS)
         lines.append("What actually changes:")
         if deltas:
             lines.extend(f"- {d}" for d in deltas)
         else:
             lines.append("- nothing material — lineup, depth, status, and roster value all hold; this is a value play, not a lineup play")
-        if impact.matchup_note:
-            lines.append(f"- {impact.matchup_note}")
+        for note in without_repeats([impact.matchup_note], seen):
+            lines.append(f"- {note}")
         if more:
             lines.append(f"- … {len(more)} further change(s) in the full rationale below")
         lines.append("")
@@ -329,7 +339,10 @@ def _render_trade_proposal(
     conflict_against = without_repeats(conflict.reasons_against, seen) if conflict is not None else []
     caveats = without_repeats(p.caveats, seen)
 
-    lines.extend(_summary("Full rationale", "both sides, acceptance factors, caveats, message, ladder"))
+    lines.extend(_summary("Full rationale", "context, both sides, acceptance factors, caveats, message, ladder"))
+    if context:
+        lines.extend(context)
+        lines.append("")
     if conflict is not None:
         lines.append(f"⚠️ **{CONFLICTED}**")
         lines.append(f"- For: {'; '.join(conflict_for_) or 'see Why now above'}")
@@ -374,13 +387,14 @@ def _render_waiver_targets(
     faab = faab or {}
     lines = ["| Priority | Player | Pos | Team | Drop | Horizon | FAAB | Why |", "|---|---|---|---|---|---|---|---|"]
     details: list[str] = []
+    seen_leads: set = set()
     for t in targets:  # already capped by the engine; insurance rows ride along after the cap
         mark = _TIER_MARK.get(t.priority_tier, "")
         drop = t.drop_candidate.name if t.drop_candidate else "—"
         advice = faab.get(t.player_id)
         row = waiver_row_view(
             t, impact=impacts.get(t.player_id), conflict=conflict_for(conflicts, WAIVER, t.player_id),
-            faab_detail=bid_detail(advice),
+            faab_detail=bid_detail(advice), seen_leads=seen_leads,
         )
         chips = "".join(f" **[{text}]**" for text, _ in row.chips)
         lines.append(
@@ -456,13 +470,13 @@ def _unit_line(u, market: ReplacementMarket | None) -> str:
 def _render_replacement_market(market: ReplacementMarket) -> list[str]:
     lines = ["Scarcest first.", ""]
     for m in market.scarcest():
-        lines.append(f"- **{m.describe()}**" if m.scarcity in ("Scarce", "Very Scarce") else f"- {m.describe()}")
+        lines.append(f"- **{m.describe()}**" if m.scarcity in (SCARCE, VERY_SCARCE) else f"- {m.describe()}")
     if market.understated:
         lines.append("")
         lines.append("Rank understates their edge here: " + "; ".join(f"{c.entry.name} ({c.clause()})" for c in market.understated))
     if market.overstated:
         lines.append("")
-        lines.append("Rank overstates their edge here: " + "; ".join(f"{c.entry.name} ({c.clause()})" for c in market.overstated))
+        lines.append("Closer to replacement than rank suggests: " + "; ".join(f"{c.entry.name} ({c.clause()})" for c in market.overstated))
     lines.append("")
     return lines
 
@@ -683,8 +697,7 @@ def _render_signal_health(report: WeeklyReportData) -> list[str]:
             lines.append(f"- {source}: {age_str(age)} old")
         lines.append(f"- ff_dynasty_pass (manual CSV): {report.ff_status}")
     else:
-        state = "degraded" if report.health.degraded else "all sources fresh or usable"
-        lines.extend([f"## Signal health — {state}", ""])
+        lines.extend([f"## Signal health — {health_state(report)}", ""])
         lines.extend(f"- {line}" for line in report.freshness_lines)
         for note in report.health.notes:
             lines.append(f"- ⚠️ {note}")
@@ -712,7 +725,7 @@ def _render_diagnostics(report: WeeklyReportData) -> list[str]:
         body.append("**Decision ledger** (recommendations recorded, by action and observed outcome):")
         body.append("")
         for action, counts in report.ledger_summary.items():
-            body.append(f"- {action}: " + ", ".join(f"{label} {n}" for label, n in counts.items()))
+            body.append(f"- {action}: " + ", ".join(f"{'awaiting outcome' if label == '(open)' else label} {n}" for label, n in counts.items()))
         body.append("")
     observed = [f for f in report.outcome_facts if f.state == OBSERVED]
     if observed:
@@ -722,12 +735,12 @@ def _render_diagnostics(report: WeeklyReportData) -> list[str]:
         if len(observed) > MAX_DIAGNOSTIC_LINES:
             body.append(f"- … {len(observed) - MAX_DIAGNOSTIC_LINES} earlier facts not shown")
         body.append("")
-    if report.watchlist_new or report.watchlist_watching:
+    if report.watchlist_new:
         body.append("**Watchlist:**")
         body.append("")
         body.extend(f"- 🆕 {line}" for line in report.watchlist_new)
         if report.watchlist_watching:
-            body.append(f"- {report.watchlist_watching} near-miss item(s) still watched, nothing new to say")
+            body.append(f"- {report.watchlist_watching} more near-miss item(s) still watched")
         body.append("")
     if not body:
         return []

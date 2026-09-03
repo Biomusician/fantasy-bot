@@ -48,6 +48,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from sleeper_tool.asset_value import need_percentile
 from sleeper_tool.market_velocity import DIRECTIONAL_MIN_MOVE, STABLE
 from sleeper_tool.opponent_blocker import open_roster_spots
 from sleeper_tool.stash_board import WATCH
@@ -234,7 +235,7 @@ def metrics(ld, player_id: str, *, role_trends: dict | None = None, week: int | 
         "injury_status": getattr(entry, "injury_status", None),
         "on_my_roster": _roster_entry(ld, player_id) is not None,
         "favourable_receive": _is_favourable_receive(ld, player_id),
-        "percentile": _percentile_of(entry),
+        "percentile": _percentile_of(entry, getattr(ld, "currency", None)),
         "label": None,  # kind-specific headline metric, filled by candidates()
         "value": None,  # kind-specific number, filled by candidates()
     }
@@ -289,8 +290,15 @@ def _position_of(ld, player_id: str) -> str | None:
     return target.position if target is not None else None
 
 
-def _percentile_of(entry) -> float | None:
+def _percentile_of(entry, currency: str | None = None) -> float | None:
+    """The league's own currency decides which percentile is the player's;
+    without a currency the dynasty one is preferred, then redraft."""
     value = getattr(entry, "value", None)
+    if value is None:
+        return None
+    if currency:
+        pctl = need_percentile(value, currency)
+        return float(pctl) if pctl is not None else None
     for attr in ("dynasty_positional_percentile", "dynasty_value_percentile", "redraft_ecr_percentile"):
         pctl = getattr(value, attr, None)
         if pctl is not None:

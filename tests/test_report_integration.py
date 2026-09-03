@@ -225,7 +225,7 @@ def test_usage_layer_says_once_that_role_data_begins_after_games(monkeypatch):
     assert _load_usage_layer(_Storage([]), [make_league_info()], None) == (None, None, None, None)
 
 
-def test_usage_layer_builds_the_crosswalk_for_rostered_and_trending_players_only(monkeypatch):
+def test_usage_layer_builds_the_crosswalk_for_rostered_trending_and_active_players(monkeypatch):
     import sleeper_tool.report_data as rd
 
     monkeypatch.setattr(rd, "load_usage", lambda season: _usage_rising())
@@ -238,7 +238,8 @@ def test_usage_layer_builds_the_crosswalk_for_rostered_and_trending_players_only
     storage = _Storage([{"players": ["s1"]}], trending=[{"player_id": "s2"}], players=players)
     usage, crosswalk, note, xnote = _load_usage_layer(storage, [make_league_info()], 2026)
     assert usage is not None and note is None and xnote.startswith("Player id crosswalk:")
-    assert set(crosswalk) == {"s1", "s2"} and crosswalk["s1"].gsis_id == "g1"
+    # s3 is an active WR on a team: a free agent the report may name, so he is crosswalked too.
+    assert set(crosswalk) == {"s1", "s2", "s3"} and crosswalk["s1"].gsis_id == "g1"
 
 
 # -- renderer parity ---------------------------------------------------------------
@@ -274,7 +275,7 @@ def test_both_renderers_show_faab_health_and_diagnostics():
     for sentinel in (
         "$20 · Aggressive", "Suggested bid uses approximately 25% of remaining budget ($20 of $80)", "Only two managers can outbid 20",
         "RotoBaller · Stale · 3.0d · 400 rows", "RotoBaller is 3.0d old", NO_HISTORY_NOTE, "391/394 matched",
-        "Completed 1", "L: X — promoted", "4 near-miss item(s) still watched",
+        "Completed 1", "L: X — promoted", "4 more near-miss item(s) still watched",
     ):
         assert sentinel in md, sentinel
         # The HTML renders the same facts as chips, so check the tokens rather than the joined line.

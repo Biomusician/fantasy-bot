@@ -22,7 +22,9 @@ from sleeper_tool.negotiation_ladder import NegotiationLadder
 from sleeper_tool.pick_opportunity import PickOpportunity
 from sleeper_tool.recommendation_conflicts import CONFLICTED, TRADE, WAIVER, Conflict, conflict_for
 from sleeper_tool.portfolio_exposure import VERY_HIGH, PortfolioExposure
-from sleeper_tool.replacement_value import SCARCE, VERY_SCARCE, ReplacementMarket
+from sleeper_tool.playoff_leverage import BUBBLE, COMFORTABLE, LONG_SHOT, OUT
+from sleeper_tool.replacement_value import ABUNDANT, NORMAL, SCARCE, VERY_SCARCE, ReplacementMarket
+from sleeper_tool.team_status import CONTENDER, MIDDLING, REBUILD
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
 from sleeper_tool.report_views import (
     CONFIDENCE_LEGEND,
@@ -37,6 +39,10 @@ from sleeper_tool.report_views import (
     lineup_units,
     split_visible,
     waiver_row_view,
+    health_state,
+    ORDERING_NOTE,
+    claim,
+    fact_of,
     without_repeats,
 )
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
@@ -202,7 +208,7 @@ def _lineup_leverage_section(lev: LineupLeverage | None, currency: str, clauses:
             + "</li>"
         )
     for s in lev.bench_surplus:
-        pctl = f"{s.value_percentile:.0f}{_ordsuffix(s.value_percentile)} pctl" if s.value_percentile is not None else "unranked"
+        pctl = f"{s.value_percentile:.0f}{_ordsuffix(s.value_percentile)} percentile" if s.value_percentile is not None else "unranked"
         items.append(
             f'<li class="alert-item">{_chip("Bench surplus", "accent")} <strong>{esc(s.entry.name)}</strong> '
             f"({esc(s.entry.position or '?')}, {pctl} {esc(value_label_for_currency(currency))}) projects at "
@@ -331,8 +337,8 @@ def _trade_card(
     seen: set = set()
     if economics is not None:
         claim(seen, [economics.scarcity_note])
-    if provenance is not None:
-        claim(seen, [r.text for r in provenance.all_reasons])
+    why_block = _provenance_block(provenance, seen)  # claims its facts before the context and the collapsed block
+    context_rows = _provenance_rows(provenance, seen, groups=("Context",))
 
     _, more_deltas = split_visible(impact.material_deltas() if impact is not None else [], MAX_IMPACT_DELTAS)
 
@@ -383,10 +389,10 @@ def _trade_card(
         {_chip(CONFLICTED, "negative") if conflict is not None else ""}
       </div>
       {f'<p class="muted status-reason">{esc(economics.scarcity_note)}</p>' if economics is not None and economics.scarcity_note else ""}
-      {_provenance_block(provenance)}
+      {why_block}
       {_impact_block(impact, more_deltas)}
       <details class="trade-details">
-        <summary>Full rationale &middot; both sides, acceptance factors, caveats, message, ladder</summary>
+        <summary>Full rationale &middot; both sides, acceptance factors, caveats, message, ladder</summary>{context_rows}
         {conflict_block}
         <div class="trade-rationale">
           <div><span class="rationale-label">For me</span><ul>{mine}</ul></div>
@@ -423,6 +429,7 @@ def _waiver_table(
     }
     _CHIP_KIND = {"negative": "negative", "neutral": "neutral"}
     rows = []
+    seen_leads: set = set()
     for t in targets:  # already capped by the engine; insurance rows ride along after the cap
         tier_chip = _chip(t.priority_tier, _TIER_CHIP_KIND.get(t.priority_tier, "neutral"))
         drop = esc(t.drop_candidate.name) if t.drop_candidate else '<span class="muted">—</span>'
@@ -430,7 +437,7 @@ def _waiver_table(
         faab_text = esc(bid_cell(advice, t.suggested_faab_pct))
         row = waiver_row_view(
             t, impact=impacts.get(t.player_id), conflict=conflict_for(conflicts, WAIVER, t.player_id),
-            faab_detail=bid_detail(advice),
+            faab_detail=bid_detail(advice), seen_leads=seen_leads,
         )
         chips = "".join(_chip(text, _CHIP_KIND.get(kind, "neutral")) for text, kind in row.chips)
         chips_html = f'<div class="row-chips">{chips}</div>' if chips else ""
@@ -653,7 +660,7 @@ def _unit_text(u, market: ReplacementMarket | None) -> str:
     return text + (f", {scarcity} replacement market" if scarcity else "")
 
 
-_SCARCITY_CHIP_KIND = {VERY_SCARCE: "negative", SCARCE: "caution", "Normal": "neutral", "Abundant": "positive"}
+_SCARCITY_CHIP_KIND = {VERY_SCARCE: "negative", SCARCE: "caution", NORMAL: "neutral", ABUNDANT: "positive"}
 
 
 def _replacement_market_section(market: ReplacementMarket | None) -> str:
@@ -662,14 +669,14 @@ def _replacement_market_section(market: ReplacementMarket | None) -> str:
     items = "".join(
         f'<li class="alert-item">{_chip(m.scarcity, _SCARCITY_CHIP_KIND.get(m.scarcity, "neutral"))} '
         f"<strong>{esc(m.position)}</strong>"
-        f'<div class="drop-reasons">{esc(m.describe().split(" — ", 1)[-1])}</div></li>'
+        f'<div class="drop-reasons">{esc(m.detail())}</div></li>'
         for m in market.scarcest()
     )
     notes = ""
     if market.understated:
         notes += '<p class="roster-note">Rank understates their edge here: ' + esc("; ".join(f"{c.entry.name} ({c.clause()})" for c in market.understated)) + "</p>"
     if market.overstated:
-        notes += '<p class="roster-note">Rank overstates their edge here: ' + esc("; ".join(f"{c.entry.name} ({c.clause()})" for c in market.overstated)) + "</p>"
+        notes += '<p class="roster-note">Closer to replacement than rank suggests: ' + esc("; ".join(f"{c.entry.name} ({c.clause()})" for c in market.overstated)) + "</p>"
     return f"""
     <section class="panel-block">
       <h3>Replacement market <span class="muted">&middot; how replaceable each position is from this league's wire</span></h3>
@@ -734,8 +741,8 @@ def _alerts_list(notes: list[TimeSensitiveNote]) -> str:
 CONTEXT_SUMMARY = "lineup, roster, clogs, replacement market, stash board, buyer board, schedule, draft capital, league economy"
 DIAGNOSTICS_SUMMARY = "decision ledger, outcome facts, watchlist"
 
-_STATUS_CHIP_KIND = {"contender": "positive", "middling": "neutral", "rebuild": "caution"}
-_PLAYOFF_CHIP_KIND = {"Comfortable": "positive", "Bubble": "caution", "Long Shot": "caution", "Out": "negative"}
+_STATUS_CHIP_KIND = {CONTENDER: "positive", MIDDLING: "neutral", REBUILD: "caution"}
+_PLAYOFF_CHIP_KIND = {COMFORTABLE: "positive", BUBBLE: "caution", LONG_SHOT: "caution", OUT: "negative"}
 
 
 def _league_panel(data: LeagueReportData) -> str:
@@ -902,16 +909,28 @@ def _priority_action_row(a: PriorityAction) -> str:
     """
 
 
-def _provenance_block(prov) -> str:
-    """The For / Against / Context card; texts are the provenance layer's."""
-    if prov is None or not prov.all_reasons:
+def _provenance_rows(prov, seen: set | None = None, *, groups=("For", "Against")) -> str:
+    """For / Against (or Context) rows; texts are the provenance layer's,
+    minus any fact `seen` already put on screen."""
+    if prov is None:
         return ""
+    seen = seen if seen is not None else set()
+    by_label = {"For": prov.reasons_for, "Against": prov.reasons_against, "Context": prov.context}
     rows = []
-    for label, reasons in (("For", prov.reasons_for), ("Against", prov.reasons_against), ("Context", prov.context)):
-        if reasons:
-            items = "".join(f"<li>{esc(r.text)} <span class=muted>[{esc(r.category)}]</span></li>" for r in reasons)
+    for label in groups:
+        kept = [r for r in by_label[label] if fact_of(r.text) not in seen]
+        claim(seen, [r.text for r in kept])
+        if kept:
+            items = "".join(f"<li>{esc(r.text)} <span class=muted>[{esc(r.category)}]</span></li>" for r in kept)
             rows.append(f'<div class="why-row"><b>{label}:</b><ul>{items}</ul></div>')
-    return f'<div class="why-now"><span class="rationale-label">Why now</span>{"".join(rows)}</div>'
+    return "".join(rows)
+
+
+def _provenance_block(prov, seen: set | None = None) -> str:
+    rows = _provenance_rows(prov, seen)
+    if not rows:
+        return ""
+    return f'<div class="why-now"><span class="rationale-label">Why now</span>{rows}</div>'
 
 
 def _priority_actions_section(actions: list[PriorityAction]) -> str:
@@ -926,6 +945,7 @@ def _priority_actions_section(actions: list[PriorityAction]) -> str:
     return f"""
     <section class="panel-block priority-block">
       <h3>Best moves right now</h3>
+      <p class="muted">{esc(ORDERING_NOTE)}</p>
       <div class="action-list">{rows}</div>
     </section>
     """
@@ -1013,7 +1033,7 @@ def _signal_health_section(report: WeeklyReportData) -> str:
             f'{" <span class=muted>" + str(s.coverage) + " rows</span>" if s.coverage is not None else ""}</span>'
             for s in report.health.signals
         )
-        title = "Signal health &middot; " + ("degraded" if report.health.degraded else "all sources fresh or usable")
+        title = "Signal health &middot; " + esc(health_state(report))
         items = [f"<li>{esc(n)}</li>" for n in report.health.notes]
         items += [f"<li>Suppressed this run: {esc(f.replace('_', ' '))} &mdash; {esc(why)}</li>" for f, why in sorted(report.suppressed.items())]
         notes_html = f'<ul class="alert-list">{"".join(items)}</ul>' if items else ""
@@ -1049,7 +1069,7 @@ def _diagnostics_section(report: WeeklyReportData) -> str:
     parts: list[str] = []
     if report.ledger_summary:
         rows = "".join(
-            f"<li><b>{esc(action)}</b>: " + ", ".join(f"{esc(label)} {n}" for label, n in counts.items()) + "</li>"
+            f"<li><b>{esc(action)}</b>: " + ", ".join(f"{esc('awaiting outcome' if label == '(open)' else label)} {n}" for label, n in counts.items()) + "</li>"
             for action, counts in report.ledger_summary.items()
         )
         parts.append(f'<h4>Decision ledger</h4><p class="muted">Recommendations recorded, by action and observed outcome.</p><ul class="alert-list">{rows}</ul>')
@@ -1058,10 +1078,10 @@ def _diagnostics_section(report: WeeklyReportData) -> str:
         rows = "".join(f"<li>{esc(f.describe())}</li>" for f in observed[-MAX_DIAGNOSTIC_LINES:])
         more = f'<li class="muted">… {len(observed) - MAX_DIAGNOSTIC_LINES} earlier facts not shown</li>' if len(observed) > MAX_DIAGNOSTIC_LINES else ""
         parts.append(f'<h4>Outcome facts</h4><p class="muted">Descriptive; the value moves are the sources\', not a verdict.</p><ul class="alert-list">{rows}{more}</ul>')
-    if report.watchlist_new or report.watchlist_watching:
+    if report.watchlist_new:
         rows = "".join(f"<li>{_chip('New Trigger', 'accent')} {esc(line)}</li>" for line in report.watchlist_new)
         if report.watchlist_watching:
-            rows += f'<li class="muted">{report.watchlist_watching} near-miss item(s) still watched, nothing new to say</li>'
+            rows += f'<li class="muted">{report.watchlist_watching} more near-miss item(s) still watched</li>'
         parts.append(f'<h4>Watchlist</h4><ul class="alert-list">{rows}</ul>')
     if not parts:
         return ""
@@ -1107,7 +1127,11 @@ def _nav_items(report: WeeklyReportData) -> str:
     for d in report.leagues:
         slug = _slug(d.league.name)
         alert = len(d.time_sensitive) if d.drafted else 0
-        badge = f'<span class="badge-count badge-alert">{alert}</span>' if alert else ""
+        high = any(n.severity == "high" for n in d.time_sensitive) if d.drafted else False
+        badge = (
+            f'<span class="badge-count {"badge-alert" if high else "badge-note"}" title="{alert} time-sensitive note{"s" if alert != 1 else ""}">{alert}</span>'
+            if alert else ""
+        )
         items.append(f'<a class="nav-item" href="#{slug}" data-target="{slug}">{esc(d.league.name)}{badge}</a>')
     return "".join(items)
 
@@ -1141,7 +1165,7 @@ CSS = """
   --surface-raised: #232830;
   --ink: #EDEDE7;
   --ink-muted: #9CA0A6;
-  --ink-faint: #6B6F75;
+  --ink-faint: #8A8F96;
   --line: #262B31;
   --accent: #E0A94D;
   --accent-ink: #F4CD82;
@@ -1204,7 +1228,7 @@ CSS = """
   --surface-raised: #232830;
   --ink: #EDEDE7;
   --ink-muted: #9CA0A6;
-  --ink-faint: #6B6F75;
+  --ink-faint: #8A8F96;
   --line: #262B31;
   --accent: #E0A94D;
   --accent-ink: #F4CD82;
@@ -1344,6 +1368,7 @@ tbody tr:last-child td { border-bottom: none; }
 .alert-caution { border-left-color: var(--caution); }
 .badge-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; font-size: 11px; font-family: var(--font-mono); }
 .badge-alert { background: var(--negative-bg); color: var(--negative); }
+.badge-note { background: var(--neutral-bg); color: var(--ink-muted); }
 
 .empty-note { color: var(--ink-faint); font-size: 14px; font-style: italic; }
 

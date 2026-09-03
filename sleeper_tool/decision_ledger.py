@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from sleeper_tool.decision_delta import _stable_value
+from sleeper_tool.decision_delta import stable_value
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +201,7 @@ def _scarcity(ld, positions: Iterable[str | None]) -> dict[str, str]:
 
 
 def _values(entries, currency: str, current_week: int | None) -> dict[str, float | None]:
-    return {e.player_id: _stable_value(e.value, currency, current_week) for e in entries if e.value is not None}
+    return {e.player_id: stable_value(e.value, currency, current_week) for e in entries if e.value is not None}
 
 
 def _conflict_labels(ld, kind: str, key: str) -> list[str]:

@@ -3,7 +3,7 @@ import dataclasses
 from conftest import make_entry, make_format, make_league_info, make_roster, make_value
 
 from sleeper_tool.roster_clog import DYNASTY_CLOG_RANK_CUTOFF, identify_roster_clogs
-from sleeper_tool.waiver_engine import _find_drop_candidate
+from sleeper_tool.waiver_engine import find_drop_candidate
 
 SLOTS = ("QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "BN", "BN", "BN", "BN")
 
@@ -106,7 +106,7 @@ def test_waiver_drop_candidate_prefers_a_clog_over_a_same_position_backup():
         _p("wr_backup", "WR", 100),
         _p("rb_clog", "RB", 20, dyn_rank=300),
     ])
-    pick = _find_drop_candidate(my_roster, "WR", [], "dynasty", preferred_ids={"rb_clog"})
+    pick = find_drop_candidate(my_roster, "WR", [], "dynasty", preferred_ids={"rb_clog"})
     assert pick.player_id == "rb_clog"
-    pick = _find_drop_candidate(my_roster, "WR", [], "dynasty")
+    pick = find_drop_candidate(my_roster, "WR", [], "dynasty")
     assert pick.player_id == "wr_backup"

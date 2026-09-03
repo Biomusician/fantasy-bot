@@ -103,11 +103,11 @@ def test_saved_snapshot_round_trips(tmp_path):
 def test_snapshot_value_is_per_game_for_redraft_so_week_rollover_is_not_a_swing():
     from conftest import make_value
 
-    from sleeper_tool.decision_delta import _stable_value
+    from sleeper_tool.decision_delta import stable_value
 
     pv = make_value(dynasty_value=4000, proj_points=170.0)  # ROS total as valued at week 1
-    assert _stable_value(pv, "dynasty", 1) == 4000
-    assert _stable_value(pv, "redraft", 1) == 10.0  # 170 over 17 games
+    assert stable_value(pv, "dynasty", 1) == 4000
+    assert stable_value(pv, "redraft", 1) == 10.0  # 170 over 17 games
     # The same player a week later, ROS total rescaled to 16 games: same per-game number.
     later = make_value(dynasty_value=4000, proj_points=160.0)
-    assert _stable_value(later, "redraft", 2) == 10.0
+    assert stable_value(later, "redraft", 2) == 10.0

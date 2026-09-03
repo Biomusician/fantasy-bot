@@ -6,6 +6,14 @@ from __future__ import annotations
 import datetime as dt
 
 
+def article(n: int) -> str:
+    """'an 8-point', 'an 11-point', 'an 18-point', 'an 80-point'; 'a' otherwise."""
+    n = abs(int(n))
+    if n in (8, 11, 18) or 80 <= n <= 89 or 800 <= n <= 899:
+        return "an"
+    return "a"
+
+
 def age_str(age: dt.timedelta) -> str:
     """Formats a timedelta as a short freshness label, e.g. '43m', '6h', '2d'.
     Previously defined separately (and inconsistently — one appended 'old',

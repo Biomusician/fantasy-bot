@@ -136,7 +136,7 @@ def build_valued_roster(
         roster_id=roster["roster_id"],
         owner_id=owner_id,
         owner_username=user.get("display_name"),
-        team_name=(user.get("metadata") or {}).get("team_name"),
+        team_name=((user.get("metadata") or {}).get("team_name") or "").strip() or None,
         fmt=fmt,
         entries=entries,
         skipped_player_count=skipped_count,

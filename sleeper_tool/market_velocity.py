@@ -26,7 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sleeper_tool.decision_delta import _stable_value
+from sleeper_tool.decision_delta import stable_value
 
 MAX_OBSERVATION_GAP_DAYS = 2  # observations further apart than this are not consecutive days
 MIN_OBSERVATIONS = 3
@@ -138,12 +138,12 @@ def current_observations(ld, current_week: int | None) -> dict[str, float]:
     entries += [e for p in ld.proposals for e in (*p.give, *p.receive)]
     entries += [d.entry for d in ld.drop_candidates]
     for e in entries:
-        v = _stable_value(e.value, ld.currency, current_week)
+        v = stable_value(e.value, ld.currency, current_week)
         if v is not None:
             values[e.player_id] = float(v)
     for t in ld.waiver_targets:
         if t.value is not None:
-            v = _stable_value(t.value, ld.currency, current_week)
+            v = stable_value(t.value, ld.currency, current_week)
             if v is not None:
                 values[t.player_id] = float(v)
     return values

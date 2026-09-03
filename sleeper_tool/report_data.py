@@ -9,7 +9,7 @@ import datetime as dt
 import logging
 from dataclasses import dataclass, field
 
-from sleeper_tool.action_priority import ALERT, DEFENSIVE_ADD, DROP, KIND_ORDER, STASH, STREAMER, PriorityKey, classify
+from sleeper_tool.action_priority import ALERT, DEFENSIVE_ADD, DROP, STASH, STREAMER, Action, PriorityKey, classify, rank_actions
 from sleeper_tool.asset_value import percentile_for_currency, value_currency
 from sleeper_tool.buyer_board import BuyerBoard, annotate_sell_high_proposals, build_buyer_boards, sell_high_candidates
 from sleeper_tool.bye_collision import ByeCollision, describe_bye_collision, plan_bye_collisions, positions_covering
@@ -51,7 +51,7 @@ from sleeper_tool.portfolio_exposure import PortfolioExposure, acquisition_expos
 from sleeper_tool.rankings.cache import load_snapshot
 from sleeper_tool.rankings.ff_dynasty_pass import ff_dynasty_status
 from sleeper_tool.recommendation_conflicts import CONFLICTED, TRADE, WAIVER, Conflict, conflict_for, detect_conflicts
-from sleeper_tool.recommendation_provenance import Provenance, build_provenance
+from sleeper_tool.recommendation_provenance import AGAINST, CONTEXT, FOR, Provenance, build_provenance
 from sleeper_tool.replacement_value import (
     ABUNDANT,
     OVERSTATED_MAX_OVER_WAIVER,
@@ -63,7 +63,7 @@ from sleeper_tool.replacement_value import (
     player_context,
 )
 from sleeper_tool.roster_analysis import SKILL_POSITIONS, RosterEntry, ValuedRoster, build_all_valued_rosters
-from sleeper_tool.roster_clog import RosterClog, _is_dynasty_developmental, identify_roster_clogs
+from sleeper_tool.roster_clog import RosterClog, is_dynasty_developmental, identify_roster_clogs
 from sleeper_tool.role_trends import NO_HISTORY_NOTE, RoleTrend, market_cross, trends_for
 from sleeper_tool.roster_consolidation import Consolidation, find_consolidations
 from sleeper_tool.schedule_window import ScheduleWindows, build_windows, schedule_tiebreak, team_window
@@ -77,7 +77,7 @@ from sleeper_tool.source_disagreement import (
     lookup,
     source_view,
 )
-from sleeper_tool.signal_health import FRESH, USABLE, SignalHealthReport, build_health, freshness_lines, suppressed_features
+from sleeper_tool.signal_health import SignalHealthReport, build_health, freshness_by_source, freshness_lines, suppressed_features
 from sleeper_tool.stash_board import StashCandidate, build_stash_board
 from sleeper_tool.storage import Storage
 from sleeper_tool.streamer_planner import ADD as STREAM_ADD
@@ -139,7 +139,7 @@ class LeagueReportData:
     bye_collision: ByeCollision | None = None  # earliest look-ahead week with a Bye Hole; also a time_sensitive note
     league_economy: LeagueEconomy | None = None  # per-manager trade/pick/position tendencies, current season
     trade_impacts: list[MoveImpact | None] = field(default_factory=list)  # parallel to proposals; None = below preview bar
-    waiver_impacts: dict[str, MoveImpact] = field(default_factory=dict)  # by waiver target player_id (Must Add only)
+    waiver_impacts: dict[str, MoveImpact] = field(default_factory=dict)  # by waiver target player_id (move_impact.PREVIEWED_WAIVER_TIERS, never Insurance)
     playoff: PlayoffLeverage | None = None  # standings position vs the playoff cut; None until 3 games are played
     pick_opportunity: PickOpportunity | None = None  # dynasty only: what my 1st/2nd-round picks mean to this roster
     ladders: dict[int, NegotiationLadder] = field(default_factory=dict)  # by proposal index; top two buy-low/pick-target trades
@@ -163,6 +163,7 @@ class LeagueReportData:
     faab_note: str | None = None  # why there is no FAAB advice, when there isn't any
     faab_context: FaabContext | None = None
     provenance: dict[tuple[str, str], Provenance] = field(default_factory=dict)  # by (kind, key): the For/Against/Context evidence per recommendation
+    note_directions: dict[tuple[str, str], str] = field(default_factory=dict)  # (player_id, note text) -> FOR/AGAINST/CONTEXT, stated by the annotator that wrote the note
     priorities: dict[tuple[str, str], PriorityKey] = field(default_factory=dict)  # by (kind, key): the six-dimension priority key
     error: str | None = None
 
@@ -184,6 +185,7 @@ class PriorityAction:
     why_now: list[str] = field(default_factory=list)  # provenance reasons FOR (at most MAX_FOR)
     against: list[str] = field(default_factory=list)  # provenance reasons AGAINST (at most MAX_AGAINST)
     context: list[str] = field(default_factory=list)
+    conflict_note: str = ""  # the Conflict's reasons against, when the move is a Conflicted Move; never prefixed into detail
 
 
 @dataclass
@@ -211,7 +213,7 @@ class WeeklyReportData:
     outcome_facts: list[OutcomeFact] = field(default_factory=list)
 
 
-_CONFIDENCE_RANK = {"High": 0, "Medium": 1, "Low": 2}
+_CONFIDENCE_SORT_RANK = {"High": 0, "Medium": 1, "Low": 2}  # ascending = best first (trade_rating's own dict counts the other way)
 
 # Renderer kind for each action_priority kind (drops render as "roster").
 _RENDER_KIND = {DROP: "roster"}
@@ -262,10 +264,9 @@ def build_priority_actions(
                     detail = f"Deadline Window ({ld.playoff.label}, deadline week {ld.playoff.trade_deadline_week}) — {detail}"
                 detail += _economics_note(ld.trade_economics[i] if i < len(ld.trade_economics) else None)
                 detail += _source_note_for(ld.source_views, [*p.give, *p.receive])
-                detail = _conflict_prefix(conflict_for(ld.conflicts, TRADE, str(i))) + detail
                 actions.append(_priority_action(
                     ld, report, TRADE, str(i), headline=p.summary_line(), detail=detail,
-                    rank=tier_rank * 10 + _CONFIDENCE_RANK.get(p.confidence, 2),
+                    rank=tier_rank * 10 + _CONFIDENCE_SORT_RANK.get(p.confidence, 2),
                 ))
         for t in ld.waiver_targets:
             if t.priority_tier in (MUST_ADD, INSURANCE):
@@ -278,8 +279,7 @@ def build_priority_actions(
                 actions.append(_priority_action(
                     ld, report, WAIVER, t.player_id,
                     headline=f"Add {t.name}{drop_note}",
-                    detail=_conflict_prefix(conflict_for(ld.conflicts, WAIVER, t.player_id))
-                    + f"{ld.league.name} — {t.reason}" + impact_note + faab_note + _source_note_for(ld.source_views, [t]),
+                    detail=f"{ld.league.name} — {t.reason}" + impact_note + faab_note + _source_note_for(ld.source_views, [t]),
                     rank=-(pctl or 0),  # higher percentile ranks first (more negative sorts earlier)
                 ))
         if ld.defensive_add is not None:
@@ -302,8 +302,16 @@ def build_priority_actions(
                     headline=f"{d.priority}: {d.entry.name}",
                     detail=f"{ld.league.name} — {'; '.join(d.reasons)}",
                 ))  # no reason-count rank: the annotation passes append reasons that aren't independent
-    actions.sort(key=_action_order)
-    return actions[:max_actions]
+    # The ordering is action_priority's, not a sibling of it: the six
+    # dimensions, then kind, then the kind's own quality rank, league, headline.
+    by_action = {}
+    for a in actions:
+        kind = next((k for k, v in _RENDER_KIND.items() if v == a.kind), a.kind)
+        action = Action(kind, a.key, next(ld for ld in leagues if ld.league.name == a.league_name), a.priority, a.headline, a.detail, a.rank)
+        by_action[id(action)] = a
+        by_action.setdefault("order", []).append(action)
+    ranked = rank_actions(by_action.pop("order", []))
+    return [by_action[id(action)] for action in ranked][:max_actions]
 
 
 def _priority_action(
@@ -315,21 +323,15 @@ def _priority_action(
     still gets ordered on the same dimensions."""
     prov = ld.provenance.get((kind, key))
     priority = ld.priorities.get((kind, key)) or classify(kind, ld, report, provenance=prov, key=key)
+    conflict = conflict_for(ld.conflicts, kind, key) if kind in (TRADE, WAIVER) else None
     return PriorityAction(
         league_name=ld.league.name, kind=_RENDER_KIND.get(kind, kind), headline=headline, detail=detail, rank=rank,
-        key=key, priority=priority,
+        key=key, priority=priority, conflict_note="; ".join(conflict.reasons_against) if conflict is not None else "",
         why_now=[r.text for r in prov.reasons_for] if prov is not None else [],
         against=[r.text for r in prov.reasons_against] if prov is not None else [],
         context=[r.text for r in prov.context] if prov is not None else [],
     )
 
-
-def _action_order(a: PriorityAction) -> tuple:
-    kind = next((k for k, v in _RENDER_KIND.items() if v == a.kind), a.kind)
-    return (
-        *(a.priority.sort_key() if a.priority is not None else (9, 9, 9, 9, 9, 9)),
-        KIND_ORDER.get(kind, len(KIND_ORDER)), a.rank, a.league_name, a.headline,
-    )
 
 
 def _conflict_prefix(conflict: Conflict | None) -> str:
@@ -508,6 +510,7 @@ def build_league_report_data(
         )
     time_sensitive = get_time_sensitive_notes(storage, my_roster, current_week=current_week)
     urgent_add_ids: set[str] = set()  # waiver targets that answer a bye hole (FAAB posture reads this)
+    note_directions: dict[tuple[str, str], str] = {}  # (player_id, note) -> the side the note argues for
     bye_collision = plan_bye_collisions(my_roster, current_week=current_week, lineup=lineup) if lineup is not None else None
     if bye_collision is not None:
         # Next week's hole is this week's waiver move; further out is a heads-up.
@@ -518,7 +521,9 @@ def build_league_report_data(
         covering = positions_covering(bye_collision)
         for t in waiver_targets:
             if t.position in covering:
-                t.reason = f"{t.reason}; would also cover your week {bye_collision.week} bye hole"
+                note = f"Would also cover your week {bye_collision.week} bye hole"
+                t.notes.append(note)
+                note_directions[(t.player_id, note)] = FOR
                 urgent_add_ids.add(t.player_id)
     lineup_leverage = build_lineup_leverage(my_roster, lineup=lineup, current_week=current_week) if lineup is not None else None
     if lineup_leverage is not None:
@@ -536,7 +541,7 @@ def build_league_report_data(
     if replacement is not None:
         per_week = games_remaining(current_week)
         replacement_clauses = {pid: c for pid, ctx in replacement.players.items() if (c := ctx.clause())}
-        _annotate_waivers_with_replacement(waiver_targets, replacement, currency, per_week, all_players)
+        _annotate_waivers_with_replacement(waiver_targets, replacement, currency, per_week, all_players, note_directions)
         _annotate_clogs_with_replacement(roster_clogs, replacement)
 
     matchup: MatchupLeverage | None = None
@@ -551,7 +556,7 @@ def build_league_report_data(
         protected = set(lineup.starter_ids) | set(proposed_give_ids)
         if lineup_leverage is not None:
             protected |= {s.entry.player_id for s in lineup_leverage.bench_surplus}
-        protected |= {e.player_id for e in my_roster.entries if _is_dynasty_developmental(e, currency)}
+        protected |= {e.player_id for e in my_roster.entries if is_dynasty_developmental(e, currency)}
         defensive_add = find_defensive_add(
             my_roster, rosters[matchup.opponent_roster_id], free_agents,
             current_week=current_week, protected_ids=protected, clog_ids=clog_ids,
@@ -576,7 +581,9 @@ def build_league_report_data(
     for t in waiver_targets:
         v = source_views.get(t.player_id)
         if v is not None and v.disagrees:
-            t.notes.append(f"Sources: {v.describe()}")
+            note = f"Sources: {v.describe()}"
+            t.notes.append(note)
+            note_directions[(t.player_id, note)] = CONTEXT
 
     league_economy = build_league_economy(
         rosters, storage.get_all_transactions(league.league_id), storage.get_traded_picks(league.league_id),
@@ -693,6 +700,7 @@ def build_league_report_data(
         consolidations=consolidations,
         buyer_boards=buyer_boards,
         role_trends=role_trends,
+        note_directions=note_directions,
         faab=faab,
         faab_note=faab_status_note(faab_ctx),
         faab_context=faab_ctx,
@@ -796,19 +804,27 @@ def _annotate_proposals_with_replacement(
 
 
 def _annotate_waivers_with_replacement(
-    targets: list[WaiverTarget], market: ReplacementMarket, currency: str, per_week: int, all_players: dict
+    targets: list[WaiverTarget], market: ReplacementMarket, currency: str, per_week: int, all_players: dict,
+    directions: dict[tuple[str, str], str] | None = None,
 ) -> None:
+    """`directions` receives which side each note argues for, so provenance
+    never has to guess it from the wording."""
+    directions = directions if directions is not None else {}
     for t in targets:
         ctx = player_context(market, _entry_from_target(t, all_players), currency=currency, per_week=per_week)
         if ctx is None:
             continue
         if ctx.scarcity in (SCARCE, VERY_SCARCE):
-            t.notes.append(f"{t.position} market is {ctx.scarcity} here: an add at this position matters more than his rank alone suggests")
+            note = f"{t.position} market is {ctx.scarcity} here: an add at this position matters more than his rank alone suggests"
+            t.notes.append(note)
+            directions[(t.player_id, note)] = FOR
         elif ctx.scarcity == ABUNDANT:
             if t.priority_tier in (MUST_ADD, STRONG_ADD):
-                t.notes.append(f"{t.position} market is Abundant here (comparable production is usually on waivers)")
+                note = f"{t.position} market is Abundant here (comparable production is usually on waivers)"
             else:
-                t.notes.append(f"{t.position} market is Abundant here: comparable production is usually on waivers, so don't overspend")
+                note = f"{t.position} market is Abundant here: comparable production is usually on waivers, so don't overspend"
+            t.notes.append(note)
+            directions[(t.player_id, note)] = AGAINST
 
 
 def _annotate_clogs_with_replacement(clogs: list[RosterClog], market: ReplacementMarket) -> None:
@@ -1039,7 +1055,7 @@ def build_weekly_report_data(
     # Provenance reads every annotation above (conflicts and exposure
     # included) and the priority key reads provenance; both need the
     # report for the current week and the portfolio.
-    stale_sources = _freshness_by_source(health)
+    stale_sources = freshness_by_source(health)
     for ld in league_data:
         if ld.error or not ld.drafted:
             continue
@@ -1059,36 +1075,6 @@ def build_weekly_report_data(
     _attach_watchlist(report, now)
     _attach_ledger(report, storage, now)
     return report
-
-
-# Which decision modules a data family feeds, so a provenance reason can
-# carry the label of the source it rests on when that source is not fresh.
-_FAMILY_SOURCES = {
-    "ktc": ("market_velocity", "asset_value", "source_disagreement", "buyer_board"),
-    "fantasypros": ("source_disagreement", "valuation"),
-    "rotoballer": ("replacement_value", "move_impact", "lineup_leverage", "streamer_planner", "matchup_leverage", "opponent_blocker"),
-    "nflverse_schedule": ("schedule_window",),
-    "nflverse_usage": ("role_trends",),
-    "sleeper_weekly": ("waiver_engine", "league_economy"),
-}
-
-
-def _freshness_by_source(health: SignalHealthReport) -> dict[str, str]:
-    """{module: label} for every module fed by a family that is not Fresh
-    or Usable this run — the provenance layer appends the label to the
-    reasons that rest on it. Fresh sources add nothing."""
-    out: dict[str, str] = {}
-    for family, modules in _FAMILY_SOURCES.items():
-        members = health.by_family(family)
-        if not members:
-            continue
-        worst = max(members, key=lambda s: ("Fresh", "Usable", "Partial", "Stale", "Unavailable").index(s.label) if s.label in ("Fresh", "Usable", "Partial", "Stale", "Unavailable") else 0)
-        if worst.label in (FRESH, USABLE) and not worst.fallback:
-            continue
-        label = worst.label if not worst.fallback else f"{worst.label}, served from cache after a failed re-fetch"
-        for module in modules:
-            out[module] = f"{worst.display_name} {label}"
-    return out
 
 
 def _load_usage_layer(
@@ -1119,7 +1105,14 @@ def _load_usage_layer(
         for roster in storage.get_rosters(league.league_id):
             only_ids.update(str(p) for p in (roster.get("players") or []))
     only_ids.update(str(row["player_id"]) for row in storage.get_trending("add"))
-    crosswalk, xreport = build_crosswalk(storage.get_all_players(), ff_rows=ff_rows, nfl_rows=nfl_rows, only_ids=only_ids)
+    all_players = storage.get_all_players()
+    # Free agents the report may name (insurance, stash, streamers) are
+    # anyone active at a fantasy position — a few thousand, not 12k.
+    only_ids.update(
+        pid for pid, p in all_players.items()
+        if (p.get("position") in FREE_AGENT_POSITIONS) and p.get("team") and p.get("status") in (None, "Active")
+    )
+    crosswalk, xreport = build_crosswalk(all_players, ff_rows=ff_rows, nfl_rows=nfl_rows, only_ids=only_ids)
     return usage, crosswalk, None, f"Player id crosswalk: {xreport.describe()}"
 
 
@@ -1152,7 +1145,9 @@ def _annotate_with_roles(ld: LeagueReportData) -> None:
     for t in ld.waiver_targets:
         trend = ld.role_trends.get(t.player_id)
         if trend is not None and trend.notable:
-            t.notes.append(line(t.player_id, trend))
+            note = line(t.player_id, trend)
+            t.notes.append(note)
+            ld.note_directions[(t.player_id, note)] = FOR if trend.rising else AGAINST
     for p in ld.proposals:
         for e in p.give:
             trend = ld.role_trends.get(e.player_id)
@@ -1233,4 +1228,6 @@ def _annotate_recommendations_with_exposure(leagues: list[LeagueReportData], por
         for t in ld.waiver_targets:
             note = acquisition_exposure_note(portfolio, t.player_id, position=t.position, compact=True)
             if note:
-                t.reason = f"{t.reason}; {note}"
+                text = note[0].upper() + note[1:]
+                t.notes.append(text)
+                ld.note_directions[(t.player_id, text)] = AGAINST

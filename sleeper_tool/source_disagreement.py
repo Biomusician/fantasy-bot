@@ -41,7 +41,7 @@ from dataclasses import dataclass, field
 from sleeper_tool.asset_value import DYNASTY_CURRENCY
 from sleeper_tool.name_matching import normalize_name
 from sleeper_tool.rankings.cache import RankingSnapshot
-from sleeper_tool.valuation import LeagueFormat, _ktc_value_for_format, is_panel_disagreement
+from sleeper_tool.valuation import LeagueFormat, ktc_value_for_format, is_panel_disagreement
 
 SIGNIFICANT_RANK_GAP = 20  # positional rank places, at the top of a list
 HIGH_RANK_GAP = 40
@@ -163,7 +163,7 @@ def build_source_rank_tables(
     if ktc is not None:
         for row in ktc.payload:
             try:
-                _, _, pos_rank = _ktc_value_for_format(row, fmt)
+                _, _, pos_rank = ktc_value_for_format(row, fmt)
             except (KeyError, TypeError):
                 continue
             entry(row["name"], row.get("position")).ktc = pos_rank

@@ -76,7 +76,7 @@ class DecisionDelta:
 # }
 
 
-def _stable_value(pv, currency: str, current_week: int | None) -> float | None:
+def stable_value(pv, currency: str, current_week: int | None) -> float | None:
     """A value that means the same thing on two different days. Dynasty
     value is a stable number; redraft's proj_points is a rest-of-season
     total that shrinks every week by construction (a week-13 vs week-12
@@ -100,7 +100,7 @@ def build_snapshot(report) -> dict[str, Any]:
             "trade_targets": {e.player_id: e.name for p in ld.proposals for e in p.receive},
             "waiver_targets": {t.player_id: t.name for t in ld.waiver_targets},
             "roster": {
-                e.player_id: {"name": e.name, "value": _stable_value(e.value, ld.currency, report.current_week)}
+                e.player_id: {"name": e.name, "value": stable_value(e.value, ld.currency, report.current_week)}
                 for e in ld.roster.entries
             },
             # Additive (schema unchanged): the non-rostered players a
@@ -123,10 +123,10 @@ def _tracked_values(ld, current_week: int | None) -> dict[str, dict[str, Any]]:
     for p in ld.proposals:
         for e in p.receive:
             if e.player_id not in rostered:
-                tracked[e.player_id] = {"name": e.name, "value": _stable_value(e.value, ld.currency, current_week)}
+                tracked[e.player_id] = {"name": e.name, "value": stable_value(e.value, ld.currency, current_week)}
     for t in ld.waiver_targets:
         if t.player_id not in rostered and t.value is not None:
-            tracked[t.player_id] = {"name": t.name, "value": _stable_value(t.value, ld.currency, current_week)}
+            tracked[t.player_id] = {"name": t.name, "value": stable_value(t.value, ld.currency, current_week)}
     return tracked
 
 

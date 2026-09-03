@@ -334,7 +334,7 @@ def test_role_trends_and_role_market_are_used_when_the_orchestrator_supplies_the
         "out: Role Collapsing — snap share halved",
         "in: Role Ahead of Market",
     ][: len(role_for)]
-    assert all(r.source == "role_trend" for r in role_for)
+    assert all(r.source == "role_trends" for r in role_for)
     # A falling incoming role would argue against instead.
     ld.role_trends = {"in": _Trend("Role Falling", note="down to 40% of snaps")}
     ld.role_market = {}

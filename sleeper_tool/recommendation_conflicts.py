@@ -25,7 +25,7 @@ from sleeper_tool.formatting import ordinal
 from sleeper_tool.pick_opportunity import STRATEGIC
 from sleeper_tool.portfolio_exposure import VERY_HIGH
 from sleeper_tool.replacement_value import VERY_SCARCE
-from sleeper_tool.roster_clog import _is_dynasty_developmental
+from sleeper_tool.roster_clog import is_dynasty_developmental
 from sleeper_tool.trade_opportunity_cost import COSTS_LINEUP, FAVORABLE, MAJOR_LINEUP_COST, MOSTLY_NEUTRAL
 
 CONFLICTED = "Conflicted Move — Review Manually"
@@ -101,7 +101,7 @@ def detect_conflicts(ld) -> list[Conflict]:
         if drop is not None and drop.player_id not in recommended_drops:
             if drop.player_id in starters:
                 against.append(f"the drop, {drop.name}, is a current optimized starter")
-            elif _is_dynasty_developmental(drop, ld.currency) and (drop.value.dynasty_value_percentile or 0) >= DEVELOPMENTAL_DROP_MIN_PERCENTILE:
+            elif is_dynasty_developmental(drop, ld.currency) and (drop.value.dynasty_value_percentile or 0) >= DEVELOPMENTAL_DROP_MIN_PERCENTILE:
                 against.append(f"the drop, {drop.name}, is a developmental hold worth keeping ({ordinal(round(drop.value.dynasty_value_percentile))} percentile dynasty value)")
             if drop.player_id in bye_fills:
                 against.append(f"the drop, {drop.name}, is the named fill for your week {ld.bye_collision.week} bye hole")

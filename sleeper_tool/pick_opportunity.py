@@ -39,7 +39,7 @@ from sleeper_tool.draft_picks import OwnedPick
 from sleeper_tool.formatting import ordinal
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup
 from sleeper_tool.roster_analysis import ValuedRoster
-from sleeper_tool.team_status import REBUILD, _avg_percentile, veteran_min_age
+from sleeper_tool.team_status import REBUILD, avg_percentile, veteran_min_age
 from sleeper_tool.draft_picks import pick_key
 from sleeper_tool.valuation import CORE_SKILL_POSITIONS
 
@@ -116,7 +116,7 @@ def _unit_stats(roster: ValuedRoster, lineup: LineupResult, position: str, curre
     ages = [e.age for e in starters if e.age is not None]
     # Same mean-of-within-position-percentile that team_status ranks
     # roster strength on, so "bottom-three unit" and "weak roster" agree.
-    return len(starters), (sum(ages) / len(ages) if ages else None), _avg_percentile(starters, currency)
+    return len(starters), (sum(ages) / len(ages) if ages else None), avg_percentile(starters, currency)
 
 
 def position_units(
