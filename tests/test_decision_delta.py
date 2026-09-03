@@ -1,7 +1,8 @@
 import datetime as dt
 import json
 
-from sleeper_tool.decision_delta import SNAPSHOTS_KEPT, (
+from sleeper_tool.decision_delta import (
+    SNAPSHOTS_KEPT,
     RECOMMENDATION,
     ROSTER,
     STATUS,
