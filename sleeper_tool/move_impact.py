@@ -112,6 +112,11 @@ class MoveImpact:
         b, a = self.before, self.after
         if not b.status or not a.status or b.status == a.status:
             return False
+        if not self.lineup_in and not self.lineup_out:
+            # A move that touches no starter cannot change what the team is;
+            # the bench-strength component of the classification is a mean,
+            # which a marginal bench swap can move without meaning anything.
+            return False
         if b.displayed_status is not None and a.status == b.displayed_status:
             return False  # "changes" to what the report already says the team is
         if b.strength_percentile is not None and a.strength_percentile is not None:

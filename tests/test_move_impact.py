@@ -101,9 +101,11 @@ def test_a_boundary_bucket_flip_without_a_real_strength_move_is_not_reported():
     assert not any(d.startswith("team status") for d in MoveImpact("x", before, near).material_deltas())
     far = RosterSnapshot(before.lineup, before.weekly_points, before.depth_needs, "middling", before.strength_percentile - 40,
                          before.roster_value, before.avg_starter_age)
-    assert any(d.startswith("team status contender → middling") for d in MoveImpact("x", before, far).material_deltas())
+    # A real strength move is reported only when a starter actually moved.
+    assert any(d.startswith("team status contender → middling") for d in MoveImpact("x", before, far, lineup_out=["someone"]).material_deltas())
+    assert not any(d.startswith("team status") for d in MoveImpact("x", before, far).material_deltas())
     headline_middling = RosterSnapshot(**{**before.__dict__, "displayed_status": "middling"})
-    assert not any(d.startswith("team status") for d in MoveImpact("x", headline_middling, far).material_deltas())
+    assert not any(d.startswith("team status") for d in MoveImpact("x", headline_middling, far, lineup_out=["someone"]).material_deltas())
 
 
 def test_a_starter_for_better_starter_swap_never_reads_as_a_status_downgrade():
@@ -150,3 +152,14 @@ def test_preview_context_accepts_a_prebuilt_lineup_map():
     with_map = PreviewContext.build(rosters, current_week=1, lineups=shared)
     without = PreviewContext.build(rosters, current_week=1)
     assert with_map.normalized == without.normalized
+
+
+def test_a_bench_only_swap_never_reports_a_status_change():
+    from sleeper_tool.move_impact import MoveImpact, RosterSnapshot
+
+    before = RosterSnapshot(lineup=None, weekly_points=100.0, depth_needs=[], status="contender", strength_percentile=80.0, roster_value=1000, avg_starter_age=None, displayed_status="contender")
+    after = RosterSnapshot(lineup=None, weekly_points=100.0, depth_needs=[], status="middling", strength_percentile=60.0, roster_value=1000, avg_starter_age=None)
+    swap = MoveImpact("Add X, drop Y", before, after)  # nobody enters or leaves the lineup
+    assert not any("team status" in d for d in swap.material_deltas())
+    starter_swap = MoveImpact("Add X, drop Y", before, after, lineup_in=["X"], lineup_out=["Y"])
+    assert any("team status" in d for d in starter_swap.material_deltas())
