@@ -50,7 +50,10 @@ MATERIAL_AGE_YEARS = 1.0
 # middling line otherwise "changes status" on every bench tweak.
 MATERIAL_STATUS_PERCENTILE = 10.0
 MIN_ACCEPTANCE_FOR_PREVIEW = "Moderate"
-PREVIEWED_WAIVER_TIERS = frozenset({"Must Add"})
+# Every row a reader might actually claim gets a preview: the two paid
+# tiers and the contender-insurance rows. Moderate and below are cheap
+# streaming reads and would only add noise (and one optimizer solve each).
+PREVIEWED_WAIVER_TIERS = frozenset({"Must Add", "Strong Add", "Insurance"})
 
 
 @dataclass
