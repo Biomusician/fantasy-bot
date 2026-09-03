@@ -87,13 +87,16 @@ def free_agent_candidates(
     roster: ValuedRoster,
     *,
     positions: Collection[str] = SKILL_POSITIONS,
+    require_projection: bool = True,
 ) -> list[RosterEntry]:
     """Every unrostered, startable, NFL-employed player at `positions` with a
-    projection in this league's format, as bench-flagged RosterEntries so
-    the optimizer treats them exactly like rostered players. A few hundred
-    cached lookups per league — no network. Shared by insurance, replacement
-    value, the streamer planner, the opponent blocker and the stash board;
-    report_data builds it once per league."""
+    projection in this league's format (or any valuation at all when
+    `require_projection` is False — the stash board wants rookies the
+    projection sources haven't rated yet), as bench-flagged RosterEntries
+    so the optimizer treats them exactly like rostered players. A few
+    hundred cached lookups per league — no network. Shared by insurance,
+    replacement value, the streamer planner, the opponent blocker and the
+    stash board; report_data builds it once per league."""
     rostered = get_rostered_player_ids(storage, league)
     wanted = set(positions)
     pool: list[RosterEntry] = []
@@ -104,7 +107,7 @@ def free_agent_candidates(
             continue
         name = player_name(pdata)
         value = engine.value_player(name, roster.fmt, pdata.get("position"))
-        if value.proj_points is None:
+        if value.proj_points is None and (require_projection or value.dynasty_value is None):
             continue
         entry = RosterEntry(
             player_id=pid, name=name, position=pdata.get("position"), team=pdata.get("team"), age=pdata.get("age"),
