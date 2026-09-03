@@ -54,6 +54,9 @@ def test_small_opponent_gain_is_not_worth_a_move():
     me = _me(_p("bench", "WR", 34, starter=False, pctl=10.0))
     fa = _p("fa_wr", "WR", (OPPONENT_GAIN_MIN - 0.5) * 17, starter=False)
     assert find_defensive_add(me, them, [fa], current_week=1, protected_ids=set()) is None
+    exactly = _p("fa_wr2", "WR", OPPONENT_GAIN_MIN * 17, starter=False)
+    add = find_defensive_add(me, them, [exactly], current_week=1, protected_ids=set())
+    assert add is not None and add.opponent_gain == OPPONENT_GAIN_MIN
 
 
 def test_block_that_needs_an_unacceptable_drop_is_suppressed():

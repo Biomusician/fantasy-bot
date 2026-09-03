@@ -89,9 +89,53 @@ def test_waiver_conflicts_developmental_drop_and_exposure():
     ld = _ld([_p("qb", "QB"), _p("rb", "RB")], waiver_targets=[t1, t2, t3])
     conflicts = detect_conflicts(ld)
     assert [(c.kind, c.key) for c in conflicts] == [(WAIVER, "w1"), (WAIVER, "w2")]
-    assert conflicts[0].reasons_against == ["the drop, rookie, is a developmental hold (clog-exempt)"]
+    assert conflicts[0].reasons_against == ["the drop, rookie, is a developmental hold worth keeping (80th percentile dynasty value)"]
     assert conflicts[0].reasons_for == ["Must Add — fills a need"]
     assert conflicts[1].reasons_against == ["the add would push cross-league exposure to Very High"]
+
+
+def test_drops_the_tool_itself_recommends_or_that_have_no_value_are_not_conflicts():
+    from sleeper_tool.trade_engine import DropCandidate
+
+    rookie = _p("rookie", "WR", years_exp=0, age=22.0)
+    nobody = _p("nobody", "WR", years_exp=0, age=22.0)
+    nobody.value.dynasty_value_percentile = 12.0
+    t1 = WaiverTarget(player_id="w1", name="W1", position="WR", team="KC", trend_count=1, value=make_value(), fills_need=True, need_rank=0,
+                      reason="r", priority_tier="Must Add", drop_candidate=rookie)
+    t2 = WaiverTarget(player_id="w2", name="W2", position="WR", team="KC", trend_count=1, value=make_value(), fills_need=True, need_rank=0,
+                      reason="r", priority_tier="Must Add", drop_candidate=nobody)
+    ld = _ld([_p("qb", "QB"), _p("rb", "RB")], waiver_targets=[t1, t2], drop_candidates=[DropCandidate(entry=rookie, priority="Consider Dropping", reasons=["buried"])])
+    assert detect_conflicts(ld) == []
+
+
+def test_dropping_a_current_starter_or_the_bye_fill_is_a_conflict():
+    from sleeper_tool.bye_collision import ByeCollision, ByeHole
+
+    qb, rb, fill = _p("qb", "QB", 340), _p("rb", "RB"), _p("fill", "RB", 90, years_exp=6, age=28.0)
+    t1 = WaiverTarget(player_id="w1", name="W1", position="RB", team="KC", trend_count=1, value=make_value(), fills_need=True, need_rank=0,
+                      reason="r", priority_tier="Must Add", drop_candidate=rb)
+    t2 = WaiverTarget(player_id="w2", name="W2", position="RB", team="KC", trend_count=1, value=make_value(), fills_need=True, need_rank=0,
+                      reason="r", priority_tier="Strong Add", drop_candidate=fill)
+    bye = ByeCollision(week=5, holes=[ByeHole(week=5, slot="RB", normal_starter=rb, normal_projection=10.0, replacement=fill, replacement_projection=5.0)],
+                       starters_on_bye=[rb], weeks_scanned=[2, 3, 4, 5])
+    ld = _ld([qb, rb, fill], waiver_targets=[t1, t2], bye_collision=bye)
+    conflicts = detect_conflicts(ld)
+    assert [c.reasons_against for c in conflicts] == [
+        ["the drop, rb, is a current optimized starter"],
+        ["the drop, fill, is the named fill for your week 5 bye hole"],
+    ]
+
+
+def test_sell_high_out_of_a_very_scarce_market_is_only_a_conflict_when_the_piece_plays():
+    starter, bench = _p("qb", "QB", 340), _p("qb2", "QB", 100)
+    market = ReplacementMarket(positions={"QB": PositionMarket("QB", None, None, None, None, "Very Scarce", None)}, players={})
+    sell_bench = _proposal([bench])
+    sell_starter = _proposal([starter])
+    ld = _ld([starter, bench, _p("rb", "RB")], proposals=[sell_bench, sell_starter], replacement=market,
+             trade_economics=[TradeEconomics(ROUGHLY_EVEN, MOSTLY_NEUTRAL, 0.0, False), TradeEconomics(ROUGHLY_EVEN, MOSTLY_NEUTRAL, -1.0, False)])
+    conflicts = detect_conflicts(ld)
+    assert [c.key for c in conflicts] == ["1"]
+    assert conflicts[0].reasons_for == ["value play"]  # a Roughly Even asset verdict is not a reason for
 
 
 def test_best_moves_carry_the_conflict_label_without_dropping_the_move():

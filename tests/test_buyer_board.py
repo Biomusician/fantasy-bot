@@ -66,9 +66,19 @@ def test_boards_hide_poor_fits_and_cap_at_three_best_first():
     status_of[7] = REBUILD
     boards = build_buyer_boards(me, rosters, sell_high_candidates(me, []), status_of=status_of, economy=economy, market=None, valued_picks=None)
     assert [b.candidate.player_id for b in boards] == ["wr_hot"]
+    # Kickers and defenses are never sell-high pieces.
+    k = _p("k1", "K", 900, 99, trend="rising", starter=False)
+    assert [e.player_id for e in sell_high_candidates(_roster(9, [*me.entries, k], "me9"), [])] == ["wr_hot"]
     board = boards[0]
     assert len(board.buyers) == MAX_BUYERS and board.buyers[0].username == "b2" and board.buyers[0].label == STRONG_FIT
-    assert all(b.label != POOR_FIT for b in board.buyers) and board.fit_for("b7") is None  # rebuild + inactive: poor, hidden
+    assert all(b.label != POOR_FIT for b in board.buyers)
+    assert board.fit_for("b7").label == POOR_FIT and "b7" not in [b.username for b in board.buyers]  # rebuild + inactive: poor, hidden from the board
+    # An inactive trader never rates Strong, however good the need.
+    inactive = score_buyer(buyers[2], me.entries[2], "dynasty", their_status=CONTENDER, economy_labels=[INACTIVE_TRADER], heavy_positions=[], scarcity="Scarce", pick_value=0)
+    assert inactive.score >= STRONG_FIT_MIN and inactive.label == POSSIBLE_FIT
+    # A manager heavy at the position is not told the position is his need.
+    heavy = score_buyer(buyers[2], me.entries[2], "dynasty", their_status=CONTENDER, economy_labels=[POSITION_HEAVY], heavy_positions=["WR"], scarcity=None, pick_value=0)
+    assert "already heavy at WR" in heavy.reasons and "WR is a top need" not in heavy.reasons
 
 
 def test_sell_high_proposals_get_buyer_board_context():

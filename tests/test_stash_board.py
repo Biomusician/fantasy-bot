@@ -17,7 +17,7 @@ def _roster(n_entries=3, positions=("QB", "RB", "BN")):
 
 
 def _board(pool, **kw):
-    defaults = dict(league_kind="dynasty", pre_draft=False, roster_full=False, clogs=[])
+    defaults = dict(league_kind="dynasty", pre_draft=False, open_spots=1, clogs=[])
     defaults.update(kw)
     return build_stash_board(_roster(), pool, **defaults)
 
@@ -42,11 +42,11 @@ def test_priority_and_watch_labels_and_exemptions():
 
 def test_full_roster_needs_a_clog_to_cut_for_priority_status():
     pool = [_fa("a", "WR", 80.0), _fa("b", "WR", 70.0), _fa("c", "RB", 65.0)]
-    no_spot = _board(pool, roster_full=True)
+    no_spot = _board(pool, open_spots=0)
     assert [c.label for c in no_spot] == [WATCH, WATCH, WATCH]
     assert "no roster spot without cutting a real player" in no_spot[0].reasons
     clog = RosterClog(make_entry(player_id="clog", name="Clog"), ["dead"], 250.0)
-    with_clog = _board(pool, roster_full=True, clogs=[clog])
+    with_clog = _board(pool, open_spots=0, clogs=[clog])
     assert [(c.label, c.drop.player_id if c.drop else None) for c in with_clog] == [(PRIORITY_STASH, "clog"), (WATCH, None), (WATCH, None)]
     assert with_clog[0].describe().endswith("cut Clog for the spot — developmental hold, not lineup help")
 
@@ -57,11 +57,28 @@ def test_redraft_and_pre_draft_are_suppressed_and_the_board_is_capped():
     assert _board(pool, pre_draft=True) == []
     assert len(_board(pool, league_kind="keeper")) == STASH_MAX
     assert [c.entry.player_id for c in _board(pool)] == ["p0", "p1", "p2", "p3", "p4"]  # value order, deterministic
+    # One open spot licenses ONE Priority Stash; the rest are Watches.
+    assert [c.label for c in _board(pool, open_spots=1)] == [PRIORITY_STASH, WATCH, WATCH, WATCH, WATCH]
+    assert [c.label for c in _board(pool, open_spots=2)] == [PRIORITY_STASH, PRIORITY_STASH, WATCH, WATCH, WATCH]
+
+
+def test_exact_thresholds_and_the_veteran_age_exemption():
+    from sleeper_tool.stash_board import PRIORITY_MIN_PERCENTILE, WATCH_MIN_PERCENTILE
+
+    pool = [
+        _fa("at_priority", "WR", PRIORITY_MIN_PERCENTILE),
+        _fa("under_priority", "WR", PRIORITY_MIN_PERCENTILE - 0.1),
+        _fa("at_watch", "RB", WATCH_MIN_PERCENTILE),
+        _fa("under_watch", "RB", WATCH_MIN_PERCENTILE - 0.1),
+        _fa("old_second_year", "WR", 90.0, age=30.0, years_exp=1),  # early career but veteran age for a WR: out
+    ]
+    board = _board(pool, open_spots=5)
+    assert [(c.entry.player_id, c.label) for c in board] == [("at_priority", PRIORITY_STASH), ("under_priority", WATCH), ("at_watch", WATCH)]
 
 
 def test_scarcity_is_a_reason_not_a_requirement():
     market = ReplacementMarket(positions={"TE": PositionMarket("TE", None, None, None, None, "Very Scarce", None)}, players={})
-    board = _board([_fa("te", "TE", 65.0), _fa("wr", "WR", 65.0)], market=market)
+    board = _board([_fa("te", "TE", 65.0), _fa("wr", "WR", 65.0)], market=market, open_spots=2)
     te = next(c for c in board if c.entry.player_id == "te")
     wr = next(c for c in board if c.entry.player_id == "wr")
     assert "TE replacements are Very Scarce here" in te.reasons and not any("replacements" in r for r in wr.reasons)

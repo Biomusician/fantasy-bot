@@ -405,15 +405,14 @@ def _defensive_add_block(add) -> str:
 def _consolidation_block(consolidations) -> str:
     if not consolidations:
         return ""
-    cards = "".join(_trade_card(c.proposal, j) for j, c in enumerate(consolidations, start=1))
     notes = "".join(
         f'<li class="alert-item{" alert-caution" if c.fragility_note else ""}">{_chip("2-for-1", "accent")} {esc(c.describe())} &middot; {esc(c.freed_slot_note)}'
         + (f' &middot; {esc(c.fragility_note)}' if c.fragility_note else "") + "</li>"
         for c in consolidations
     )
     return (
-        '<div class="streamers"><span class="rationale-label">Consolidation &middot; two of your non-starters for one player who enters your lineup</span>'
-        f'<ul class="alert-list">{notes}</ul><div class="trade-grid">{cards}</div></div>'
+        '<div class="streamers"><span class="rationale-label">Consolidation (2-for-1) summary &middot; the 2-for-1 offers above, by lineup gain</span>'
+        f'<ul class="alert-list">{notes}</ul></div>'
     )
 
 

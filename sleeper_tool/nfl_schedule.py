@@ -122,11 +122,14 @@ def parse_schedule_csv(text: str, season: int) -> list[dict]:
 
 
 def schedule_from_rows(rows: list[dict], season: int, fetched_at: dt.datetime | None = None) -> Schedule:
-    games = [
-        Game(season=int(r["season"]), week=int(r["week"]), game_type=r["game_type"], home=r["home"], away=r["away"], gameday=r.get("gameday"))
-        for r in rows
-        if int(r.get("season", season)) == season and r.get("home") and r.get("away")
-    ]
+    games: list[Game] = []
+    for r in rows:
+        try:
+            if int(r.get("season", season)) != season or not r.get("home") or not r.get("away"):
+                continue
+            games.append(Game(season=season, week=int(r["week"]), game_type=str(r["game_type"]), home=r["home"], away=r["away"], gameday=r.get("gameday")))
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue  # a malformed cached row is skipped, never fatal
     return Schedule(season=season, games=games, fetched_at=fetched_at)
 
 

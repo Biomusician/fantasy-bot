@@ -76,6 +76,14 @@ def eligible(status: TeamStatusResult | None) -> bool:
     return status.status == CONTENDER or (status.status == MIDDLING and status.strength_percentile >= STRONG_MIDDLING_MIN_PERCENTILE)
 
 
+def _outgoing_note(a: RosterEntry, b: RosterEntry, my_starters: set[str], incoming: RosterEntry) -> str:
+    starters = [e.name for e in (a, b) if e.player_id in my_starters]
+    if not starters:
+        return f"{a.name} and {b.name} are not costing you starting production"
+    bench = [e.name for e in (a, b) if e.player_id not in my_starters]
+    return f"{starters[0]} starts today but {incoming.name} refills that slot; {bench[0] if bench else 'the other piece'} is not costing you starting production"
+
+
 def _weekly(entry: RosterEntry, per_week: int) -> float:
     return (entry.value.proj_points or 0.0) / per_week
 
@@ -139,12 +147,21 @@ def find_consolidations(
             tv = value_for_currency(t.value, currency) or 0
             if tv <= 0:
                 continue
+            # Removing a non-starter can't change the optimum, so the
+            # post-trade lineup depends only on the target and which
+            # starter (if any) leaves: one optimizer call per such key.
+            after_by_key: dict[str | None, LineupResult] = {}
             for a, b in pairs:
                 gv = (value_for_currency(a.value, currency) or 0) + (value_for_currency(b.value, currency) or 0)
                 ratio = gv / tv
                 if not VALUE_RATIO_MIN <= ratio <= VALUE_RATIO_MAX:
                     continue
-                after = optimize_lineup_after_moves(my_roster, add_entries=[t], remove_player_ids=[a.player_id, b.player_id])
+                starter_out = a.player_id if a.player_id in my_starters else (b.player_id if b.player_id in my_starters else None)
+                if starter_out not in after_by_key:
+                    after_by_key[starter_out] = optimize_lineup_after_moves(
+                        my_roster, add_entries=[t], remove_player_ids=[a.player_id, b.player_id]
+                    )
+                after = after_by_key[starter_out]
                 if t.player_id not in after.starter_ids or len(after.unfilled_slots) > len(lineup.unfilled_slots):
                     continue
                 gain = round((after.total_projected_points - base_points) / per_week, 1)
@@ -204,7 +221,7 @@ def find_consolidations(
             their_value_total=value_for_currency(t.value, currency) or 0,
             rationale_for_me=[
                 f"{t.name} enters your optimized lineup: {gain:+.1f} projected points per week over the current best lineup.",
-                f"{a.name} and {b.name} are not costing you starting production; {freed}.",
+                _outgoing_note(a, b, my_starters, t) + f"; {freed}.",
             ],
             rationale_for_them=[f"Two rosterable pieces for one — depth for a {their_status} roster."],
             caveats=caveats, trade_type=TRADE_TYPE, acceptance_rating=rating, acceptance_reasons=reasons,

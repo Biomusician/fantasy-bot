@@ -60,7 +60,30 @@ def test_sequence_recommended_when_clearly_better_than_any_single():
     assert k.recommendation == SEQUENCE
     assert k.sequence.first.entry.player_id == "fa_a" and k.sequence.second.entry.player_id == "fa_c" and k.sequence.switch_week == 3
     assert k.sequence.total == 27.0 and k.single.total == 21.0
-    assert 21.0 < 27.0 * (1 - SINGLE_PREFERENCE_TOLERANCE)
+
+
+def test_bye_cover_sequence_wins_even_when_my_own_player_is_the_best_single():
+    # My QB (LAR) sits week 3 but is the best single option (40 over the
+    # window); a free agent covers week 3: 20 + 20 + 12 = 52 > 40 * 1.08.
+    mine = _p("my_qb", "QB", "LAR", 340, starter=True)
+    fa = _p("fa_qb", "QB", "KC", 204)  # 12/wk
+    qb = next(p for p in _plans([mine], [fa]) if p.position == "QB")
+    assert qb.single.entry.player_id == "my_qb" and qb.single.total == 40.0
+    assert qb.recommendation == SEQUENCE
+    assert qb.sequence.first.entry.player_id == "my_qb" and qb.sequence.second.entry.player_id == "fa_qb" and qb.sequence.switch_week == 3
+    assert qb.sequence.total == 52.0
+    # Two rostered legs is a start/sit call, not a stream: never a SEQUENCE.
+    bench = _p("bench_qb", "QB", "KC", 204)
+    qb2 = next(p for p in _plans([mine, bench], [_p("weak", "QB", "DAL", 17)]) if p.position == "QB")
+    assert qb2.recommendation == HOLD
+
+
+def test_hold_note_never_attributes_a_free_agents_total_to_my_starter():
+    mine = _p("my_qb", "QB", "KC", 170, starter=True)  # 10/wk -> 30
+    fa = _p("fa_qb", "QB", "DAL", 184)  # 10.8/wk -> 32.4, under the 3-point bar
+    qb = next(p for p in _plans([mine], [fa]) if p.position == "QB")
+    assert qb.recommendation == HOLD
+    assert qb.note == "my_qb projects 30.0 over the window; the best free agent, fa_qb, reaches 32.5, under the 3-point bar"
 
 
 def test_hold_when_no_free_agent_clears_the_bar_or_my_own_player_is_best():

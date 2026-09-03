@@ -29,12 +29,12 @@ def test_playoff_weeks_come_from_league_settings_not_a_constant():
 def test_windows_and_team_views():
     w = build_windows(SCHED, {"playoff_week_start": 15, "playoff_teams": 6}, 2)
     assert w.next_weeks == [2, 3, 4] and w.remaining_weeks[-1] == 18 and w.playoff_weeks == [15, 16, 17]
-    assert w.describe() == "next 3: weeks 2-4 · regular season through week 18 · fantasy playoffs weeks 15-17 (6 teams)"
+    assert w.describe() == "next 3 (from this week): weeks 2-4 · regular season through week 18 · fantasy playoffs weeks 15-17 (6 teams)"
     kc, lar = team_window(SCHED, "KC", w), team_window(SCHED, "LAR", w)
     assert (kc.next_games, kc.next_byes, kc.remaining_games, kc.remaining_byes, kc.playoff_games) == (3, [], 16, [7], 3)
     assert (lar.next_games, lar.next_byes, lar.playoff_games, lar.playoff_byes) == (2, [3], 2, [16])
     assert kc.note() is None
-    assert lar.note() == "bye week 3 inside the next 3; bye in the fantasy playoffs (week 16)"
+    assert lar.note() == "bye week 3 inside the next 3 (this week included); bye in the fantasy playoffs (week 16)"
     assert team_window(SCHED, "NOPE", w) is None and team_window(SCHED, None, w) is None
     late = build_windows(SCHED, {}, 17)
     assert late.next_weeks == [17, 18] and late.playoff_weeks is None and "not set in league settings" in late.describe()
@@ -44,9 +44,9 @@ def test_windows_and_team_views():
 def test_schedule_only_breaks_near_ties():
     w = build_windows(SCHED, {"playoff_week_start": 15, "playoff_teams": 6}, 2)
     close = schedule_tiebreak("A", "KC", 100, "B", "LAR", 100 * (1 - TIEBREAK_MAX_VALUE_GAP), SCHED, w)
-    assert close == f"schedule tiebreak (values within 10%): A plays 3 of the next {NEXT_GAMES_WINDOW} 3, B plays 2"
+    assert close == f"schedule tiebreak (values within 10%): A plays 3 of the {NEXT_GAMES_WINDOW} upcoming weeks, B plays 2"
     assert schedule_tiebreak("A", "KC", 100, "B", "LAR", 89, SCHED, w) is None  # value decides
     assert schedule_tiebreak("A", "KC", 100, "B", "DAL", 100, SCHED, w) is None  # schedule doesn't separate them
-    assert schedule_tiebreak("A", "KC", 100, "B", "LAR", 100, SCHED, w, horizon="playoffs") == "schedule tiebreak (values within 10%): A plays 3 of the fantasy playoff weeks 3, B plays 2"
+    assert schedule_tiebreak("A", "KC", 100, "B", "LAR", 100, SCHED, w, horizon="playoffs") == "schedule tiebreak (values within 10%): A plays 3 of the 3 fantasy playoff weeks, B plays 2"
     assert schedule_tiebreak("A", "KC", None, "B", "LAR", 100, SCHED, w) is None
     assert schedule_tiebreak("A", "KC", 100, "B", "NOPE", 100, SCHED, w) is None

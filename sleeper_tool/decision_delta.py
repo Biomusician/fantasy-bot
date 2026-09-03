@@ -190,7 +190,7 @@ def load_snapshots(snapshot_dir: Path = DEFAULT_SNAPSHOT_DIR, *, before_date: st
         except (OSError, ValueError) as exc:
             logger.warning("Ignoring unreadable snapshot %s: %s", path, exc)
             continue
-        if snapshot.get("schema") != SNAPSHOT_SCHEMA:
+        if not isinstance(snapshot, dict) or snapshot.get("schema") != SNAPSHOT_SCHEMA:
             continue
         out.append(snapshot)
     return out

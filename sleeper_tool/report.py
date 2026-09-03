@@ -241,7 +241,7 @@ def _render_waiver_targets(
             deltas = impact.material_deltas()
             reason += " · **Impact:** " + ("; ".join(deltas) if deltas else "no lineup change — depth only")
             if impact.matchup_note:
-                reason += " " + impact.matchup_note
+                reason += " · " + impact.matchup_note
         if t.notes:
             reason += " · " + " · ".join(t.notes)
         conflict = conflict_for(conflicts, WAIVER, t.player_id)
@@ -392,13 +392,11 @@ def render_league_section(data: LeagueReportData) -> list[str]:
         trade_lines.append("No trade offers cleared the value-match bar this week.")
         trade_lines.append("")
     if data.consolidations:
-        trade_lines.append("**Consolidation (2-for-1)** — two of your non-starters for one player who enters your lineup:")
+        trade_lines.append("**Consolidation (2-for-1) summary** — the 2-for-1 offers above, by lineup gain:")
         trade_lines.append("")
-        for j, c in enumerate(data.consolidations, start=1):
+        for c in data.consolidations:
             trade_lines.append(f"- {c.describe()} · {c.freed_slot_note}" + (f" · ⚠️ {c.fragility_note}" if c.fragility_note else ""))
-            trade_lines.append("")
-            trade_lines.extend(_render_trade_proposal(c.proposal, j))
-            trade_lines.append("")
+        trade_lines.append("")
     sections.append(("### Trade offers", trade_lines))
 
     waiver_lines = (

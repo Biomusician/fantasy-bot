@@ -10,7 +10,12 @@ levels per position (QB/RB/WR/TE), both in projected points per week:
   starter_replacement_projection  the lowest-projected player at the
                                   position currently occupying ANY starting
                                   slot — dedicated or flex — across the
-                                  league's optimized lineups
+                                  league's optimized lineups, ignoring
+                                  starters who project below the best free
+                                  agent (an abandoned or injured roster's
+                                  placeholder is not the league's
+                                  replacement level; that roster simply
+                                  hasn't picked the free agent up)
 
 For each rostered player: projection over each of those, and value over
 the waiver replacement in the league's currency (dynasty value or
@@ -97,8 +102,9 @@ class PlayerReplacementContext:
         if self.projection_over_waiver is None:
             return f"{self.entry.position} market is {self.scarcity}"
         pow_ = round(self.projection_over_waiver, 1) + 0.0  # + 0.0 turns -0.0 into 0.0
-        sign = "+" if pow_ >= 0 else ""
-        return f"{sign}{pow_:.1f}/wk over the best free-agent {self.entry.position} ({self.scarcity} market)"
+        if pow_ < 0:
+            return f"{-pow_:.1f}/wk below the best free-agent {self.entry.position} ({self.scarcity} market)"
+        return f"+{pow_:.1f}/wk over the best free-agent {self.entry.position} ({self.scarcity} market)"
 
 
 @dataclass
@@ -158,20 +164,20 @@ def build_replacement_market(
     for pos in sorted(_startable_positions(my_roster), key=CORE_SKILL_POSITIONS.index):
         fas = [fa for fa in free_agents if fa.position == pos and fa.value.proj_points is not None]
         best_fa = max(fas, key=projection_of) if fas else None
-        worst_starter: RosterEntry | None = None
-        worst_proj: float | None = None
+        fa_proj = projection_of(best_fa) if best_fa is not None else None
+        starters: list[tuple[float, RosterEntry]] = []
         for rid, lineup in lineups.items():
             for a in lineup.assignments:
                 e = by_id[rid].get(a.player_id)
-                if e is None or e.position != pos or e.value.proj_points is None:
-                    continue
-                if worst_proj is None or a.projection < worst_proj:
-                    worst_starter, worst_proj = e, a.projection
-        waiver_weekly = projection_of(best_fa) / per_week if best_fa is not None else None
+                if e is not None and e.position == pos and e.value.proj_points is not None:
+                    starters.append((a.projection, e))
+        real = [s for s in starters if fa_proj is None or s[0] >= fa_proj] or starters
+        worst_proj, worst_starter = min(real, key=lambda s: (s[0], s[1].name)) if real else (None, None)
+        waiver_weekly = fa_proj / per_week if fa_proj is not None else None
         starter_weekly = worst_proj / per_week if worst_proj is not None else None
         gap = None
         if waiver_weekly is not None and starter_weekly:
-            gap = (starter_weekly - waiver_weekly) / starter_weekly
+            gap = max(0.0, (starter_weekly - waiver_weekly) / starter_weekly)
         positions[pos] = PositionMarket(
             position=pos, waiver_replacement=best_fa, waiver_replacement_projection=waiver_weekly,
             starter_replacement=worst_starter, starter_replacement_projection=starter_weekly,

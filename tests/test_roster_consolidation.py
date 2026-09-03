@@ -64,8 +64,9 @@ def test_two_bench_pieces_for_a_lineup_upgrade():
     assert "rbStar" in c.lineup_after.starter_ids
     # The optimizer starts rbA (140) over rb2 (100), so this is the
     # "one starter replaced" shape: rbStar (17.6/wk) takes rbA's slot (8.2/wk): +9.4/wk
-    assert c.weekly_gain == 9.4 and c.weekly_gain >= MIN_WEEKLY_IMPROVEMENT
-    assert 0.9 <= p.value_ratio <= 1.35 and p.acceptance_rating in ("Very Low", "Low", "Moderate", "Good", "High")
+    assert c.weekly_gain == 9.4
+    assert 0.9 <= p.value_ratio <= 1.35
+    assert p.rationale_for_me[1].startswith("rbA starts today but rbStar refills that slot; rbB is not costing you starting production")
     assert c.freed_slot_note == "frees one roster spot with no new depth need"
     assert c.describe() == "rbA + rbB for rbStar (Team them): +9.4/wk"
     assert p.message
@@ -74,9 +75,23 @@ def test_two_bench_pieces_for_a_lineup_upgrade():
 def test_small_gain_or_no_lineup_entry_is_not_a_consolidation():
     # A target who would not enter my lineup: projects below my RB2.
     assert _run(_me(), _them(star_proj=90, star_value=5000)) == []
-    # A target who enters but improves the lineup by under the bar.
-    small = _them(star_proj=100 + (MIN_WEEKLY_IMPROVEMENT - 0.5) * 17, star_value=5000)
-    assert _run(_me(), small) == []
+    # rbA (140) is the displaced starter: exactly MIN_WEEKLY_IMPROVEMENT over him qualifies, a hair under does not.
+    at_bar = _them(star_proj=140 + MIN_WEEKLY_IMPROVEMENT * 17, star_value=5000)
+    assert _run(_me(), at_bar) and _run(_me(), at_bar)[0].weekly_gain == MIN_WEEKLY_IMPROVEMENT
+    under = _them(star_proj=140 + (MIN_WEEKLY_IMPROVEMENT - 0.2) * 17, star_value=5000)
+    assert _run(_me(), under) == []
+
+
+def test_two_true_bench_pieces_say_so():
+    # Neither piece starts: rbB (110) and wrB (90) sit behind rbA/rb2 and wr1.
+    me = _me()
+    them = _roster(2, [
+        _p("qb2", "QB", 340, 8500, 96), _p("wr2", "WR", 250, 7500, 94),
+        _p("rbStar", "RB", 300, 3700, 80), _p("rb_weak", "RB", 60, 500, 12), _p("wr_weak", "WR", 70, 600, 15),
+    ], "them")
+    out = _run(me, them)
+    assert out and [e.player_id for e in out[0].proposal.give] == ["rbB", "wrB"]
+    assert out[0].proposal.rationale_for_me[1].startswith("rbB and wrB are not costing you starting production")
 
 
 def test_value_must_be_matched_with_the_engines_numbers():

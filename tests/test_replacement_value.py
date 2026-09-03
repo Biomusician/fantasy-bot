@@ -116,6 +116,30 @@ def test_divergence_requires_a_real_advantage_not_just_a_relative_one():
     assert m.understated == []
 
 
+def test_an_abandoned_rosters_placeholder_does_not_set_the_replacement_level():
+    # One roster starts a 1.3/wk RB it never replaced; the best free agent
+    # projects 6.4/wk. The league's replacement level is the worst starter
+    # who at least matches the wire, not the placeholder.
+    mine = _roster(1, [_p("rb1", "RB", 200)], ("RB", "BN"))
+    normal = _roster(2, [_p("rb2", "RB", 150)], ("RB", "BN"), owner="x")
+    abandoned = _roster(3, [_p("rb3", "RB", 22)], ("RB", "BN"), owner="y")
+    m = build_replacement_market(mine, {1: mine, 2: normal, 3: abandoned}, [_p("fa_rb", "RB", 109)], current_week=1)
+    assert m.positions["RB"].starter_replacement.player_id == "rb2"
+    assert m.positions["RB"].gap is not None and m.positions["RB"].gap >= 0
+    # With no starter above the wire at all, the plain minimum is used and the gap is clamped at zero.
+    m2 = build_replacement_market(mine, {1: mine, 3: abandoned}, [_p("fa_rb", "RB", 300)], current_week=1)
+    assert m2.positions["RB"].starter_replacement.player_id == "rb3" and m2.positions["RB"].gap == 0.0
+    assert m2.players["rb1"].clause() == "5.9/wk below the best free-agent RB (Abundant market)"
+
+
+def test_shallow_and_deep_wires_label_the_same_starters_differently():
+    mine = _roster(1, [_p("wr1", "WR", 250), _p("wr2", "WR", 170)], ("WR", "WR", "BN"))
+    deep = [_p(f"fa{i}", "WR", 165 - i) for i in range(6)]  # a wire nearly matching my WR2
+    shallow = [_p("fa_only", "WR", 60)]
+    assert build_replacement_market(mine, {1: mine}, deep, current_week=1).positions["WR"].scarcity == ABUNDANT
+    assert build_replacement_market(mine, {1: mine}, shallow, current_week=1).positions["WR"].scarcity == VERY_SCARCE
+
+
 def test_missing_projections_and_lineups_are_handled():
     mine = _roster(1, [_p("qb1", "QB", None), _p("rb1", "RB", 200)], ("QB", "RB", "BN"))
     m = build_replacement_market(mine, {1: mine}, [], current_week=None)

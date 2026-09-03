@@ -176,18 +176,28 @@ def plan_streams(
         best_total = max(single.total, sequence.total if sequence else 0.0)
 
         starter_ids = set(lineup.starter_ids) if lineup is not None else set()
-        if single.rostered or best_total - hold_total < MIN_GAIN_OVER_HOLD:
+        sequence_wins = (
+            sequence is not None and sequence.total - hold_total >= MIN_GAIN_OVER_HOLD
+            and single.total < sequence.total * (1 - SINGLE_PREFERENCE_TOLERANCE)
+            and not (sequence.first.rostered and sequence.second.rostered)  # two rostered legs is a start/sit call, not a stream
+        )
+        if (single.rostered and not sequence_wins) or best_total - hold_total < MIN_GAIN_OVER_HOLD:
             if current is None:
                 note = "no starter at the position and nothing on waivers clears the bar"
             elif single.rostered and single.entry.player_id not in starter_ids:
                 note = f"your own {single.entry.name} projects best over the window ({single.total:.1f}); start him over {current.entry.name}"
             elif single.rostered and single.entry.player_id != current.entry.player_id:
                 note = f"your starters already project best over the window ({single.entry.name} {single.total:.1f}); no free agent beats {current.entry.name} by {MIN_GAIN_OVER_HOLD:g}+"
-            else:
+            elif single.rostered:
                 note = f"{current.entry.name} projects best over the window ({single.total:.1f}); no free agent adds {MIN_GAIN_OVER_HOLD:g}+"
+            else:
+                note = (
+                    f"{current.entry.name} projects {current.total:.1f} over the window; the best free agent, {single.entry.name}, "
+                    f"reaches {single.total:.1f}, under the {MIN_GAIN_OVER_HOLD:g}-point bar"
+                )
             plans.append(StreamPlan(pos, weeks, current, single, sequence, HOLD, note, options))
             continue
-        if sequence is not None and single.total < sequence.total * (1 - SINGLE_PREFERENCE_TOLERANCE):
+        if sequence_wins:
             gain = sequence.total - hold_total
             note = (
                 f"{sequence.total:.1f} over the window vs {hold_total:.1f} holding ({gain:+.1f}); "

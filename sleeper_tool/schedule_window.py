@@ -45,7 +45,7 @@ class ScheduleWindows:
             po += f" ({self.playoff_teams} teams)" if self.playoff_teams else ""
         else:
             po = "not set in league settings"
-        return f"next {NEXT_GAMES_WINDOW}: {nxt} · regular season {rem} · fantasy playoffs {po}"
+        return f"next {NEXT_GAMES_WINDOW} (from this week): {nxt} · regular season {rem} · fantasy playoffs {po}"
 
 
 @dataclass
@@ -63,7 +63,7 @@ class TeamWindow:
         the fantasy playoffs. A full slate says nothing."""
         bits = []
         if self.next_byes:
-            bits.append(f"bye week {', '.join(map(str, self.next_byes))} inside the next {NEXT_GAMES_WINDOW}")
+            bits.append(f"bye week {', '.join(map(str, self.next_byes))} inside the next {NEXT_GAMES_WINDOW} (this week included)")
         if self.playoff_byes:
             bits.append(f"bye in the fantasy playoffs (week {', '.join(map(str, self.playoff_byes))})")
         return "; ".join(bits) if bits else None
@@ -141,10 +141,11 @@ def schedule_tiebreak(
         if wa.playoff_games is None or wb.playoff_games is None or wa.playoff_games == wb.playoff_games:
             return None
         label, ga, gb, total = "fantasy playoff weeks", wa.playoff_games, wb.playoff_games, len(windows.playoff_weeks or [])
+        label = "fantasy playoff weeks"
     else:
         if wa.next_games == wb.next_games:
             return None
-        label, ga, gb, total = f"next {NEXT_GAMES_WINDOW}", wa.next_games, wb.next_games, len(windows.next_weeks)
+        label, ga, gb, total = "upcoming weeks", wa.next_games, wb.next_games, len(windows.next_weeks)
     lead, trail = (a_name, b_name) if ga > gb else (b_name, a_name)
     lead_g, trail_g = max(ga, gb), min(ga, gb)
-    return f"schedule tiebreak (values within {TIEBREAK_MAX_VALUE_GAP:.0%}): {lead} plays {lead_g} of the {label} {total}, {trail} plays {trail_g}"
+    return f"schedule tiebreak (values within {TIEBREAK_MAX_VALUE_GAP:.0%}): {lead} plays {lead_g} of the {total} {label}, {trail} plays {trail_g}"

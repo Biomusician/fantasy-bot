@@ -11,7 +11,9 @@ construction never reads as "falling".
   Stable                anything not below
   Rising / Falling      total move >= DIRECTIONAL_MIN_MOVE in that direction
                         with at least MIN_CONSECUTIVE_MOVES consecutive
-                        day-to-day moves the same way
+                        non-zero day-to-day moves the same way (flat days
+                        neither count nor break the run)
+  Unmeasurable          no positive base value to measure a move from
   Rapidly Rising /      total move >= RAPID_MIN_MOVE and EVERY non-zero
   Rapidly Falling       day-to-day move in that direction
 
@@ -32,6 +34,7 @@ RAPID_MIN_MOVE = 0.15
 MIN_CONSECUTIVE_MOVES = 2
 
 INSUFFICIENT_HISTORY = "Insufficient History"
+UNMEASURABLE = "Unmeasurable"
 STABLE = "Stable"
 RISING = "Rising"
 RAPIDLY_RISING = "Rapidly Rising"
@@ -61,9 +64,11 @@ class Velocity:
         return self.label in (FALLING, RAPIDLY_FALLING)
 
     def describe(self) -> str:
+        if self.label == UNMEASURABLE:
+            return f"{self.label} (no positive base value in {self.observations} observations)"
         if self.label == INSUFFICIENT_HISTORY or self.total_move is None:
-            return f"{self.label} ({self.observations} of {MIN_OBSERVATIONS} daily observations)"
-        return f"{self.label} ({self.total_move:+.0%} over {self.observations} daily observations since {self.first_date})"
+            return f"{self.label} ({self.observations} of {MIN_OBSERVATIONS} observations)"
+        return f"{self.label} ({self.total_move:+.0%} over {self.observations} observations since {self.first_date})"
 
 
 def _sign(x: float) -> int:
@@ -86,7 +91,7 @@ def classify_velocity(observations: list[tuple[str, float]]) -> Velocity:
     first_date, first = observations[0]
     last_date, last = observations[-1]
     if first <= 0:
-        return Velocity(INSUFFICIENT_HISTORY, n, None, first_date, last_date)
+        return Velocity(UNMEASURABLE, n, None, first_date, last_date)
     total = (last - first) / first
     direction = _sign(total)
     moves = [b - a for (_, a), (_, b) in zip(observations, observations[1:]) if b != a]

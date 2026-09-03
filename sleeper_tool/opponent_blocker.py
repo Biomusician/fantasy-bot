@@ -66,9 +66,13 @@ def opponent_hole(opponent: ValuedRoster, week_lineup: LineupResult, structural_
     return None
 
 
-def roster_is_full(roster: ValuedRoster) -> bool:
+def open_roster_spots(roster: ValuedRoster) -> int:
     active = [e for e in roster.entries if not e.is_reserve and not e.is_taxi]
-    return len(active) >= len(roster.fmt.roster_positions)
+    return max(0, len(roster.fmt.roster_positions) - len(active))
+
+
+def roster_is_full(roster: ValuedRoster) -> bool:
+    return open_roster_spots(roster) == 0
 
 
 def find_defensive_add(

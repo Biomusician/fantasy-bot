@@ -6,9 +6,10 @@ already computes (nothing new is estimated):
               and/or that position is one of their top needs
   timeline    contender wants proven production, rebuild wants youth
               (trade_engine._status_fit)
-  economy     League Economy labels: a Frequent Trader is a live buyer, an
-              Inactive Trader is not; a manager already heavy at the
-              position has less use for him
+  economy     League Economy labels: a Frequent Trader is a live buyer; an
+              Inactive Trader is capped at Possible Fit whatever the need;
+              a manager already heavy at the position has less use for him
+              (and the position is not counted as a need for them)
   scarcity    a Scarce/Very Scarce replacement market means a buyer can't
               fix the position from waivers
   fundable    their tradeable assets plus valued picks can cover the price
@@ -31,6 +32,7 @@ from sleeper_tool.league_economy import FREQUENT_TRADER, INACTIVE_TRADER, POSITI
 from sleeper_tool.replacement_value import SCARCE, VERY_SCARCE, ReplacementMarket
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
 from sleeper_tool.team_status import MIDDLING
+from sleeper_tool.valuation import CORE_SKILL_POSITIONS
 from sleeper_tool.trade_engine import (
     TradeProposal,
     _piece_fits,
@@ -70,10 +72,11 @@ class BuyerFit:
 @dataclass
 class BuyerBoard:
     candidate: RosterEntry
-    buyers: list[BuyerFit]  # Strong/Possible only, best first
+    buyers: list[BuyerFit]  # Strong/Possible only, best first, capped at MAX_BUYERS
+    all_fits: list[BuyerFit] = field(default_factory=list)  # every counterparty scored, for lookups
 
     def fit_for(self, username: str) -> BuyerFit | None:
-        return next((b for b in self.buyers if b.username == username), None)
+        return next((b for b in self.all_fits if b.username == username), None)
 
     @property
     def strong(self) -> list[BuyerFit]:
@@ -102,10 +105,11 @@ def score_buyer(
     score = 0
     reasons: list[str] = []
     pos = piece.position or "?"
+    heavy = POSITION_HEAVY in economy_labels and pos in heavy_positions
     if _piece_fits(their, piece, currency):
         score += 2
         reasons.append(f"upgrades their {pos}")
-    if pos in identify_needs(their)[:TOP_NEEDS]:
+    if not heavy and pos in identify_needs(their)[:TOP_NEEDS]:
         score += 1
         reasons.append(f"{pos} is a top need")
     status_fit = _status_fit([piece], [], their_status)
@@ -121,7 +125,7 @@ def score_buyer(
     if INACTIVE_TRADER in economy_labels:
         score -= 1
         reasons.append("inactive trader")
-    if POSITION_HEAVY in economy_labels and pos in heavy_positions:
+    if heavy:
         score -= 1
         reasons.append(f"already heavy at {pos}")
     if scarcity in (SCARCE, VERY_SCARCE):
@@ -132,9 +136,12 @@ def score_buyer(
     if price and funds < price:
         score -= UNFUNDED_PENALTY
         reasons.append("little to pay with")
+    label = fit_label(score)
+    if label == STRONG_FIT and INACTIVE_TRADER in economy_labels:
+        label = POSSIBLE_FIT  # a manager who doesn't trade is never a Strong buyer, whatever the need
     return BuyerFit(
         roster_id=their.roster_id, username=their.owner_username or "", team_name=their.team_name or their.owner_username or f"roster {their.roster_id}",
-        label=fit_label(score), score=score, reasons=reasons,
+        label=label, score=score, reasons=reasons,
     )
 
 
@@ -147,7 +154,8 @@ def sell_high_candidates(my_roster: ValuedRoster, proposals: list[TradeProposal]
                 seen.setdefault(e.player_id, e)
     for e in identify_sell_high(my_roster):
         seen.setdefault(e.player_id, e)
-    return sorted(seen.values(), key=lambda e: (-(value_for_currency(e.value, currency) or 0), e.name))[:MAX_CANDIDATES]
+    skill = [e for e in seen.values() if e.position in CORE_SKILL_POSITIONS]
+    return sorted(skill, key=lambda e: (-(value_for_currency(e.value, currency) or 0), e.name))[:MAX_CANDIDATES]
 
 
 def build_buyer_boards(
@@ -164,6 +172,7 @@ def build_buyer_boards(
     boards: list[BuyerBoard] = []
     for piece in candidates:
         fits: list[BuyerFit] = []
+        scored: list[BuyerFit] = []
         for rid, their in rosters.items():
             if rid == my_roster.roster_id or not their.entries:
                 continue
@@ -176,10 +185,11 @@ def build_buyer_boards(
                 scarcity=market.scarcity_of(piece.position) if market is not None else None,
                 pick_value=sum(p.value or 0 for p in (valued_picks or {}).get(rid, [])),
             )
+            scored.append(fit)
             if fit.label != POOR_FIT:
                 fits.append(fit)
         fits.sort(key=lambda f: (-f.score, f.team_name))
-        boards.append(BuyerBoard(piece, fits[:MAX_BUYERS]))
+        boards.append(BuyerBoard(piece, fits[:MAX_BUYERS], scored))
     return boards
 
 

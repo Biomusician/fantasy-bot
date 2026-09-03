@@ -33,7 +33,7 @@ from sleeper_tool.move_impact import (
     snapshot_roster,
 )
 from sleeper_tool.negotiation_ladder import NegotiationLadder, build_ladders
-from sleeper_tool.opponent_blocker import DefensiveAdd, find_defensive_add, roster_is_full
+from sleeper_tool.opponent_blocker import DefensiveAdd, find_defensive_add, open_roster_spots
 from sleeper_tool.nfl_schedule import Schedule, load_schedule
 from sleeper_tool.pick_opportunity import SPENDABLE, STRATEGIC, PickOpportunity, assess_picks
 from sleeper_tool.playoff_leverage import PlayoffLeverage, classify_playoff_leverage
@@ -71,7 +71,7 @@ from sleeper_tool.team_status import CONTENDER, TeamStatusResult, classify_team_
 from sleeper_tool.trade_engine import DropCandidate, TradeProposal, generate_trade_proposals, identify_drop_candidates, value_currency
 from sleeper_tool.trade_opportunity_cost import MAJOR_LINEUP_COST, TradeEconomics, analyze_trade
 from sleeper_tool.valuation import LeagueFormat, ValuationEngine, games_remaining
-from sleeper_tool.waiver_engine import TimeSensitiveNote, WaiverTarget, get_time_sensitive_notes, get_waiver_targets
+from sleeper_tool.waiver_engine import MUST_ADD, STRONG_ADD, TimeSensitiveNote, WaiverTarget, get_time_sensitive_notes, get_waiver_targets
 
 logger = logging.getLogger(__name__)
 
@@ -230,18 +230,20 @@ def build_priority_actions(leagues: list[LeagueReportData], *, max_actions: int 
             if t.priority_tier == "Must Add":
                 drop_note = f", drop {t.drop_candidate.name}" if t.drop_candidate else ""
                 pctl = (t.value.dynasty_value_percentile or t.value.redraft_ecr_percentile) if t.value else None
+                impact = ld.waiver_impacts.get(t.player_id)
+                impact_note = f" Impact: {'; '.join(impact.material_deltas())}." if impact is not None and impact.material_deltas() else ""
                 actions.append(PriorityAction(
                     league_name=ld.league.name, kind="waiver",
                     headline=f"Add {t.name}{drop_note}",
                     detail=_conflict_prefix(conflict_for(ld.conflicts, WAIVER, t.player_id))
-                    + f"{ld.league.name} — {t.reason}" + _source_note_for(ld.source_views, [t]),
+                    + f"{ld.league.name} — {t.reason}" + impact_note + _source_note_for(ld.source_views, [t]),
                     rank=-(pctl or 0),  # higher percentile ranks first (more negative sorts earlier)
                 ))
         for d in ld.drop_candidates:
             if d.priority == "Strong Drop":
                 actions.append(PriorityAction(
                     league_name=ld.league.name, kind="roster",
-                    headline=f"Consider dropping {d.entry.name}",
+                    headline=f"{d.priority}: {d.entry.name}",
                     detail=f"{ld.league.name} — {'; '.join(d.reasons)}",
                     rank=-len(d.reasons),  # more independent reasons = a more clear-cut cut, sorts first
                 ))
@@ -343,25 +345,11 @@ def build_league_report_data(
     except UnsupportedSlotError as exc:
         logger.warning("%s: lineup-based features skipped — %s", league.name, exc)
         lineup = None
-    roster_clogs = (
-        identify_roster_clogs(my_roster, trending_add_ids=trending_add_ids, exclude_ids=proposed_give_ids, lineup=lineup)
-        if lineup is not None
-        else []
-    )
-    clog_ids = frozenset(c.entry.player_id for c in roster_clogs)
     # A league still pre-draft on Sleeper (keepers rostered, draft to come)
     # has no waiver wire yet: every "free agent" is about to be drafted, so
     # adds and insurance from that pool would be fiction. Trades and lineup
     # analysis of the kept roster still stand.
     pre_draft = league_data.get("status") in ("pre_draft", "drafting")
-    waivers_note = None
-    if pre_draft:
-        waiver_targets: list[WaiverTarget] = []
-        waivers_note = "League is still pre-draft on Sleeper — waiver and insurance targets are suppressed until the draft."
-    else:
-        waiver_targets = get_waiver_targets(
-            storage, engine, league, my_roster, current_week=current_week, waiver_budget=waiver_budget, clog_ids=clog_ids
-        )
     # One free-agent pool per league (skill positions plus K/DEF), shared by
     # insurance, the replacement market and the streamer planner. Pre-draft
     # it would be the undrafted universe, so it's empty there and every
@@ -377,6 +365,40 @@ def build_league_report_data(
         free_agents = [fa for fa in all_free_agents if fa.value.proj_points is not None]
         replacement = build_replacement_market(
             my_roster, rosters, free_agents, current_week=current_week, lineups={my_roster.roster_id: lineup}
+        )
+    status_of = {
+        r.roster_id: classify_team_status(r.roster_id, rosters, currency, storage=storage, engine=engine).status
+        for r in rosters.values()
+        if r.entries
+    }
+    # 2-for-1 consolidations are TradeProposals like any other: appended to
+    # the list so every annotation pass, preview, economics line, conflict
+    # check and the Best Moves list see them. `consolidations` keeps the
+    # per-trade extras (weekly gain, freed slot, fragility) for the summary.
+    consolidations = (
+        find_consolidations(
+            league, my_roster, rosters, status_result=status_result, status_of=status_of, lineup=lineup,
+            free_agents=[fa for fa in free_agents if fa.position in SKILL_POSITIONS], current_week=current_week,
+            exclude_ids=proposed_give_ids,
+        )
+        if not pre_draft
+        else []
+    )
+    proposals.extend(c.proposal for c in consolidations)
+    proposed_give_ids = frozenset(e.player_id for p in proposals for e in p.give)
+    roster_clogs = (
+        identify_roster_clogs(my_roster, trending_add_ids=trending_add_ids, exclude_ids=proposed_give_ids, lineup=lineup)
+        if lineup is not None
+        else []
+    )
+    clog_ids = frozenset(c.entry.player_id for c in roster_clogs)
+    waivers_note = None
+    if pre_draft:
+        waiver_targets: list[WaiverTarget] = []
+        waivers_note = "League is still pre-draft on Sleeper — waiver and insurance targets are suppressed until the draft."
+    else:
+        waiver_targets = get_waiver_targets(
+            storage, engine, league, my_roster, current_week=current_week, waiver_budget=waiver_budget, clog_ids=clog_ids
         )
     insurance: list[InsuranceRecommendation] = []
     if status_result.status == CONTENDER and lineup is not None and not pre_draft:
@@ -414,7 +436,6 @@ def build_league_report_data(
     if replacement is not None:
         per_week = games_remaining(current_week)
         replacement_clauses = {pid: c for pid, ctx in replacement.players.items() if (c := ctx.clause())}
-        _annotate_proposals_with_replacement(proposals, replacement, currency, per_week)
         _annotate_waivers_with_replacement(waiver_targets, replacement, currency, per_week, all_players)
         _annotate_clogs_with_replacement(roster_clogs, replacement)
 
@@ -438,7 +459,7 @@ def build_league_report_data(
 
     stash = build_stash_board(
         my_roster, [fa for fa in all_free_agents if fa.position in SKILL_POSITIONS],
-        league_kind=league.kind, pre_draft=pre_draft, roster_full=roster_is_full(my_roster), clogs=roster_clogs, market=replacement,
+        league_kind=league.kind, pre_draft=pre_draft, open_spots=open_roster_spots(my_roster), clogs=roster_clogs, market=replacement,
     )
 
     source_table = build_source_rank_tables(engine.snapshots_for(my_roster.fmt), my_roster.fmt)
@@ -467,26 +488,18 @@ def build_league_report_data(
 
     pick_opportunity = None
     valued_picks = get_valued_picks_by_roster(rosters, currency, storage, engine)
-    status_of = {
-        r.roster_id: classify_team_status(r.roster_id, rosters, currency, storage=storage, engine=engine).status
-        for r in rosters.values()
-        if r.entries
-    }
     ladders = build_ladders(
         proposals, my_roster, rosters, (valued_picks or {}).get(my_roster.roster_id, []),
         my_status=status_result.status, status_of=status_of,
         my_starter_ids=lineup.starter_ids if lineup is not None else (),
     )
-    consolidations = find_consolidations(
-        league, my_roster, rosters, status_result=status_result, status_of=status_of, lineup=lineup,
-        free_agents=[fa for fa in free_agents if fa.position in SKILL_POSITIONS], current_week=current_week,
-        exclude_ids=proposed_give_ids,
-    )
-    buyer_boards = build_buyer_boards(
-        my_roster, rosters, sell_high_candidates(my_roster, proposals),
-        status_of=status_of, economy=league_economy, market=replacement, valued_picks=valued_picks,
-    )
-    annotate_sell_high_proposals(proposals, buyer_boards)
+    buyer_boards: list[BuyerBoard] = []
+    if not pre_draft:
+        buyer_boards = build_buyer_boards(
+            my_roster, rosters, sell_high_candidates(my_roster, proposals),
+            status_of=status_of, economy=league_economy, market=replacement, valued_picks=valued_picks,
+        )
+        annotate_sell_high_proposals(proposals, buyer_boards)
     _annotate_ladders_with_sources(ladders, source_views)
     if valued_picks is not None and lineup is not None:
         pick_opportunity = assess_picks(
@@ -510,6 +523,10 @@ def build_league_report_data(
             label = f"Add {t.name}" + (f", drop {t.drop_candidate.name}" if t.drop_candidate else "")
             waiver_impacts[t.player_id] = preview_add_drop(label, add_entry, drop_id, my_roster, before, ctx)
     trade_economics = [analyze_trade(p, impact, replacement) for p, impact in zip(proposals, trade_impacts)]
+    if replacement is not None:
+        # After economics, so a give-side scarcity caveat is skipped where
+        # the economics line already carries the same note.
+        _annotate_proposals_with_replacement(proposals, replacement, currency, games_remaining(current_week), trade_economics)
     if matchup is not None:
         for impact in (*trade_impacts, *waiver_impacts.values()):
             if impact is not None:
@@ -578,22 +595,27 @@ def _annotate_with_schedule_windows(schedule, windows: ScheduleWindows, leverage
 
 
 def _annotate_proposals_with_replacement(
-    proposals: list[TradeProposal], market: ReplacementMarket, currency: str, per_week: int
+    proposals: list[TradeProposal], market: ReplacementMarket, currency: str, per_week: int,
+    economics: list[TradeEconomics | None] = (),
 ) -> None:
     """What each piece is worth against THIS league's waiver wire. A
-    give-piece with a real edge in a scarce market is a caveat; one the
-    wire nearly matches is a point in favour. Mirror image for receives."""
-    for p in proposals:
+    give-piece with a real edge in a scarce market is a caveat (unless the
+    trade's economics line already says so); one the wire nearly matches
+    is a point in favour. Mirror image for receives."""
+    for i, p in enumerate(proposals):
+        econ = economics[i] if i < len(economics) else None
+        economics_says_scarce = econ is not None and econ.scarcity_note is not None
         for e in p.give:
             ctx = market.players.get(e.player_id) or player_context(market, e, currency=currency, per_week=per_week)
             if ctx is None:
                 continue
             if ctx.projection_over_waiver is None:
-                if ctx.scarcity == VERY_SCARCE:
+                if ctx.scarcity == VERY_SCARCE and not economics_says_scarce:
                     p.caveats.append(f"Replacement context: {e.name} — {ctx.clause()}; nothing on waivers replaces him.")
                 continue
             if ctx.scarcity in (SCARCE, VERY_SCARCE) and ctx.projection_over_waiver >= UNDERSTATED_MIN_OVER_WAIVER:
-                p.caveats.append(f"Replacement context: {e.name} is {ctx.clause()}; replacing him from this wire would cost that much.")
+                if not economics_says_scarce:
+                    p.caveats.append(f"Replacement context: {e.name} is {ctx.clause()}; replacing him from this wire would cost that much.")
             elif ctx.projection_over_waiver <= OVERSTATED_MAX_OVER_WAIVER:
                 p.rationale_for_me.append(f"Replacement context: {e.name} is {ctx.clause()} — cheap to replace from this league's wire.")
         for e in p.receive:
@@ -602,6 +624,8 @@ def _annotate_proposals_with_replacement(
                 continue
             if ctx.projection_over_waiver >= UNDERSTATED_MIN_OVER_WAIVER:
                 p.rationale_for_me.append(f"Replacement context: {e.name} arrives {ctx.clause()}.")
+            elif ctx.projection_over_waiver < 0:
+                p.caveats.append(f"Replacement context: {e.name} projects {ctx.clause()} — waivers offer better production here.")
             elif ctx.projection_over_waiver <= OVERSTATED_MAX_OVER_WAIVER:
                 p.caveats.append(f"Replacement context: {e.name} is only {ctx.clause()} — waivers offer nearly the same production here.")
 
@@ -616,7 +640,10 @@ def _annotate_waivers_with_replacement(
         if ctx.scarcity in (SCARCE, VERY_SCARCE):
             t.notes.append(f"{t.position} market is {ctx.scarcity} here: an add at this position matters more than his rank alone suggests")
         elif ctx.scarcity == ABUNDANT:
-            t.notes.append(f"{t.position} market is Abundant here: comparable production is usually on waivers, so don't overspend")
+            if t.priority_tier in (MUST_ADD, STRONG_ADD):
+                t.notes.append(f"{t.position} market is Abundant here (comparable production is usually on waivers)")
+            else:
+                t.notes.append(f"{t.position} market is Abundant here: comparable production is usually on waivers, so don't overspend")
 
 
 def _annotate_clogs_with_replacement(clogs: list[RosterClog], market: ReplacementMarket) -> None:
@@ -782,13 +809,19 @@ def build_weekly_report_data(
     for ld in league_data:
         if ld.error or not ld.drafted or ld.roster is None:
             continue
-        ld.velocity = build_velocities(history, ld, current_week=current_week, today=today)
-        annotate_league(ld, ld.velocity)
+        try:
+            ld.velocity = build_velocities(history, ld, current_week=current_week, today=today)
+            annotate_league(ld, ld.velocity)
+        except Exception:  # an annotation pass must never blank a league that already built
+            logger.exception("Market velocity skipped for %s", ld.league.name)
     # Conflicts last: they read every annotation above (exposure included).
     for ld in league_data:
         if ld.error or not ld.drafted:
             continue
-        ld.conflicts = detect_conflicts(ld)
+        try:
+            ld.conflicts = detect_conflicts(ld)
+        except Exception:
+            logger.exception("Conflict detection skipped for %s", ld.league.name)
 
     report = WeeklyReportData(
         generated_at=now,

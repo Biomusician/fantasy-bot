@@ -66,7 +66,7 @@ def build_stash_board(
     *,
     league_kind: str,
     pre_draft: bool,
-    roster_full: bool,
+    open_spots: int,
     clogs: list[RosterClog],
     market: ReplacementMarket | None = None,
 ) -> list[StashCandidate]:
@@ -88,17 +88,21 @@ def build_stash_board(
         if scarcity in (SCARCE, VERY_SCARCE):
             reasons.append(f"{e.position} replacements are {scarcity} here")
         drop = None
-        has_spot = not roster_full
-        if not has_spot and available_clogs:
-            drop = available_clogs.pop(0)
-            has_spot = True
+        has_spot = False
+        if pctl >= PRIORITY_MIN_PERCENTILE:
+            # Each Priority Stash consumes one spot: an open slot first,
+            # then a clog to cut. Watches consume nothing.
+            if open_spots > 0:
+                open_spots -= 1
+                has_spot = True
+            elif available_clogs:
+                drop = available_clogs.pop(0)
+                has_spot = True
         if pctl >= PRIORITY_MIN_PERCENTILE and has_spot:
             label = PRIORITY_STASH
         else:
             label = WATCH
             if pctl >= PRIORITY_MIN_PERCENTILE:
                 reasons.append("no roster spot without cutting a real player")
-        board.append(StashCandidate(e, label, pctl, reasons, drop if label == PRIORITY_STASH else None))
-        if label != PRIORITY_STASH and drop is not None:
-            available_clogs.insert(0, drop)  # a Watch doesn't consume the clog spot
+        board.append(StashCandidate(e, label, pctl, reasons, drop))
     return board

@@ -14,6 +14,7 @@ from sleeper_tool.market_velocity import (
     RAPIDLY_RISING,
     RISING,
     STABLE,
+    UNMEASURABLE,
     annotate_league,
     build_velocities,
     classify_velocity,
@@ -29,8 +30,8 @@ def _obs(values):
 
 def test_labels_and_boundaries():
     assert classify_velocity([]).label == INSUFFICIENT_HISTORY
-    assert classify_velocity(_obs([100, 110])).label == INSUFFICIENT_HISTORY  # 2 < MIN_OBSERVATIONS
-    assert MIN_OBSERVATIONS == 3
+    assert classify_velocity(_obs([100, 110])).label == INSUFFICIENT_HISTORY  # one short of MIN_OBSERVATIONS
+    assert classify_velocity(_obs([100] * MIN_OBSERVATIONS)).label == STABLE
     assert classify_velocity(_obs([100, 100, 100])).label == STABLE
     # Rising: >= 8% total with 2 consecutive same-direction moves.
     rising = classify_velocity(_obs([100, 104, 100 * (1 + DIRECTIONAL_MIN_MOVE)]))
@@ -44,13 +45,15 @@ def test_labels_and_boundaries():
     assert classify_velocity(_obs([100, 120, 118, 130])).label == STABLE  # 30% up but never two consecutive up-days
     assert classify_velocity(_obs([100, 94, 91, 92])).label == FALLING  # two consecutive down-days, a small bounce
     assert classify_velocity(_obs([100, 90, 85, 80])).label == RAPIDLY_FALLING
-    assert classify_velocity(_obs([0, 0, 10])).label == INSUFFICIENT_HISTORY  # no base to measure from
+    unmeasurable = classify_velocity(_obs([0, 0, 10]))
+    assert unmeasurable.label == UNMEASURABLE and unmeasurable.describe() == "Unmeasurable (no positive base value in 3 observations)"
+    assert classify_velocity(_obs([100, 105, 105, 110])).label == RISING  # a flat day neither counts nor breaks the run
 
 
 def test_describe_is_bucketed_not_precise():
     v = classify_velocity(_obs([100, 104, 108.4]))
-    assert v.describe() == "Rising (+8% over 3 daily observations since 2026-09-01)"
-    assert classify_velocity(_obs([100])).describe() == "Insufficient History (1 of 3 daily observations)"
+    assert v.describe() == "Rising (+8% over 3 observations since 2026-09-01)"
+    assert classify_velocity(_obs([100])).describe() == "Insufficient History (1 of 3 observations)"
 
 
 def _ld(entries, *, proposals=(), targets=(), drops=(), currency="dynasty"):
@@ -107,11 +110,11 @@ def test_annotations_follow_the_direction_of_the_move():
     vel = {"up": classify_velocity(_obs([100, 110, 120])), "down": classify_velocity(_obs([100, 92, 90]))}
     annotate_league(ld, vel)
     assert p.caveats == [
-        "Market velocity: Up is Rapidly Rising (+20% over 3 daily observations since 2026-09-01) — you'd be selling a rising asset.",
-        "Market velocity: Down is Falling (-10% over 3 daily observations since 2026-09-01) — check why before paying today's price.",
+        "Market velocity: Up is Rapidly Rising (+20% over 3 observations since 2026-09-01) — you'd be selling a rising asset.",
+        "Market velocity: Down is Falling (-10% over 3 observations since 2026-09-01) — check why before paying today's price.",
     ]
     assert p.rationale_for_me == []
-    assert target.notes == ["Market velocity: Rapidly Rising (+20% over 3 daily observations since 2026-09-01)"]
+    assert target.notes == ["Market velocity: Rapidly Rising (+20% over 3 observations since 2026-09-01)"]
     assert drop.reasons[-1].endswith("a rising player is worth a second look before cutting")
     # A Stable or Insufficient-History player adds nothing.
     quiet = TradeProposal(league_name="L", currency="dynasty", target_username="r", target_team_name="r", give=[down], receive=[],
