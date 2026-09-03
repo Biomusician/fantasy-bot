@@ -32,6 +32,7 @@ rebuild should be spending roster spots on upside, not on backups.
 """
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from sleeper_tool.config import LeagueInfo
@@ -79,15 +80,25 @@ class InsuranceRecommendation:
         return self.replacement_projection / self.starter_projection if self.starter_projection else 0.0
 
 
-def free_agent_candidates(storage: Storage, engine: ValuationEngine, league: LeagueInfo, roster: ValuedRoster) -> list[RosterEntry]:
-    """Every unrostered, startable, NFL-employed skill-position player with a
+def free_agent_candidates(
+    storage: Storage,
+    engine: ValuationEngine,
+    league: LeagueInfo,
+    roster: ValuedRoster,
+    *,
+    positions: Collection[str] = SKILL_POSITIONS,
+) -> list[RosterEntry]:
+    """Every unrostered, startable, NFL-employed player at `positions` with a
     projection in this league's format, as bench-flagged RosterEntries so
     the optimizer treats them exactly like rostered players. A few hundred
-    cached lookups per league — no network."""
+    cached lookups per league — no network. Shared by insurance, replacement
+    value, the streamer planner, the opponent blocker and the stash board;
+    report_data builds it once per league."""
     rostered = get_rostered_player_ids(storage, league)
+    wanted = set(positions)
     pool: list[RosterEntry] = []
     for pid, pdata in storage.get_all_players().items():
-        if pid in rostered or pdata.get("position") not in SKILL_POSITIONS or not pdata.get("team"):
+        if pid in rostered or pdata.get("position") not in wanted or not pdata.get("team"):
             continue
         if pdata.get("status") not in (None, "Active") or pdata.get("injury_status") in LONG_TERM_INJURY_STATUSES:
             continue
