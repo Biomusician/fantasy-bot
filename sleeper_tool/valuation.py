@@ -309,6 +309,17 @@ class ValuationEngine:
             return "half_ppr"
         return "standard"
 
+    def snapshots_for(self, fmt: LeagueFormat) -> dict[str, RankingSnapshot | None]:
+        """The raw source snapshots this engine would value a league of
+        `fmt` against — for consumers that need per-source detail the
+        reconciled PlayerValue deliberately flattens (source_disagreement)."""
+        return {
+            "ktc": self.ktc_snapshot,
+            "fp_dynasty": self.fp_snapshots.get(self._fp_dynasty_key(fmt)),
+            "fp_redraft": self.fp_snapshots.get(self._fp_redraft_key(fmt)),
+            "rotoballer": self.rb_snapshots.get(self._rb_key(fmt)),
+        }
+
     def value_player(self, player_name: str, fmt: LeagueFormat, position: str | None = None) -> PlayerValue:
         key = normalize_name(player_name)
         sources: list[str] = []

@@ -57,30 +57,43 @@ class FPPlayer:
     pos_rank: str | None
     owned_avg: float | None
     rank_std: float | None  # spread among the 100+ experts behind this ECR number
+    # Expert dispersion, from the same ecrData blob (confirmed present
+    # 2026-09-02: rank_min/rank_max/rank_ave/tier/player_ecr_delta). Older
+    # cached snapshots predate these fields; readers must treat None as
+    # "not captured yet", not as zero spread.
+    rank_min: int | None = None  # best (lowest) overall rank any expert gave
+    rank_max: int | None = None  # worst
+    rank_ave: float | None = None
+    tier: int | None = None
+    ecr_delta: float | None = None  # FantasyPros' own week-over-week ECR movement
+
+
+def _num(raw: dict, key: str, cast):
+    try:
+        value = raw.get(key)
+        return cast(value) if value not in (None, "", "-") else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _parse_player(raw: dict) -> FPPlayer | None:
     name = raw.get("player_name")
     if not name:
         return None
-    bye = raw.get("player_bye_week")
-    try:
-        bye_int = int(bye) if bye not in (None, "", "-") else None
-    except (TypeError, ValueError):
-        bye_int = None
-    try:
-        rank_std = float(raw["rank_std"]) if raw.get("rank_std") not in (None, "") else None
-    except (TypeError, ValueError):
-        rank_std = None
     return FPPlayer(
         name=name,
         position=raw.get("player_position_id", ""),
         team=raw.get("player_team_id") or None,
-        bye_week=bye_int,
+        bye_week=_num(raw, "player_bye_week", int),
         rank_ecr=raw.get("rank_ecr", 0),
         pos_rank=raw.get("pos_rank"),
         owned_avg=raw.get("player_owned_avg"),
-        rank_std=rank_std,
+        rank_std=_num(raw, "rank_std", float),
+        rank_min=_num(raw, "rank_min", lambda v: int(float(v))),
+        rank_max=_num(raw, "rank_max", lambda v: int(float(v))),
+        rank_ave=_num(raw, "rank_ave", float),
+        tier=_num(raw, "tier", lambda v: int(float(v))),
+        ecr_delta=_num(raw, "player_ecr_delta", float),
     )
 
 
