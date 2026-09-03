@@ -179,6 +179,8 @@ def _render_trade_proposal(
             lines.extend(f"- {d}" for d in deltas)
         else:
             lines.append("- nothing material — lineup, depth, status, and roster value all hold; this is a value play, not a lineup play")
+        if impact.matchup_note:
+            lines.append(f"- {impact.matchup_note}")
         lines.append("")
     lines.append("Why it works for me:")
     for r in p.rationale_for_me:
@@ -222,6 +224,8 @@ def _render_waiver_targets(targets: list[WaiverTarget], impacts: dict[str, MoveI
         if impact is not None:
             deltas = impact.material_deltas()
             reason += " · **Impact:** " + ("; ".join(deltas) if deltas else "no lineup change — depth only")
+            if impact.matchup_note:
+                reason += " " + impact.matchup_note
         if t.notes:
             reason += " · " + " · ".join(t.notes)
         lines.append(
@@ -346,6 +350,9 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     lines.extend(_render_roster_snapshot(data.roster, data.currency))
     lines.append("")
     lines.extend(_render_lineup_leverage(data.lineup_leverage, data.currency, data.replacement_clauses))
+    if data.matchup is not None:
+        lines.append(f"**This week's matchup** — {data.matchup.describe()}")
+        lines.append("")
 
     # Time-sensitive alerts lead when there's a high-severity one — a
     # scrolling reader shouldn't have to pass two possibly-empty sections
@@ -371,6 +378,8 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     )
     if data.streamers:
         waiver_lines.extend(_render_streamers(data.streamers))
+    if data.defensive_add is not None:
+        waiver_lines.extend([f"**🛡 Defensive add** (deny this week's opponent): {data.defensive_add.describe()}", ""])
     sections.append(("### Waiver targets", waiver_lines))
 
     if data.drop_candidates:

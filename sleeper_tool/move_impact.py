@@ -69,6 +69,7 @@ class MoveImpact:
     after: RosterSnapshot
     lineup_in: list[str] = field(default_factory=list)  # names entering the optimized lineup
     lineup_out: list[str] = field(default_factory=list)
+    matchup_note: str | None = None  # set by report_data from matchup_leverage; how the weekly delta relates to this week's gap
 
     @property
     def weekly_points_delta(self) -> float:

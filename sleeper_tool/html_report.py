@@ -13,6 +13,7 @@ from sleeper_tool.decision_delta import DecisionDelta
 from sleeper_tool.formatting import age_str
 from sleeper_tool.league_economy import LeagueEconomy
 from sleeper_tool.lineup_leverage import LineupLeverage
+from sleeper_tool.matchup_leverage import LARGE_DEFICIT, MODEST_DEFICIT, MODEST_EDGE, STRONG_EDGE, MatchupLeverage
 from sleeper_tool.move_impact import MoveImpact
 from sleeper_tool.negotiation_ladder import NegotiationLadder
 from sleeper_tool.pick_opportunity import PickOpportunity
@@ -190,6 +191,8 @@ def _impact_block(impact: MoveImpact | None) -> str:
     items = "".join(f"<li>{esc(d)}</li>" for d in deltas) if deltas else (
         "<li>nothing material &mdash; lineup, depth, status, and roster value all hold; a value play, not a lineup play</li>"
     )
+    if impact.matchup_note:
+        items += f"<li>{esc(impact.matchup_note)}</li>"
     return f'<div class="impact-block"><span class="rationale-label">What actually changes</span><ul>{items}</ul></div>'
 
 
@@ -331,7 +334,7 @@ def _waiver_table(targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | 
             deltas = impact.material_deltas()
             impact_html = '<div class="impact-inline"><b>Impact:</b> ' + (
                 esc("; ".join(deltas)) if deltas else "no lineup change &mdash; depth only"
-            ) + "</div>"
+            ) + (f" {esc(impact.matchup_note)}" if impact.matchup_note else "") + "</div>"
         notes_html = "".join(f'<div class="impact-inline">{esc(n)}</div>' for n in t.notes)
         rows.append(
             "<tr>"
@@ -348,6 +351,31 @@ def _waiver_table(targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | 
         '<div class="table-scroll"><table class="waiver-table">'
         "<thead><tr><th>Priority</th><th>Add</th><th>Pos</th><th>Drop</th><th>Horizon</th><th>FAAB</th><th>Why</th></tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table></div>"
+    )
+
+
+_MATCHUP_CHIP_KIND = {STRONG_EDGE: "positive", MODEST_EDGE: "positive", MODEST_DEFICIT: "caution", LARGE_DEFICIT: "negative"}
+
+
+def _matchup_section(m: MatchupLeverage | None) -> str:
+    if m is None:
+        return ""
+    return f"""
+    <section class="panel-block">
+      <h3>This week's matchup <span class="muted">&middot; week {m.week} vs {esc(m.opponent_name)}</span></h3>
+      <p class="roster-note">{_chip(m.label, _MATCHUP_CHIP_KIND.get(m.label, "neutral"))} you project
+      <span class="tabular">{m.my_points:.1f}</span>, they project <span class="tabular">{m.opponent_points:.1f}</span>
+      (<span class="tabular">{m.gap:+.1f}</span>) &middot; this-week lineups with byes and outs applied</p>
+    </section>
+    """
+
+
+def _defensive_add_block(add) -> str:
+    if add is None:
+        return ""
+    return (
+        '<div class="streamers"><span class="rationale-label">Defensive add &middot; deny this week\'s opponent</span>'
+        f'<ul class="alert-list"><li class="alert-item alert-caution">{_chip("Defensive Add", "caution")} {esc(add.describe())}</li></ul></div>'
     )
 
 
@@ -591,6 +619,7 @@ def _league_panel(data: LeagueReportData) -> str:
           <h3>Waiver targets</h3>
           {waivers_html}
           {_streamers_block(data.streamers)}
+          {_defensive_add_block(data.defensive_add)}
         </section>
         {_drop_candidates_section(data.drop_candidates)}
         """
@@ -615,6 +644,7 @@ def _league_panel(data: LeagueReportData) -> str:
         body = (
             _roster_section(data.roster, data.currency)
             + _lineup_leverage_section(data.lineup_leverage, data.currency, data.replacement_clauses)
+            + _matchup_section(data.matchup)
             + "".join(ordered)
             + context
         )

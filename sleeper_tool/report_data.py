@@ -22,6 +22,7 @@ from sleeper_tool.league_economy import LeagueEconomy, build_league_economy
 from sleeper_tool.lineup_leverage import LineupLeverage, build_lineup_leverage
 from sleeper_tool.lineup_optimizer import LineupResult, UnsupportedSlotError, optimize_lineup
 from sleeper_tool.market_velocity import Velocity, annotate_league, build_velocities
+from sleeper_tool.matchup_leverage import MatchupLeverage, build_matchup_leverage
 from sleeper_tool.move_impact import (
     PREVIEWED_WAIVER_TIERS,
     MoveImpact,
@@ -31,6 +32,7 @@ from sleeper_tool.move_impact import (
     snapshot_roster,
 )
 from sleeper_tool.negotiation_ladder import NegotiationLadder, build_ladders
+from sleeper_tool.opponent_blocker import DefensiveAdd, find_defensive_add
 from sleeper_tool.nfl_schedule import Schedule, load_schedule
 from sleeper_tool.pick_opportunity import SPENDABLE, STRATEGIC, PickOpportunity, assess_picks
 from sleeper_tool.playoff_leverage import PlayoffLeverage, classify_playoff_leverage
@@ -47,7 +49,7 @@ from sleeper_tool.replacement_value import (
     player_context,
 )
 from sleeper_tool.roster_analysis import SKILL_POSITIONS, RosterEntry, ValuedRoster, build_all_valued_rosters
-from sleeper_tool.roster_clog import RosterClog, identify_roster_clogs
+from sleeper_tool.roster_clog import RosterClog, _is_dynasty_developmental, identify_roster_clogs
 from sleeper_tool.source_disagreement import (
     HIGH_DISAGREEMENT,
     MARKET_ABOVE_PROJECTION,
@@ -122,6 +124,8 @@ class LeagueReportData:
     trade_economics: list[TradeEconomics | None] = field(default_factory=list)  # parallel to proposals: asset vs roster economics, kept separate
     streamers: list[StreamPlan] = field(default_factory=list)  # QB/TE/K/DEF plans over the next few weeks; empty pre-draft
     velocity: dict[str, Velocity] = field(default_factory=dict)  # by player_id, actionable players only (trade pieces, waiver targets, drops)
+    matchup: MatchupLeverage | None = None  # this week's opponent and projected gap; None without a matchup row
+    defensive_add: DefensiveAdd | None = None  # at most one per league per week
     error: str | None = None
 
 
@@ -391,6 +395,24 @@ def build_league_report_data(
         _annotate_waivers_with_replacement(waiver_targets, replacement, currency, per_week, all_players)
         _annotate_clogs_with_replacement(roster_clogs, replacement)
 
+    matchup: MatchupLeverage | None = None
+    defensive_add: DefensiveAdd | None = None
+    if lineup is not None and current_week:
+        matchup = build_matchup_leverage(
+            my_roster, rosters, storage.get_matchups(league.league_id, current_week), current_week=current_week
+        )
+    if matchup is not None and free_agents:
+        # Nothing I value is on the table for a block: optimized starters,
+        # bench surplus, clog-exempt developmental players, live trade pieces.
+        protected = set(lineup.starter_ids) | set(proposed_give_ids)
+        if lineup_leverage is not None:
+            protected |= {s.entry.player_id for s in lineup_leverage.bench_surplus}
+        protected |= {e.player_id for e in my_roster.entries if _is_dynasty_developmental(e, currency)}
+        defensive_add = find_defensive_add(
+            my_roster, rosters[matchup.opponent_roster_id], free_agents,
+            current_week=current_week, protected_ids=protected, clog_ids=clog_ids,
+        )
+
     source_table = build_source_rank_tables(engine.snapshots_for(my_roster.fmt), my_roster.fmt)
     source_views = _build_source_views(source_table, currency, my_roster, proposals, waiver_targets)
     _annotate_proposals_with_sources(proposals, source_views)
@@ -447,6 +469,10 @@ def build_league_report_data(
             label = f"Add {t.name}" + (f", drop {t.drop_candidate.name}" if t.drop_candidate else "")
             waiver_impacts[t.player_id] = preview_add_drop(label, add_entry, drop_id, my_roster, before, ctx)
     trade_economics = [analyze_trade(p, impact, replacement) for p, impact in zip(proposals, trade_impacts)]
+    if matchup is not None:
+        for impact in (*trade_impacts, *waiver_impacts.values()):
+            if impact is not None:
+                impact.matchup_note = matchup.effect_clause(impact.weekly_points_delta)
     streamers = plan_streams(my_roster, free_agents, schedule=schedule, current_week=current_week, lineup=lineup)
 
     return LeagueReportData(
@@ -477,6 +503,8 @@ def build_league_report_data(
         source_views=source_views,
         trade_economics=trade_economics,
         streamers=streamers,
+        matchup=matchup,
+        defensive_add=defensive_add,
     )
 
 
