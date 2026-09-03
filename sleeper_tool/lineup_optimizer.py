@@ -41,6 +41,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass, replace
+from functools import lru_cache
 
 from sleeper_tool.asset_value import value_currency
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
@@ -139,6 +140,35 @@ def starter_slots_for(roster: ValuedRoster) -> list[str]:
     return slots
 
 
+@lru_cache(maxsize=64)
+def _slot_tables(slots: tuple[str, ...]) -> tuple[tuple[frozenset[str], ...], tuple[int, ...], dict[str, tuple[int, ...]]]:
+    """Everything about a league's starter slots that depends on the slot
+    list alone, built once per distinct shape and reused by every call.
+
+    - `eligibility[i]`  positions that may fill slot i.
+    - `cost[mask]`      the tie-break's restrictiveness sum (total
+      eligibility width of the filled slots) for every mask at once. It
+      used to be re-derived per mask inside the final `max()`, which cost
+      more than the DP transition that produced the mask.
+    - `by_position[p]`  slots p can fill, most restrictive first then slot
+      order — the DP's candidate list, and first-found-wins on ties, so
+      this ordering is part of the tie-break.
+
+    A league is capped at MAX_STARTER_SLOTS slots, so the cost table is at
+    worst the same order of magnitude as the DP's own state space.
+    """
+    eligibility = tuple(slot_eligibility(s) for s in slots)
+    sizes = tuple(len(e) for e in eligibility)
+    cost = [0] * (1 << len(slots))
+    for m in range(1, len(cost)):
+        low = m & -m  # lowest set bit; the rest of the mask is already solved
+        cost[m] = cost[m ^ low] + sizes[low.bit_length() - 1]
+    by_position: dict[str, tuple[int, ...]] = {}
+    for pos in {p for elig in eligibility for p in elig}:
+        by_position[pos] = tuple(sorted((i for i, elig in enumerate(eligibility) if pos in elig), key=lambda i: (sizes[i], i)))
+    return eligibility, tuple(cost), by_position
+
+
 def unavailability_reason(entry: RosterEntry, nfl_week: int | None, *, exclude_game_day_out: bool = False) -> str | None:
     if entry.is_reserve:
         return "in an IR/reserve slot"
@@ -169,6 +199,44 @@ def _ordering_key(entry: RosterEntry, currency: str) -> tuple:
     return (-projection_of(entry), rank if rank is not None else float("inf"), entry.player_id)
 
 
+# A report run asks for the same lineup more than once — several decision
+# modules independently want "this roster, this week, nobody excluded" —
+# and the DP is expensive enough that recognising a repeat is worth the key.
+# Process-local and bounded; cleared wholesale rather than evicted because
+# a run's working set is far under the limit and LRU bookkeeping would cost
+# more than the rare full rebuild.
+_MEMO_LIMIT = 4096
+_lineup_memo: dict[tuple, LineupResult] = {}
+
+
+def _memo_entry_key(entry: RosterEntry) -> tuple:
+    """Every field of a roster entry that can change the lineup: what makes
+    a player unavailable, what orders him against the others (_ordering_key
+    via composite_overall_rank), and what lands in SlotAssignment. A new
+    input to any of those three MUST be added here or the memo will serve a
+    stale lineup; nothing else about the entry is read by optimize_lineup.
+    """
+    v = entry.value
+    return (
+        entry.player_id, entry.name, entry.position,
+        entry.is_reserve, entry.is_taxi, entry.injury_status, entry.status,
+        v.proj_points, v.bye_week,
+        v.dynasty_rank, v.dynasty_ecr_rank, v.redraft_ecr_rank,
+    )
+
+
+def _detached(result: LineupResult) -> LineupResult:
+    """A copy that shares only the frozen SlotAssignments, so a caller can
+    never mutate a memoized result out from under the next caller."""
+    return replace(
+        result,
+        assignments=list(result.assignments),
+        unfilled_slots=list(result.unfilled_slots),
+        bench_player_ids=list(result.bench_player_ids),
+        unavailable=dict(result.unavailable),
+    )
+
+
 def optimize_lineup(
     roster: ValuedRoster,
     *,
@@ -182,9 +250,19 @@ def optimize_lineup(
     `exclude_game_day_out` is for a THIS-WEEK lineup (see module docstring).
     """
     slots = starter_slots_for(roster)
-    eligibility = [slot_eligibility(s) for s in slots]
+    _eligibility, mask_cost, slots_by_position = _slot_tables(tuple(slots))
     currency = value_currency(roster)
-    excluded = set(excluded_player_ids)
+    excluded = frozenset(excluded_player_ids)
+
+    # starter_slots_for above still runs on a memo hit, so a league with an
+    # unfillable slot list raises exactly as it always did.
+    memo_key = (
+        tuple(slots), currency, nfl_week, exclude_game_day_out, excluded,
+        tuple(_memo_entry_key(e) for e in roster.entries),
+    )
+    memoized = _lineup_memo.get(memo_key)
+    if memoized is not None:
+        return _detached(memoized)
 
     unavailable: dict[str, str] = {}
     available: list[RosterEntry] = []
@@ -199,47 +277,58 @@ def optimize_lineup(
         available.append(entry)
     available.sort(key=lambda e: _ordering_key(e, currency))
 
-    def eligible_slot_indexes(position: str | None) -> list[int]:
-        idxs = [i for i, elig in enumerate(eligibility) if position in elig]
-        # Most restrictive slot first (dedicated before FLEX before
-        # SUPER_FLEX), then slot order — first-found wins on ties.
-        idxs.sort(key=lambda i: (len(eligibility[i]), i))
-        return idxs
-
-    # dp: filled-slot bitmask -> (total projection, ((slot_index, player_id), ...))
-    dp: dict[int, tuple[float, tuple[tuple[int, str], ...]]] = {0: (0.0, ())}
+    # dp: filled-slot bitmask -> (total projection, index into `nodes`).
+    # `nodes` is an append-only back-pointer chain: node -> (parent node,
+    # slot_index, player_id), node 0 being the empty lineup. Each state
+    # remembers only the one slot it just filled, so a transition is O(1)
+    # instead of copying and extending the whole assignment tuple; the
+    # winning chain is walked once, at the end. Nodes are never rewritten,
+    # so a chain always reconstructs the assignment that produced the total
+    # recorded with it, even after a later player improves its parent mask.
+    nodes: list[tuple[int, int, str]] = [(-1, -1, "")]
+    dp: dict[int, tuple[float, int]] = {0: (0.0, 0)}
     by_id = {e.player_id: e for e in available}
     for entry in available:
-        idxs = eligible_slot_indexes(entry.position)
+        # Most restrictive slot first, then slot order (see _slot_tables);
+        # a position no slot accepts — including None — fills nothing.
+        idxs = slots_by_position.get(entry.position, ())
         if not idxs:
             continue
         weight = projection_of(entry)
-        new_dp = dict(dp)  # "bench him" carries every existing state forward
-        for mask, (total, assignment) in dp.items():
+        pid = entry.player_id
+        # Sources are the states as they stood BEFORE this player (the
+        # snapshot), so he can't be placed twice; writes land in `dp`
+        # itself. That is exactly what the old `new_dp = dict(dp)` did —
+        # "bench him" carries every state forward, this player's earlier
+        # writes are visible to his later ones — including the key
+        # insertion order the mask tie-break falls back on.
+        for mask, (total, node) in list(dp.items()):
+            candidate_total = total + weight
             for j in idxs:
                 bit = 1 << j
                 if mask & bit:
                     continue
                 next_mask = mask | bit
-                candidate_total = total + weight
-                current = new_dp.get(next_mask)
+                current = dp.get(next_mask)
                 # Strictly better only: an equal total keeps the earlier
                 # (better-ordered) assignment, which is the tie-break.
                 if current is None or candidate_total > current[0] + _EPS:
-                    new_dp[next_mask] = (candidate_total, assignment + ((j, entry.player_id),))
-        dp = new_dp
+                    nodes.append((node, j, pid))
+                    dp[next_mask] = (candidate_total, len(nodes) - 1)
 
     # Highest total; on a tie, the lineup that fills more slots (a zero-
     # projection K still beats an empty K slot), then the one using the
     # more restrictive slots (a lone RB sits in RB, not FLEX, leaving the
     # flexible slot as the reported hole), then the lowest mask.
     def _mask_key(m: int) -> tuple:
-        filled = [i for i in range(len(slots)) if m & (1 << i)]
-        restrictiveness_cost = sum(len(eligibility[i]) for i in filled)
-        return (round(dp[m][0], 6), len(filled), -restrictiveness_cost, -m)
+        return (round(dp[m][0], 6), m.bit_count(), -mask_cost[m], -m)
 
     best_mask = max(dp, key=_mask_key)
-    total, assignment = dp[best_mask]
+    total, node = dp[best_mask]
+    assignment: list[tuple[int, str]] = []
+    while node > 0:  # node 0 is the empty lineup
+        node, j, pid = nodes[node]
+        assignment.append((j, pid))
 
     assignments = sorted(
         (
@@ -256,7 +345,7 @@ def optimize_lineup(
         key=lambda a: a.slot_index,
     )
     started = {a.player_id for a in assignments}
-    return LineupResult(
+    result = LineupResult(
         assignments=assignments,
         total_projected_points=total,
         unfilled_slots=[s for i, s in enumerate(slots) if not best_mask & (1 << i)],
@@ -264,6 +353,10 @@ def optimize_lineup(
         unavailable=unavailable,
         nfl_week=nfl_week,
     )
+    if len(_lineup_memo) >= _MEMO_LIMIT:
+        _lineup_memo.clear()
+    _lineup_memo[memo_key] = result
+    return _detached(result)
 
 
 def with_optimized_starters(roster: ValuedRoster, lineup: LineupResult | None = None) -> ValuedRoster:

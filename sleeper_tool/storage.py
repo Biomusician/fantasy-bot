@@ -120,6 +120,7 @@ class Storage:
         self._conn.executescript(SCHEMA)
         self._conn.commit()
         self._players_cache: dict[str, dict] | None = None
+        self._league_cache: dict[str, dict | None] = {}
 
     def close(self) -> None:
         self._conn.close()
@@ -219,10 +220,21 @@ class Storage:
                 "name=excluded.name, season=excluded.season, data=excluded.data, fetched_at=excluded.fetched_at",
                 (league_id, data.get("name"), data.get("season"), json.dumps(data), utcnow_iso()),
             )
+        self._league_cache.pop(league_id, None)
 
     def get_league(self, league_id: str) -> dict | None:
+        """Memoized per Storage instance, like get_all_players: the settings
+        blob never changes within a run, and a report run re-reads (and
+        re-parses) it a couple of hundred times — every roster build,
+        playoff-threshold shift and pick valuation. A cached None is a real
+        answer ("no such league"), so absence is cached too. Invalidated by
+        save_league. Callers must treat the dict as read-only."""
+        if league_id in self._league_cache:
+            return self._league_cache[league_id]
         row = self._conn.execute("SELECT data FROM leagues WHERE league_id = ?", (league_id,)).fetchone()
-        return json.loads(row["data"]) if row else None
+        data = json.loads(row["data"]) if row else None
+        self._league_cache[league_id] = data
+        return data
 
     def league_fetched_at(self, league_id: str) -> dt.datetime | None:
         row = self._conn.execute(

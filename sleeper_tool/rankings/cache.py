@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -63,19 +64,59 @@ def _cache_path(source: str) -> Path:
     return CACHE_DIR / f"{safe_name}.json"
 
 
+# Parsed cache files, keyed on the resolved PATH (never the source name, so
+# a test pointing CACHE_DIR at a tmp_path can't collide with the real one)
+# and validated against mtime + size. In-season the nflverse identity files
+# are several megabytes and get asked for two or three times a run;
+# re-parsing them was costing more than every ranking source put together.
+# Process-local, and bounded — one entry per distinct file, wiped wholesale
+# if that ever runs away (a long test session sweeping temp directories).
+_PARSED_LIMIT = 64
+_parsed_cache: dict[str, tuple[int, int, Any]] = {}
+# Windows stamps last-write times from the coarse system clock (~15ms
+# ticks), so two rewrites of the same length inside one tick can share an
+# mtime and a memo keyed on it alone would serve the first one's content.
+# A file must therefore have been sitting still for longer than any
+# plausible tick before we trust the memo. Real cache files are hours old
+# and always qualify; a test that writes, reads and rewrites in the same
+# millisecond simply re-parses, which for a fixture-sized file is free.
+_SETTLED_NS = 1_000_000_000
+
+
 def save_snapshot(source: str, payload: Any) -> RankingSnapshot:
     snapshot = RankingSnapshot(source=source, fetched_at=dt.datetime.now(dt.timezone.utc), payload=payload)
-    _cache_path(source).write_text(json.dumps(snapshot.to_json()), encoding="utf-8")
+    path = _cache_path(source)
+    path.write_text(json.dumps(snapshot.to_json()), encoding="utf-8")
+    _parsed_cache.pop(str(path), None)  # don't lean on mtime for our own writes
     return snapshot
 
 
 def load_snapshot(source: str) -> RankingSnapshot | None:
     path = _cache_path(source)
-    if not path.exists():
-        return None
     try:
-        return RankingSnapshot.from_json(json.loads(path.read_text(encoding="utf-8")))
-    except (json.JSONDecodeError, KeyError, ValueError):
+        stat = path.stat()
+    except OSError:  # missing, or vanished between the check and the read
+        return None
+    key = str(path)
+    hit = _parsed_cache.get(key)
+    settled = time.time_ns() - stat.st_mtime_ns > _SETTLED_NS
+    if hit is not None and settled and hit[0] == stat.st_mtime_ns and hit[1] == stat.st_size:
+        data = hit[2]
+    else:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            _parsed_cache.pop(key, None)
+            return None
+        if len(_parsed_cache) >= _PARSED_LIMIT:
+            _parsed_cache.clear()
+        _parsed_cache[key] = (stat.st_mtime_ns, stat.st_size, data)
+    # A fresh RankingSnapshot per call: get_or_fetch flips
+    # served_from_fallback on the object it returns, which must not leak
+    # into the next caller. Only the (read-only) payload is shared.
+    try:
+        return RankingSnapshot.from_json(data)
+    except (KeyError, ValueError):
         return None
 
 
