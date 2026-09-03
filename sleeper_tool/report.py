@@ -124,6 +124,7 @@ def _render_lineup_leverage(lev: LineupLeverage | None, currency: str, clauses: 
             f"- {_DECISION_MARK.get(d.label, '')} **{d.label}** at {d.slot}: {d.starter.name} "
             f"({d.starter_weekly:.1f}/wk) over {d.alternative.name} ({d.alternative_weekly:.1f}/wk)"
             + (" — close enough that matchup should decide" if d.label == "Toss-Up" else "")
+            + (f" — {d.schedule_note}" if d.schedule_note else "")
         )
     for s in lev.bench_surplus:
         pctl = ordinal_pct(s.value_percentile) if s.value_percentile is not None else "unranked"
@@ -371,6 +372,14 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     else:
         trade_lines.append("No trade offers cleared the value-match bar this week.")
         trade_lines.append("")
+    if data.consolidations:
+        trade_lines.append("**Consolidation (2-for-1)** — two of your non-starters for one player who enters your lineup:")
+        trade_lines.append("")
+        for j, c in enumerate(data.consolidations, start=1):
+            trade_lines.append(f"- {c.describe()} · {c.freed_slot_note}" + (f" · ⚠️ {c.fragility_note}" if c.fragility_note else ""))
+            trade_lines.append("")
+            trade_lines.extend(_render_trade_proposal(c.proposal, j))
+            trade_lines.append("")
     sections.append(("### Trade offers", trade_lines))
 
     waiver_lines = (
@@ -412,6 +421,13 @@ def render_league_section(data: LeagueReportData) -> list[str]:
 
     if data.replacement is not None and data.replacement.positions:
         sections.append(("### Replacement market", _render_replacement_market(data.replacement)))
+
+    if data.stash:
+        stash_lines = [f"- **{c.label}:** {c.describe()}" for c in data.stash] + [""]
+        sections.append(("### Stash board (developmental holds)", stash_lines))
+
+    if data.windows is not None:
+        sections.append(("### Schedule windows", [data.windows.describe(), ""]))
 
     if data.pick_opportunity and data.pick_opportunity.assessments:
         sections.append(("### Draft capital", _render_pick_opportunity(data.pick_opportunity, data.replacement)))

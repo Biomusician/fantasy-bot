@@ -155,7 +155,9 @@ def _lineup_leverage_section(lev: LineupLeverage | None, currency: str, clauses:
             f'<li class="alert-item alert-{_DECISION_CHIP_KIND.get(d.label, "neutral")}">'
             f'{_chip(d.label, _DECISION_CHIP_KIND.get(d.label, "neutral"))} <strong>{esc(d.slot)}</strong>: '
             f"{esc(d.starter.name)} <span class=\"tabular\">{d.starter_weekly:.1f}</span>/wk over "
-            f"{esc(d.alternative.name)} <span class=\"tabular\">{d.alternative_weekly:.1f}</span>/wk{hint}</li>"
+            f"{esc(d.alternative.name)} <span class=\"tabular\">{d.alternative_weekly:.1f}</span>/wk{hint}"
+            + (f' <span class="muted">&middot; {esc(d.schedule_note)}</span>' if d.schedule_note else "")
+            + "</li>"
         )
     for s in lev.bench_surplus:
         pctl = f"{s.value_percentile:.0f}{_ordsuffix(s.value_percentile)} pctl" if s.value_percentile is not None else "unranked"
@@ -377,6 +379,46 @@ def _defensive_add_block(add) -> str:
         '<div class="streamers"><span class="rationale-label">Defensive add &middot; deny this week\'s opponent</span>'
         f'<ul class="alert-list"><li class="alert-item alert-caution">{_chip("Defensive Add", "caution")} {esc(add.describe())}</li></ul></div>'
     )
+
+
+def _consolidation_block(consolidations) -> str:
+    if not consolidations:
+        return ""
+    cards = "".join(_trade_card(c.proposal, j) for j, c in enumerate(consolidations, start=1))
+    notes = "".join(
+        f'<li class="alert-item{" alert-caution" if c.fragility_note else ""}">{_chip("2-for-1", "accent")} {esc(c.describe())} &middot; {esc(c.freed_slot_note)}'
+        + (f' &middot; {esc(c.fragility_note)}' if c.fragility_note else "") + "</li>"
+        for c in consolidations
+    )
+    return (
+        '<div class="streamers"><span class="rationale-label">Consolidation &middot; two of your non-starters for one player who enters your lineup</span>'
+        f'<ul class="alert-list">{notes}</ul><div class="trade-grid">{cards}</div></div>'
+    )
+
+
+def _stash_section(stash) -> str:
+    if not stash:
+        return ""
+    items = "".join(
+        f'<li class="alert-item">{_chip(c.label, "accent" if c.label == "Priority Stash" else "neutral")} {esc(c.describe())}</li>' for c in stash
+    )
+    return f"""
+    <section class="panel-block">
+      <h3>Stash board <span class="muted">&middot; developmental holds, not lineup help</span></h3>
+      <ul class="alert-list">{items}</ul>
+    </section>
+    """
+
+
+def _schedule_section(windows) -> str:
+    if windows is None:
+        return ""
+    return f"""
+    <section class="panel-block">
+      <h3>Schedule windows</h3>
+      <p class="roster-note">{esc(windows.describe())}</p>
+    </section>
+    """
 
 
 _STREAM_CHIP_KIND = {HOLD: "neutral", ADD: "positive", SEQUENCE: "accent"}
@@ -614,6 +656,7 @@ def _league_panel(data: LeagueReportData) -> str:
           <div class="trade-grid">
             {"".join(_trade_card(p, i, data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None, data.ladders.get(i - 1), data.trade_economics[i - 1] if i - 1 < len(data.trade_economics) else None) for i, p in enumerate(data.proposals, start=1)) if data.proposals else '<p class="empty-note">No trade offers cleared the value-match bar this week.</p>'}
           </div>
+          {_consolidation_block(data.consolidations)}
         </section>
         <section class="panel-block">
           <h3>Waiver targets</h3>
@@ -628,11 +671,13 @@ def _league_panel(data: LeagueReportData) -> str:
         context_html = (
             _roster_clogs_section(data.roster_clogs)
             + _replacement_market_section(data.replacement)
+            + _stash_section(data.stash)
+            + _schedule_section(data.windows)
             + _pick_opportunity_section(data.pick_opportunity, data.replacement)
             + _league_economy_section(data.league_economy, data.roster.roster_id)
         )
         context = (
-            f'<details class="context-details"><summary>Roster context &middot; clogs, replacement market, draft capital, league economy</summary>{context_html}</details>'
+            f'<details class="context-details"><summary>Roster context &middot; clogs, replacement market, stash board, schedule, draft capital, league economy</summary>{context_html}</details>'
             if context_html.strip()
             else ""
         )

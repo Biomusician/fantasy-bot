@@ -32,7 +32,7 @@ from sleeper_tool.move_impact import (
     snapshot_roster,
 )
 from sleeper_tool.negotiation_ladder import NegotiationLadder, build_ladders
-from sleeper_tool.opponent_blocker import DefensiveAdd, find_defensive_add
+from sleeper_tool.opponent_blocker import DefensiveAdd, find_defensive_add, roster_is_full
 from sleeper_tool.nfl_schedule import Schedule, load_schedule
 from sleeper_tool.pick_opportunity import SPENDABLE, STRATEGIC, PickOpportunity, assess_picks
 from sleeper_tool.playoff_leverage import PlayoffLeverage, classify_playoff_leverage
@@ -50,6 +50,8 @@ from sleeper_tool.replacement_value import (
 )
 from sleeper_tool.roster_analysis import SKILL_POSITIONS, RosterEntry, ValuedRoster, build_all_valued_rosters
 from sleeper_tool.roster_clog import RosterClog, _is_dynasty_developmental, identify_roster_clogs
+from sleeper_tool.roster_consolidation import Consolidation, find_consolidations
+from sleeper_tool.schedule_window import ScheduleWindows, build_windows, schedule_tiebreak, team_window
 from sleeper_tool.source_disagreement import (
     HIGH_DISAGREEMENT,
     MARKET_ABOVE_PROJECTION,
@@ -60,6 +62,7 @@ from sleeper_tool.source_disagreement import (
     lookup,
     source_view,
 )
+from sleeper_tool.stash_board import StashCandidate, build_stash_board
 from sleeper_tool.storage import Storage
 from sleeper_tool.streamer_planner import StreamPlan, plan_streams
 from sleeper_tool.team_status import CONTENDER, TeamStatusResult, classify_team_status, get_valued_picks_by_roster
@@ -126,6 +129,9 @@ class LeagueReportData:
     velocity: dict[str, Velocity] = field(default_factory=dict)  # by player_id, actionable players only (trade pieces, waiver targets, drops)
     matchup: MatchupLeverage | None = None  # this week's opponent and projected gap; None without a matchup row
     defensive_add: DefensiveAdd | None = None  # at most one per league per week
+    stash: list[StashCandidate] = field(default_factory=list)  # dynasty/keeper developmental adds; empty pre-draft and in redraft
+    windows: ScheduleWindows | None = None  # next-3 / remaining / playoff week windows from the NFL schedule and league settings
+    consolidations: list[Consolidation] = field(default_factory=list)  # 2-for-1 proposals for contenders and strong middling teams
     error: str | None = None
 
 
@@ -348,10 +354,14 @@ def build_league_report_data(
     # it would be the undrafted universe, so it's empty there and every
     # consumer stays silent.
     all_players = storage.get_all_players()
-    free_agents: list[RosterEntry] = []
+    all_free_agents: list[RosterEntry] = []  # includes unprojected but dynasty-valued players (stash board)
+    free_agents: list[RosterEntry] = []  # the projected subset every lineup-based consumer uses
     replacement: ReplacementMarket | None = None
     if lineup is not None and not pre_draft:
-        free_agents = free_agent_candidates(storage, engine, league, my_roster, positions=FREE_AGENT_POSITIONS)
+        all_free_agents = free_agent_candidates(
+            storage, engine, league, my_roster, positions=FREE_AGENT_POSITIONS, require_projection=False
+        )
+        free_agents = [fa for fa in all_free_agents if fa.value.proj_points is not None]
         replacement = build_replacement_market(
             my_roster, rosters, free_agents, current_week=current_week, lineups={my_roster.roster_id: lineup}
         )
@@ -413,6 +423,11 @@ def build_league_report_data(
             current_week=current_week, protected_ids=protected, clog_ids=clog_ids,
         )
 
+    stash = build_stash_board(
+        my_roster, [fa for fa in all_free_agents if fa.position in SKILL_POSITIONS],
+        league_kind=league.kind, pre_draft=pre_draft, roster_full=roster_is_full(my_roster), clogs=roster_clogs, market=replacement,
+    )
+
     source_table = build_source_rank_tables(engine.snapshots_for(my_roster.fmt), my_roster.fmt)
     source_views = _build_source_views(source_table, currency, my_roster, proposals, waiver_targets)
     _annotate_proposals_with_sources(proposals, source_views)
@@ -428,6 +443,9 @@ def build_league_report_data(
     _annotate_proposals_with_league_economy(proposals, league_economy, rosters)
 
     settings = league_data.get("settings") or {}
+    windows = build_windows(schedule, settings, current_week)
+    if windows is not None and schedule is not None:
+        _annotate_with_schedule_windows(schedule, windows, lineup_leverage, waiver_targets, proposals)
     playoff = classify_playoff_leverage(
         my_roster.roster_id, rosters,
         playoff_teams=settings.get("playoff_teams"), playoff_week_start=settings.get("playoff_week_start"),
@@ -436,15 +454,20 @@ def build_league_report_data(
 
     pick_opportunity = None
     valued_picks = get_valued_picks_by_roster(rosters, currency, storage, engine)
-    counterparty_status = {
+    status_of = {
         r.roster_id: classify_team_status(r.roster_id, rosters, currency, storage=storage, engine=engine).status
         for r in rosters.values()
-        if r.owner_username in {p.target_username for p in proposals}
+        if r.entries
     }
     ladders = build_ladders(
         proposals, my_roster, rosters, (valued_picks or {}).get(my_roster.roster_id, []),
-        my_status=status_result.status, status_of=counterparty_status,
+        my_status=status_result.status, status_of=status_of,
         my_starter_ids=lineup.starter_ids if lineup is not None else (),
+    )
+    consolidations = find_consolidations(
+        league, my_roster, rosters, status_result=status_result, status_of=status_of, lineup=lineup,
+        free_agents=[fa for fa in free_agents if fa.position in SKILL_POSITIONS], current_week=current_week,
+        exclude_ids=proposed_give_ids,
     )
     _annotate_ladders_with_sources(ladders, source_views)
     if valued_picks is not None and lineup is not None:
@@ -505,7 +528,34 @@ def build_league_report_data(
         streamers=streamers,
         matchup=matchup,
         defensive_add=defensive_add,
+        stash=stash,
+        windows=windows,
+        consolidations=consolidations,
     )
+
+
+def _annotate_with_schedule_windows(schedule, windows: ScheduleWindows, leverage, targets: list[WaiverTarget], proposals: list[TradeProposal]) -> None:
+    """Schedule facts only where they change a read: a tiebreak on a
+    near-equal start/sit call, a bye inside the next window or the
+    fantasy playoffs on a player being added or acquired."""
+    if leverage is not None:
+        for d in leverage.close_calls:
+            if d.alternative is not None:
+                d.schedule_note = schedule_tiebreak(
+                    d.starter.name, d.starter.team, d.starter_projection,
+                    d.alternative.name, d.alternative.team, d.alternative_projection, schedule, windows,
+                )
+    for t in targets:
+        tw = team_window(schedule, t.team, windows)
+        note = tw.note() if tw is not None else None
+        if note:
+            t.notes.append(f"Schedule: {note}")
+    for p in proposals:
+        for e in p.receive:
+            tw = team_window(schedule, e.team, windows)
+            note = tw.note() if tw is not None else None
+            if note:
+                p.caveats.append(f"Schedule: {e.name} has a {note}.")
 
 
 def _annotate_proposals_with_replacement(

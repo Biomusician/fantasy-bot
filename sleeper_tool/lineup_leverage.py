@@ -49,6 +49,7 @@ class StartSitDecision:
     alternative_projection: float
     label: str
     games_left: int  # divisor for the per-week numbers renderers show
+    schedule_note: str | None = None  # schedule_window tiebreak, set by report_data when the two are near-equal
 
     @property
     def starter_weekly(self) -> float:
