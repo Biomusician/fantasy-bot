@@ -144,6 +144,61 @@ notes are hardcoded, not configurable via a UI.
     other on one move, it is labelled "Conflicted Move — Review
     Manually" with reasons for and against — never suppressed or
     re-scored.
+- **Intelligence and feedback layer** (2026-09-03; each its own module):
+  - *Player usage* (`nfl_usage`, `player_ids`, `role_analysis`): weekly
+    snap share, target share, carry share and opportunity share from
+    nflverse's `stats_player_week` / `stats_team_week` / `snap_counts`
+    releases (three small CSVs per season, cached daily), joined to Sleeper
+    ids through a documented crosswalk ladder (Sleeper's own gsis id →
+    DynastyProcess ids → nflverse name+position+team, active players only).
+    Windows: latest / last 2 / last 3 / season; byes and DNPs are absent
+    rows, never zeros. Before the season's first games the report says
+    "Role data begins after games are played" once and nothing per player.
+  - *Role trends* (`role_trends`): Role Rising / Surging / Stable / Falling
+    / Collapsing / Insufficient Role History from named thresholds over
+    those windows (two played games for a trend, three for a strong label),
+    each with its components spelled out ("snap share +14 pts over the last
+    2 games"). Crossed with the market's own direction into Role Ahead of
+    Market / Market Ahead of Role / Role and Market Confirm. Only notable
+    trends are written onto trade pieces, waiver targets and stashes.
+  - *Decision ledger and outcomes* (`decision_ledger`, `decision_outcomes`):
+    every recommendation is recorded once (fingerprinted, no same-day
+    duplicates) and later stamped with what Sleeper actually shows —
+    Completed / Partially Matched / Acquired by Another Manager / Still
+    Available / No Observed Action / Unable to Determine — never "Rejected".
+    1 / 3 / 6-week outcome facts describe value moves, lineup entry, roster
+    status and role movement; nothing is scored as a win.
+  - *Calibration lab* (`calibration`, `scripts/calibration_report.py`):
+    every rule in the decision layer counted eligible-vs-triggered on the
+    real run (Never Fires, Nearly Always Fires, Highly League-Concentrated,
+    Insufficient Sample), plus cross-signal double-count checks. A report,
+    never an auto-tuner.
+  - *Recommendation provenance* (`recommendation_provenance`): one evidence
+    card per recommendation — at most 3 For, 2 Against, 2 Context reasons,
+    each labelled by kind of evidence (Market, Projection, Role, Roster,
+    Replacement Market, Schedule, Opponent, League Economy, Portfolio,
+    Timing, Risk) and by source module — harvested from sentences the
+    decision layer already wrote, selected by a categorical priority order.
+  - *Action priority* (`action_priority`): Best Moves ordered by six
+    categorical dimensions compared lexicographically — Urgency,
+    Materiality, Perishability, Strategic fit, Evidence agreement, Cost —
+    with no weights and no scores; every action shows its priority line and
+    the dimension that decided its place is explainable.
+  - *FAAB strategy* (`faab_strategy`): Preserve / Normal / Aggressive /
+    Priority Spend postures from the tier, the position's replacement
+    scarcity, the role label, comparable free agents and urgency; bids are
+    stated as a share of the REMAINING budget with factual leverage ("All 9
+    other managers can outbid $8"), the budget is Sleeper's `waiver_budget`,
+    and a table-level pass flags claims that cannot all clear.
+  - *Watchlist* (`watchlist`): persisted near-miss items (a Moderate add
+    without a drop, a source split, an injured player who may return, a
+    blocked stash, an expensive trade target) that surface once as a New
+    Trigger when a named condition changes, and otherwise stay a count.
+  - *Signal health* (`signal_health`, `rankings/freshness`): every input
+    graded Fresh / Usable / Partial / Stale / Unavailable on source-specific
+    windows; an Unavailable family suppresses the features that need it,
+    a Stale one flags them; a fallback-served cache is never Fresh; the
+    stale-cache fallback has a ceiling.
 
 ## Setup
 
@@ -268,13 +323,27 @@ sleeper_tool/
   schedule_window.py                                          Next-3 / remaining / playoff windows, tiebreaks only
   buyer_board.py                                               Likely buyers for each sell-high piece
   recommendation_conflicts.py                                   "Conflicted Move" detection across signals
+  nfl_usage.py                                                   nflverse weekly usage + snap counts, cached daily (absent seasons cached too)
+  player_ids.py                                                   Sleeper → gsis/pfr id crosswalk ladder
+  role_analysis.py                                                 Per-player role windows (latest / last 2 / last 3 / season)
+  role_trends.py                                                    Role labels, components, role-vs-market cross
+  decision_ledger.py                                                 Fingerprinted recommendation records + Sleeper-observed outcomes
+  decision_outcomes.py                                                1 / 3 / 6-week descriptive outcome facts
+  calibration.py                                                       Rule-by-rule trigger diagnostics, cross-signal checks
+  recommendation_provenance.py                                          For / Against / Context evidence cards per recommendation
+  action_priority.py                                                     Six-dimension lexicographic Best Moves ordering
+  faab_strategy.py                                                        FAAB posture, share of remaining budget, leverage, affordability
+  watchlist.py                                                             Persisted near-miss items with deterministic triggers
+  signal_health.py                                                          Per-source freshness labels, feature suppression
+  rankings/freshness.py                                                      Source-specific fresh / usable / ceiling windows
   report_data.py                  Shared data layer for both report formats
   report.py                        Markdown renderer
   html_report.py                    HTML dashboard renderer
 
 scripts/            Weekly-run entry points (see above)
 tests/               pytest suite (synthetic, offline) for every module above
-data/                 SQLite DB, cached rankings, generated reports, run snapshots (gitignored — not meant to be committed)
+data/                 SQLite DB, cached rankings, generated reports, run snapshots, decision ledger, watchlist,
+                      calibration report (all gitignored — not meant to be committed)
 ```
 
 ## Testing
@@ -286,12 +355,17 @@ data/                 SQLite DB, cached rankings, generated reports, run snapsho
 Tests cover the valuation and trade-matching logic specifically (name
 normalization, format derivation, positional need-ranking, buy-low
 filtering including the age-curve and decline-vs-overreaction checks,
-value-tolerance matching, and team-status classification) and every
+value-tolerance matching, and team-status classification), every
 decision-layer module (thresholds at their exact boundaries, missing-data
-paths, pre-draft suppression, deterministic ordering) using synthetic
-data — they don't hit any live network endpoints (the NFL schedule tests
-use an inline CSV fixture and a temp cache), so they're fast and
-deterministic.
+paths, pre-draft suppression, deterministic ordering), the usage /
+role / ledger / calibration / provenance / priority / FAAB / watchlist /
+health layer (malformed nflverse rows, duplicate identities, traded
+players, byes, zero denominators, no current-season games, same-day
+reruns, stale and missing snapshots, pathological trigger rates,
+suppression), and a synthetic end-to-end league through both renderers —
+all with synthetic data and no live network endpoints (the NFL schedule
+and usage tests use inline CSV fixtures and a temp cache), so the suite
+is fast and deterministic.
 
 ## Known limitations
 
@@ -317,12 +391,16 @@ deterministic.
 - **Acceptance ratings are a bucketed heuristic** (Very Low → High), not a
   calibrated probability — they're built from real, if incomplete, signals
   (does the offer fill an actual roster hole, does it match the other
-  team's contender/rebuild timeline, how active a trader they are) but
-  there's no feedback loop yet that checks predicted ratings against which
-  trades actually got accepted.
-- **FAAB suggestions require the league to expose a `waiver_budget`
-  setting** — most of this tool's leagues don't use FAAB, so
-  `suggested_faab_pct` is `None` for them by design, not a missing feature.
+  team's contender/rebuild timeline, how active a trader they are). The
+  decision ledger now records every proposal and what Sleeper later shows,
+  but Sleeper's public API exposes no rejected or pending trade state, so
+  the ledger can say a trade Completed or that nothing was observed — it
+  cannot say an offer was turned down, and it never grades the rating.
+- **FAAB advice needs Sleeper's `waiver_type == 2` and a `waiver_budget`**;
+  a priority-order league gets a status note instead of a bid. Postures,
+  bands and guardrails (15% low-budget, 3 weeks to playoffs, 4 comparable
+  free agents, 60% of remaining for a Priority Spend, 2× the largest
+  winning bid after three observed bids) are named constants, not fitted.
 - **Yahoo integration** is not yet live (see above).
 - **The lineup optimizer is structural, not this-week.** The lineup that
   leverage, insurance, bye planning, clogs and previews build on excludes
@@ -365,7 +443,9 @@ deterministic.
 - **Source disagreement compares rank places, not values.** KTC dollars,
   FantasyPros ECR and RotoBaller points are never divided into each other;
   20 / 40 top-of-list positional places are the Disagreement / High
-  cutoffs, scaled down by 2% per place of depth (WR51 needs 40 raw places),
+  cutoffs, scaled down by 1% per place of depth (WR51 needs 30 raw places;
+  recalibrated 2026-09-03 from the measured gaps, see DECISIONS), Strong
+  Consensus is ≤3 scaled places and is the common case (~60% of views),
   and a rank beyond the other source's list depth is "not comparable",
   not a disagreement. In redraft the consensus pair IS the
   market-vs-projection pair, so one clause is shown. The FantasyPros
@@ -410,3 +490,30 @@ deterministic.
   is never a conflict.
 - **The nflverse schedule is fetched at most once a day** and falls back
   to the stale cache or to the ranking sources' bye weeks when unavailable.
+- **Usage data is regular-season, current-season, and offense-only.** Red
+  zone shares would need nflverse play-by-play (19 MB per season) and are
+  not fetched; a season with no published rows is cached as absent for a
+  day. Rookies and players missing from DynastyProcess and nflverse's
+  `players.csv` are unmatched (3 of 394 rostered on 2026-09-03), and a
+  name-only match is refused when the name is ambiguous.
+- **Role thresholds are first guesses.** Snap share +10 pts, target share
+  +5, carry share +8, opportunity share +6, +2 targets or +3 carries per
+  game, a 30-point one-week snap jump for Surging, 2× the threshold for a
+  strong component, 15-point snap stdev for Volatile — named constants,
+  chosen to be easy to tune, not fitted.
+- **The feedback loop records, it does not learn.** Ledger outcomes and
+  the calibration report are inputs to a person's decision; no threshold
+  reads them. Outcome windows start from `first_seen`, so a brand-new
+  ledger says nothing for a week.
+- **Provenance is harvested text.** A reason's category comes from which
+  module wrote the sentence (prefix rules) with a Market/trade-engine
+  default; a new annotation with an unrecognised prefix lands in the
+  default category until the map is extended.
+- **Action priority has no score.** Materiality is projected weekly
+  starter points where a preview exists (2 / 7 point bars) and the tier's
+  own claim otherwise; a move with no preview and no tier claim is
+  Marginal by construction.
+- **Signal health windows are per source family, first guesses** (rankings
+  fresh under 20h, usable under 3 days, ceiling 7 days; schedule and usage
+  longer; Sleeper tables daily) and a Stale source still produces output —
+  only Unavailable suppresses.
