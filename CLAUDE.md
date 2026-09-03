@@ -20,7 +20,7 @@ Individual stages: `scripts/pull_data.py` (sync only), `scripts/generate_report.
 .venv/Scripts/python.exe -m pytest tests/ -q
 ```
 
-366 tests, under two seconds, fully synthetic — no network. Keep it that way.
+850+ tests, about three seconds, fully synthetic — no network. Keep it that way.
 
 ## Conventions
 
@@ -54,9 +54,20 @@ are each one isolated file whose computation never lives in
 decision layer land on `WaiverTarget.notes`, `TradeProposal.rationale_*`/`caveats`, and
 `LadderStep.source_note`; renderers join them, never compute them.
 
-`nfl_schedule.py` is the one non-ranking external fetch (nflverse `games.csv`), cached in
-`data/rankings_cache/` for 24h; `schedule_window.py` and `streamer_planner.py` read it and
-degrade to the ranking sources' bye weeks without it.
+`nfl_schedule.py` (nflverse `games.csv`) and `nfl_usage.py` (nflverse weekly stats, team
+stats, snap counts, plus the DynastyProcess/nflverse id files) are the non-ranking external
+fetches, cached in `data/rankings_cache/` (24h; 7 days for the id files; an unpublished
+season is cached as an explicit absent marker). `player_ids.py` maps Sleeper ids to gsis
+ids; `role_analysis.py` / `role_trends.py` turn usage into role windows and labels.
+
+The intelligence layer added on 2026-09-03 follows the same one-file-per-capability rule:
+`decision_ledger.py` / `decision_outcomes.py` (feedback: recorded, never graded),
+`calibration.py` (rule diagnostics, never auto-tuning), `recommendation_provenance.py`
+(For/Against/Context cards), `action_priority.py` (lexicographic Best Moves ordering),
+`faab_strategy.py`, `watchlist.py`, `signal_health.py` + `rankings/freshness.py`.
+`report_views.py` holds render-only choices shared by both renderers (which phrasing of
+one fact keeps the visible slot, visible/collapsed splits) — never decision logic. Only
+`scripts/daily_run.py` persists the snapshot, ledger and watchlist, after a complete run.
 
 ## Constraints
 

@@ -1,4 +1,4 @@
-# Handoff — as of 2026-09-03
+# Handoff — as of 2026-09-03 (overnight intelligence & hardening tranche)
 
 To resume cold, start a session with:
 `Read CLAUDE.md and docs/HANDOFF.md, verify the current state, and continue from the
@@ -8,125 +8,111 @@ Regenerate this file with `/handoff`.
 
 ## Status
 
-**In sync with `origin/main`.** The second decision-layer tranche (12 capabilities, one
-commit each plus integration, fix-up, review-fix and docs commits, 18 in all) landed on
-2026-09-02/03 on top of `76e64ff` and was pushed on 2026-09-03 at Jonathan's request, so
-the next 9am ET automated run publishes it.
+**Local commits only — NOT pushed.** The overnight tranche of 2026-09-03 sits on `main`
+on top of `2d1f739` (the last pushed commit). Pushing is Jonathan's decision; the 9am ET
+automated run publishes whatever `origin/main` holds, so treat the push as a deploy.
+Before pushing, do the manual QC listed at the end of the tranche's completion report
+(the message that closed the session), or at minimum: open `data/dashboard.html`, read
+the Best Moves list and one league panel, and run `scripts/daily_run.py` once.
 
-What landed, in order (each its own module in `sleeper_tool/`, tests alongside):
-`replacement_value`, `source_disagreement`, `trade_opportunity_cost`, `nfl_schedule` +
-`streamer_planner`, `market_velocity`, `matchup_leverage` + `opponent_blocker`,
-`roster_consolidation`, `stash_board`, `schedule_window`, `buyer_board`,
-`recommendation_conflicts`. `report_data.py` orchestrates all of them; both renderers show
-everything (trade cards carry economics chips, conflict blocks and source/replacement
-notes; the waiver table carries `notes`; the collapsed "Roster context" holds the
-replacement market, stash board, buyer board, schedule windows). `docs/DECISIONS.md`
-records the reasoning behind every threshold and design choice of the tranche.
+What landed (each capability its own module under `sleeper_tool/`, tests alongside):
 
-A three-agent red-team review (value semantics; architecture/data flow; tests and real
-output) ran at the end of the tranche; the review-fix commit after `91c72cd` lists every
-confirmed finding and its fix (consolidations folded into the proposal list, rank-scaled
-source gaps, replacement level ignoring abandoned rosters, conflict rules tightened,
-buyer-board scoring, streamer sequences, ~2x faster report build). `docs/DECISIONS.md`
-has the reasoning.
+- **P0** trade-engine primitives extracted into `asset_value`, `trade_types`,
+  `roster_assets`, `trade_fit`, `trade_rating`, `trade_messages` (byte-identical output,
+  characterization tests first).
+- **P1/P2** `nfl_usage`, `player_ids`, `role_analysis`, `role_trends` — nflverse weekly
+  usage through a documented id crosswalk; role labels and the role-vs-market cross.
+  The 2026 feed is not published yet (a cached "absent" marker, one request per day);
+  the 2025 season is fully cached and was used to smoke-test the layer.
+- **P3/P4** `decision_ledger`, `decision_outcomes` — fingerprinted recommendations,
+  Sleeper-observed outcomes, 1/3/6-week descriptive facts. Persisted by `daily_run.py`
+  only, after a complete run, in `data/decision_ledger/ledger.json`.
+- **P5** `calibration` + `scripts/calibration_report.py` → `data/calibration_report.md`
+  (also written by `daily_run.py`).
+- **P6/P7** `recommendation_provenance`, `action_priority` — For/Against/Context cards
+  and the six-dimension lexicographic Best Moves ordering.
+- **P8/P9** `faab_strategy`, `watchlist` (persisted in `data/watchlist/watchlist.json`
+  by `daily_run.py` after a complete run).
+- **P10** `signal_health` + `rankings/freshness` — per-source labels, feature
+  suppression, stale-cache ceiling, trending-table replace fix.
+- **P11** both renderers restructured (hierarchy, Why now cards, progressive
+  disclosure, one vocabulary per fact via `report_views.py`, parity tests).
+- A seven-reviewer red team (strategy, double-counting, data reliability,
+  architecture, tests, UX, performance) and three fix batches; `docs/DECISIONS.md`
+  "After the seven-reviewer red team" records every behaviour that changed and why.
 
-Verified 2026-09-03: the suite passes in ~1.5s (the trade-primitive extraction added 23
-characterization tests in `tests/test_trade_primitives.py` that pin the moved functions'
-behaviour byte-for-byte), `generate_report.py` rebuilds all 9
-leagues from cache in ~7s (the memoized consolidation search is the largest new cost),
-dashboard renders with the hierarchy intact (Best Moves → alerts/matchup →
-trades/waivers/streamers/defensive add → collapsed context).
+`daily_run.py` was run twice end to end on 2026-09-03 (9/9 leagues): the second run
+recorded 0 new ledger entries and 0 new watchlist triggers, i.e. same-day reruns are
+idempotent. The suite is ~850+ synthetic tests in ~2.5s.
 
 ## Run and test
 
 ```
 .venv/Scripts/python.exe -m pytest tests/ -q          # no network
-.venv/Scripts/python.exe scripts/daily_run.py         # full sync + both reports + snapshot
-.venv/Scripts/python.exe scripts/generate_report.py   # Markdown from cache, no network*
+.venv/Scripts/python.exe scripts/daily_run.py         # sync + both reports + snapshot + ledger + watchlist + calibration
+.venv/Scripts/python.exe scripts/generate_report.py   # Markdown from cache*
 .venv/Scripts/python.exe scripts/generate_dashboard.py
+.venv/Scripts/python.exe scripts/calibration_report.py
 ```
-\*`generate_report.py` will fetch the nflverse schedule once a day if the cache in
-`data/rankings_cache/nflverse_schedule.json` is older than 24h (2 MB CSV, no auth).
-Output lands in `data/weekly_report.md` and `data/dashboard.html`. Only `daily_run.py`
-writes `data/run_snapshots/` (one file per UTC day, last 28 kept, only after a fully
-complete run) — market velocity needs three of them before it says anything.
+\*The report scripts fetch the nflverse schedule once a day and the nflverse usage
+assets once a day (a 404 for an unpublished season is cached for a day too). They never
+write the ledger, watchlist or snapshot — only `daily_run.py` does, and only after a
+complete run (every league synced and built, no ranking source missing or served from a
+failed re-fetch).
 
 ## Where things live
 
-- `sleeper_tool/config.py` — league identities. Everything else about a league is read
-  from the Sleeper API at runtime, on purpose.
-- `sleeper_tool/valuation.py` — format-aware per-player value; `weekly_projection`,
-  `games_remaining`, `composite_overall_rank`, `ValuationEngine.snapshots_for(fmt)`.
-- `sleeper_tool/trade_engine.py` — ~1450 lines. Candidate selection, rationale/clause
-  building, `_build_pick_target_proposal`, `generate_trade_proposals`. The primitives it
-  used to own were extracted on 2026-09-03 into six modules that all sit strictly BELOW
-  it (none imports it), so nothing outside the engine reaches for a private helper any
-  more: `asset_value.py` (currency + `value_for_currency`/`percentile_for_currency`/
-  `need_percentile`/`corroborated`), `trade_types.py` (`TradeProposal`, `DropCandidate`,
-  `OpponentFit`, `proposal_asset_key`), `roster_assets.py` (`untouchable_ids`,
-  `tradeable_pool`, `position_rosterable_count`), `trade_fit.py`
-  (`weakest_rosterable_percentile`, `piece_fits`, `recipient_need_fit`, `status_fit`),
-  `trade_rating.py` (`rate_acceptance`, `player_confidence`, `proposal_confidence`),
-  `trade_messages.py` (`generate_trade_message`). `pick_key` moved to `draft_picks.py`.
-  The engine re-exports what it imports, but every caller now imports from the new home.
-- `sleeper_tool/waiver_engine.py` — waiver targeting; `WaiverTarget.notes` is where every
-  decision-layer annotation goes now (reason stays the engine's own sentence).
-- `sleeper_tool/lineup_optimizer.py` — the ONE place that decides who starts. Structural
-  by default; `nfl_week=current_week, exclude_game_day_out=True` gives the this-week
-  lineup used by `matchup_leverage`, `opponent_blocker` and Move Impact. Totals are
-  rest-of-season projections: divide by `games_remaining(current_week)` for per-week.
-- `sleeper_tool/nfl_schedule.py` — the one non-ranking fetch; `Schedule.is_bye`,
-  `opponent`, `regular_weeks`. `schedule_window.py` derives playoff weeks from Sleeper's
-  `playoff_week_start` / `playoff_teams` / `playoff_round_type`.
-- `sleeper_tool/report_data.py` — the orchestration seam. `build_league_report_data` order:
-  proposals → clogs → pre-draft gate → free-agent pool (once; `require_projection=False`,
-  projected subset for lineup consumers) → replacement market → insurance → alerts/bye →
-  drops → leverage → replacement/source annotations → stash → matchup/defensive add →
-  economy → windows/schedule notes → playoff → statuses/ladders/consolidations/buyer
-  boards → previews/economics/streamers. Cross-league passes in
-  `build_weekly_report_data`: exposure → velocity → conflicts → priority actions →
-  snapshot/delta.
-- `docs/DECISIONS.md` — why each threshold and design choice is what it is.
+- `sleeper_tool/report_data.py` — the orchestration seam. `build_league_report_data`
+  order: rosters/status/proposals → shared structural lineup map → free-agent pool →
+  replacement market → statuses → consolidations → clogs → waivers (optimizer starter
+  ids and protected ids threaded in) → insurance (Scarce/Very Scarce positions only) →
+  alerts/bye → lineup leverage → drops (bench surplus excluded) → replacement/source
+  annotations (each note's side recorded in `note_directions`) → stash → matchup /
+  defensive add → economy → windows → playoff → ladders/buyer boards → previews
+  (never for Insurance rows) → economics → streamers → role trends → FAAB advice.
+  `build_weekly_report_data`: usage layer + crosswalk → signal health (before the
+  leagues, so Unavailable families suppress) → leagues → exposure → velocity → role
+  annotations → conflicts → provenance + priority keys → Best Moves
+  (`action_priority.rank_actions`) → snapshot/delta → watchlist → ledger.
+- `sleeper_tool/report_views.py` — render-only choices shared by both renderers
+  (which phrasing of one fact keeps the visible slot, visible/collapsed splits, the
+  health banner and state, the Best Moves ordering note).
+- `docs/DECISIONS.md` — why each threshold and design choice is what it is, including
+  everything the red team changed.
 
-## In flight
+## In flight / to verify next session
 
-Nothing half-implemented, nothing unpushed.
+- **Performance pass on `lineup_optimizer.py`** (mask tables, back-pointer DP, per-run
+  memo, `Storage.get_league` memo, cache-read memo) was delegated at the end of the
+  tranche; check `git log` for its commit and that the report is byte-identical.
+- **Test hardening** (documented constants pinned at absolute boundaries, NA parsing,
+  the `daily_run` persistence gate, partial-failure end-to-end, parity self-check,
+  duck-typing guard) was delegated at the same time; check for its commit and any
+  `xfail` it added (a `strict=True` xfail is a real bug to fix).
 
 ## Known problems
 
-- `build_league_report_data` is now a very long orchestration function; every capability
-  adds a block. A split into named stages (pool → lineup features → trade features →
-  cross-annotations) would help the next tranche.
-- Real-data early-season quirks: no Defensive Adds before NFL byes start (correct, but
-  the block renders nothing); a Superflex sell-high of a starting QB is a Conflicted Move
-  by construction (Very Scarce QB market); the stash board is all "Watch" on full rosters
-  with no clogs; streaming plans are all Hold until NFL byes begin.
-- Market velocity shows Insufficient History until three daily snapshots exist
-  (retention only just went to 28 days).
-- `get_or_fetch`'s stale-cache fallback still has no ceiling.
-- Acceptance ratings still have no feedback loop; usage/role data not yet integrated.
+- Week 1: no usage rows for 2026 yet, so every role line is suppressed and the health
+  block says so once; velocity needs three daily snapshots; no NFL byes yet, so no
+  defensive adds and all streamers Hold; Must Add is rare by design now (a need that
+  beats the weakest starter), so most waiver rows are Strong Add / Streamer at Preserve
+  bids in Abundant markets.
+- The sell-high signal is RotoBaller's rank arrow (fires on ~1/3 of the pool); the
+  value-match tolerance never sees replacement scarcity; simultaneous offers are each
+  previewed against the untouched roster; the waiver table has no capacity check.
+- `build_league_report_data` is ~320 lines of straight-line stages whose order matters.
+- Two `_roster_impact_note` phrasings (trade vs waiver) remain by design; the trade one
+  still reads Sleeper's set-lineup flag (it has no lineup in hand).
 
 ## Decisions that constrain future work
 
-- League settings are **always** read from the Sleeper API, never hardcoded — including
-  fantasy playoff weeks.
-- Every label is bucketed; no probabilities. Asset and roster economics stay separate.
-- The default lineup is STRUCTURAL; this-week lineups only where the question is this
-  week's game.
-- Snapshot `schema` is 2; additive fields don't bump it, a change of meaning does.
-- The test suite is fully synthetic and offline (schedule tests use inline CSV + a temp
-  cache dir). No scipy/pandas/Polars.
-- The nflverse schedule is fetched at most once a day unless forced.
-
-## Next actions
-
-1. **Check the first post-push daily run**: the "Since last run" section should be sparse,
-   the new sections should render for every drafted league, and no league should error.
-2. **Watch the first three daily snapshots**: market velocity turns on at the third, and
-   "Since last run" should stay sparse.
-3. **Split `build_league_report_data`** into named stages.
-4. **Ceiling on the stale-cache fallback** in `sleeper_tool/rankings/cache.py`.
-5. Usage/role data source (tracked separately; not part of this tranche by instruction).
+- League settings are always read from the Sleeper API, never hardcoded.
+- Every label is bucketed; no probabilities. Materiality is the gain a move makes.
+- Structural lineups by default; the optimizer's starters are "who starts" everywhere.
+- The feedback ledger records and never grades; calibration reports and never tunes.
+- `daily_run.py` alone persists state, only after a complete run (`is_complete_run` now
+  also refuses a run with a missing or fallback-served ranking source).
+- Tests are synthetic and offline; no scipy/pandas/Polars; stdlib first.
 
 ## Gotchas
 
@@ -134,9 +120,9 @@ Nothing half-implemented, nothing unpushed.
 - `data/yahoo_token.json` is a real credential. Don't read, print, or commit it.
 - Don't scrape KTC/FantasyPros/RotoBaller during development — use the cache.
 - The repo path has a space in it. Quote it in every shell command.
-- Pushing to `main` changes what the 9am ET automated run publishes. Treat push as a
-  deploy, not a save.
-- Bash heredocs with long Python bodies have failed to parse in this environment; write
-  patch scripts to the scratchpad and run them instead.
+- Bash heredocs with long Python bodies fail to parse in this environment; write patch
+  scripts to the scratchpad and run them instead.
+- `.claude/launch.json` (untracked, gitignored) serves `data/` on port 8765 for the
+  browser preview of `dashboard.html`.
 - The dashboard Artifact ("Fantasy Command Center") must be re-read before republishing
   from a new session, or the publish is refused.
