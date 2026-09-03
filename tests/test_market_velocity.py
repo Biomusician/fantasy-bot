@@ -42,7 +42,7 @@ def test_labels_and_boundaries():
     assert rapid.label == RAPIDLY_RISING and rapid.total_move == 0.15
     assert classify_velocity(_obs([100, 112, 110, 120, 130])).label == RISING  # 30% up with a dip: not "rapidly"
     assert classify_velocity(_obs([100, 120, 118, 130])).label == STABLE  # 30% up but never two consecutive up-days
-    assert classify_velocity(_obs([100, 90, 92, 91])).label == FALLING
+    assert classify_velocity(_obs([100, 94, 91, 92])).label == FALLING  # two consecutive down-days, a small bounce
     assert classify_velocity(_obs([100, 90, 85, 80])).label == RAPIDLY_FALLING
     assert classify_velocity(_obs([0, 0, 10])).label == INSUFFICIENT_HISTORY  # no base to measure from
 
