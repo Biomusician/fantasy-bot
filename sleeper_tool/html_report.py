@@ -28,6 +28,8 @@ from sleeper_tool.replacement_value import ABUNDANT, NORMAL, SCARCE, VERY_SCARCE
 from sleeper_tool.team_status import CONTENDER, MIDDLING, REBUILD
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
 from sleeper_tool.report_views import (
+    grouped_picks,
+    pick_group_label,
     ALL_SAME_PRIORITY_NOTE,
     NOTHING_URGENT_NOTE,
     shared_priority,
@@ -668,11 +670,10 @@ def _pick_opportunity_section(opp: PickOpportunity | None, market: ReplacementMa
     if opp is None or not opp.assessments:
         return ""
     items = "".join(
-        f'<li class="alert-item">{_chip(a.classification, _PICK_CHIP_KIND.get(a.classification, "neutral"))} '
-        f"<strong>{esc(a.display_name)}</strong>"
-        + (f' <span class="tabular muted">KTC {a.pick.value:,}</span>' if a.pick.value else "")
-        + f'<div class="drop-reasons">{esc(a.reason)}</div></li>'
-        for a in opp.assessments
+        f'<li class="alert-item">{_chip(classification, _PICK_CHIP_KIND.get(classification, "neutral"))} '
+        f"<strong>{esc(pick_group_label(group))}</strong>"
+        + f'<div class="drop-reasons">{esc(reason)}</div></li>'
+        for classification, reason, group in grouped_picks(opp.assessments)
     )
     weak = [u for u in opp.units if u.bottom_three]
     units_note = (
@@ -813,12 +814,15 @@ def _league_panel(data: LeagueReportData) -> str:
     else:
         alert_count = len(data.time_sensitive)
         has_high_alert = any(n.severity == "high" for n in data.time_sensitive)
+        # A section whose only content is "Nothing flagged." is a heading
+        # asking to be read for nothing — same empty-state discipline the
+        # drop list and roster clogs already follow.
         alerts_section = f"""
         <section class="panel-block">
-          <h3>Time-sensitive {f'<span class="badge-count badge-alert">{alert_count}</span>' if alert_count else ""}</h3>
+          <h3>Time-sensitive <span class="badge-count badge-alert">{alert_count}</span></h3>
           {_alerts_list(data.time_sensitive)}
         </section>
-        """
+        """ if alert_count else ""
         waivers_html = (
             f'<p class="empty-note">{esc(data.waivers_note)}</p>'
             if data.waivers_note

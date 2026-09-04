@@ -455,3 +455,27 @@ def health_banner(report) -> HealthBanner | None:
         label="Signals degraded" if health.degraded else "Signals: gaps",
         text=f"{lead} — " + "; ".join(bits) + ".",
     )
+
+
+def grouped_picks(assessments):
+    """Picks that share a classification and a reason, as one row each:
+    (classification, reason, [assessment, ...]) in the order they arrived.
+    Twelve bullets drawn from two sentences is not twelve facts."""
+    groups: dict[tuple[str, str], list] = {}
+    for a in assessments:
+        groups.setdefault((a.classification, a.reason), []).append(a)
+    return [(cls, reason, items) for (cls, reason), items in groups.items()]
+
+
+def pick_group_label(items) -> str:
+    """"2026 Late 1st x3 (KTC 4,107 each)" or the single pick's own name."""
+    names = [a.display_name for a in items]
+    values = {a.pick.value for a in items if a.pick.value}
+    if len(items) == 1:
+        value = f" (KTC {items[0].pick.value:,})" if items[0].pick.value else ""
+        return f"{names[0]}{value}"
+    same = sorted(set(names))
+    head = f"{same[0]} x{len(items)}" if len(same) == 1 else ", ".join(same)
+    if len(values) == 1:
+        return f"{head} (KTC {next(iter(values)):,} each)"
+    return head

@@ -28,6 +28,8 @@ from sleeper_tool.portfolio_exposure import PortfolioExposure
 from sleeper_tool.replacement_value import SCARCE, VERY_SCARCE, ReplacementMarket
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
 from sleeper_tool.report_views import (
+    grouped_picks,
+    pick_group_label,
     ALL_SAME_PRIORITY_NOTE,
     NOTHING_URGENT_NOTE,
     shared_priority,
@@ -516,9 +518,8 @@ _PICK_MARK = {"Strategic": "🔒", "Useful": "🟡", "Spendable": "🟢"}
 
 def _render_pick_opportunity(opp: PickOpportunity, market: ReplacementMarket | None = None) -> list[str]:
     lines = ["An annotation, never a veto.", ""]
-    for a in opp.assessments:
-        value = f", KTC {a.pick.value:,}" if a.pick.value else ""
-        lines.append(f"- {_PICK_MARK.get(a.classification, '')} **{a.classification}: {a.display_name}**{value} — {a.reason}")
+    for classification, reason, items in grouped_picks(opp.assessments):
+        lines.append(f"- {_PICK_MARK.get(classification, '')} **{classification}: {pick_group_label(items)}** — {reason}")
     lines.append("")
     weak = [u for u in opp.units if u.bottom_three]
     if weak:
@@ -655,17 +656,14 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     # this week's lineup lock.
     has_high_alert = any(n.severity == "high" for n in data.time_sensitive)
     alert_lines: list[str] = []
-    if data.time_sensitive:
-        for n in data.time_sensitive:
-            mark = _SEVERITY_MARK.get(n.severity, "")
-            alert_lines.append(f"- {mark} **{n.player_name}**: {n.note}")
-    else:
-        alert_lines.append("Nothing flagged.")
+    for n in data.time_sensitive:
+        mark = _SEVERITY_MARK.get(n.severity, "")
+        alert_lines.append(f"- {mark} **{n.player_name}**: {n.note}")
     alert_lines.append("")
-    alerts = (_heading("Time-sensitive"), alert_lines)
+    alerts = (_heading("Time-sensitive"), alert_lines) if data.time_sensitive else None
 
     sections: list[tuple[str, list[str]]] = []
-    if has_high_alert:
+    if has_high_alert and alerts is not None:
         sections.append(alerts)
 
     if data.matchup is not None:
@@ -723,7 +721,7 @@ def render_league_section(data: LeagueReportData) -> list[str]:
         # used elsewhere in this report.
         sections.append((_heading("Consider dropping"), _render_drop_candidates(data.drop_candidates)))
 
-    if not has_high_alert:
+    if not has_high_alert and alerts is not None:
         sections.append(alerts)
 
     for header, body in sections:
