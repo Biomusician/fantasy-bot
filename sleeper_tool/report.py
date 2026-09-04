@@ -28,6 +28,10 @@ from sleeper_tool.portfolio_exposure import PortfolioExposure
 from sleeper_tool.replacement_value import SCARCE, VERY_SCARCE, ReplacementMarket
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
 from sleeper_tool.report_views import (
+    ALL_SAME_PRIORITY_NOTE,
+    NOTHING_URGENT_NOTE,
+    shared_priority,
+    split_actions,
     CONFIDENCE_LEGEND,
     CONFIDENCE_MARK,
     MAX_IMPACT_DELTAS,
@@ -79,31 +83,52 @@ _KIND_LABEL = {
 
 
 def _render_priority_actions(actions: list[PriorityAction]) -> list[str]:
-    """Headline (what) → priority (how urgent) → Why now → Against, with
-    the old free-text detail demoted to a muted trailing line. A Conflicted
-    move is labelled, not led with."""
+    """Two lists, not one: what is time-boxed or materially changes the
+    lineup ("Do this week"), and the value plays that can wait. Within a
+    row: headline (what) → Why now → Against, with the old free-text detail
+    demoted to a muted trailing line. A Conflicted move is labelled, never
+    led with, and never counts as a to-do."""
     lines = ["## Best moves right now", ""]
     if not actions:
         lines.append("Nothing urgent across any league — hold.")
         lines.append("")
         return lines
+    do_now, optional = split_actions(actions)
+    shared = shared_priority(actions)
+
+    def rows(group: list[PriorityAction]) -> list[str]:
+        out: list[str] = []
+        for a in group:
+            v = action_view(a)
+            flag = " · ⚠️ **Conflicted**" if v.conflicted else ""
+            where = f" — *{v.league}*" if v.league else ""
+            out.append(f"- **[{_KIND_LABEL.get(a.kind, a.kind.capitalize())}]** {a.headline}{where}{flag}")
+            if v.priority and not shared:
+                out.append(f"  - Priority: {v.priority}")
+            if v.why_now:
+                out.append(f"  - Why now: {' · '.join(v.why_now)}")
+            if v.against:
+                out.append(f"  - Against: {' · '.join(v.against)}")
+            if v.conflict_note:
+                out.append(f"  - Conflict: {v.conflict_note}")
+            if v.detail:
+                out.append(f"  - _{v.detail}_")
+        return out
+
     lines.append(f"_{ORDERING_NOTE}_")
     lines.append("")
-    for a in actions:
-        v = action_view(a)
-        flag = " · ⚠️ **Conflicted**" if v.conflicted else ""
-        where = f" — *{v.league}*" if v.league else ""
-        lines.append(f"- **[{_KIND_LABEL.get(a.kind, a.kind.capitalize())}]** {a.headline}{where}{flag}")
-        if v.priority:
-            lines.append(f"  - Priority: {v.priority}")
-        if v.why_now:
-            lines.append(f"  - Why now: {' · '.join(v.why_now)}")
-        if v.against:
-            lines.append(f"  - Against: {' · '.join(v.against)}")
-        if v.conflict_note:
-            lines.append(f"  - Conflict: {v.conflict_note}")
-        if v.detail:
-            lines.append(f"  - _{v.detail}_")
+    if shared:
+        lines.append(f"_{ALL_SAME_PRIORITY_NOTE.format(priority=shared)}_")
+        lines.append("")
+    if do_now:
+        lines.append("**Do this week**")
+        lines.append("")
+        lines.extend(rows(do_now))
+        lines.append("")
+    if optional:
+        lines.append("**Optional value plays**" + ("" if do_now else f" — {NOTHING_URGENT_NOTE}"))
+        lines.append("")
+        lines.extend(rows(optional))
     lines.append("")
     return lines
 

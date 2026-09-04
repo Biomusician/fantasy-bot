@@ -21,7 +21,7 @@ import re
 from dataclasses import dataclass, field
 
 from sleeper_tool.lineup_optimizer import slot_label
-from sleeper_tool.action_priority import PriorityKey, priority_line  # noqa: F401  (re-exported for renderers)
+from sleeper_tool.action_priority import IMMEDIATE, MAJOR, MEANINGFUL, THIS_WEEK, PriorityKey, priority_line  # noqa: F401  (PriorityKey re-exported for renderers)
 from sleeper_tool.recommendation_conflicts import CONFLICTED
 from sleeper_tool.signal_health import DEGRADED_LABELS
 from sleeper_tool.trade_rating import player_confidence
@@ -165,6 +165,35 @@ MAX_WHY_NOW = 3
 MAX_AGAINST = 2
 WAIVER_LEAD_CLAUSES = 2
 ORDERING_NOTE = "Ordered by how soon each must be decided, then by how much it changes; ties by kind, then league."
+URGENT_URGENCIES = (IMMEDIATE, THIS_WEEK)
+MATERIAL_MATERIALITIES = (MAJOR, MEANINGFUL)
+NOTHING_URGENT_NOTE = "Nothing here is time-boxed to this week — these are value plays, kept for when you want one."
+ALL_SAME_PRIORITY_NOTE = "Every move below carries the same priority ({priority}), so the order is by kind and league."
+
+
+def split_actions(actions):
+    """(do_now, optional). A move is `do_now` when the priority layer says it
+    is time-boxed (Immediate / This Week) or materially changes the lineup
+    (Major / Meaningful), and it isn't a Conflicted move — a "review this
+    manually" item is never a to-do. Everything else is a value play the
+    reader can take or leave, which is what the eight identical
+    `Monitor · Marginal · Durable` rows were really saying."""
+    do_now, optional = [], []
+    for a in actions:
+        key = getattr(a, "priority", None)
+        timely = key is not None and (key.urgency in URGENT_URGENCIES or key.materiality in MATERIAL_MATERIALITIES)
+        (do_now if timely and not action_view(a).conflicted else optional).append(a)
+    return do_now, optional
+
+
+def shared_priority(actions) -> str:
+    """The one priority line every action shares, or "" when they differ —
+    a line repeated on every row discriminates nothing and belongs above
+    the list, once."""
+    lines = {priority_line(a.priority) for a in actions if getattr(a, "priority", None) is not None}
+    return lines.pop() if len(lines) == 1 and len(actions) > 1 else ""
+
+
 
 
 def clauses(text: str, sep: str = "; ") -> list[str]:

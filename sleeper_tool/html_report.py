@@ -28,6 +28,10 @@ from sleeper_tool.replacement_value import ABUNDANT, NORMAL, SCARCE, VERY_SCARCE
 from sleeper_tool.team_status import CONTENDER, MIDDLING, REBUILD
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
 from sleeper_tool.report_views import (
+    ALL_SAME_PRIORITY_NOTE,
+    NOTHING_URGENT_NOTE,
+    shared_priority,
+    split_actions,
     CONFIDENCE_LEGEND,
     CONFIDENCE_MARK,
     MAX_IMPACT_DELTAS,
@@ -917,14 +921,14 @@ _ACTION_KIND_META = {
 _ACTION_KIND_LABEL = {"defensive_add": "Block", "streamer": "Stream"}
 
 
-def _priority_action_row(a: PriorityAction) -> str:
+def _priority_action_row(a: PriorityAction, *, show_priority: bool = True) -> str:
     """Headline (what) → priority (how urgent) → Why now → Against, with
     the old free-text detail demoted to a muted trailing line. A Conflicted
     move gets a chip; it no longer swallows the start of the detail."""
     icon, kind = _ACTION_KIND_META.get(a.kind, ("", "neutral"))
     league_slug = _slug(a.league_name)
     v = action_view(a)
-    priority = f'<span class="action-priority muted">{esc(v.priority)}</span>' if v.priority else ""
+    priority = f'<span class="action-priority muted">{esc(v.priority)}</span>' if v.priority and show_priority else ""
     why = f'<span class="action-why"><b>Why now:</b> {esc(" · ".join(v.why_now))}</span>' if v.why_now else ""
     against = f'<span class="action-why"><b>Against:</b> {esc(" · ".join(v.against))}</span>' if v.against else ""
     conflict = f'<span class="action-why"><b>Conflict:</b> {esc(v.conflict_note)}</span>' if v.conflict_note else ""
@@ -968,6 +972,9 @@ def _provenance_block(prov, seen: set | None = None) -> str:
 
 
 def _priority_actions_section(actions: list[PriorityAction]) -> str:
+    """Two groups: what is time-boxed or materially changes the lineup, and
+    the value plays that can wait. A shared priority line is printed once
+    above the list rather than on every identical row."""
     if not actions:
         return """
         <section class="panel-block priority-block">
@@ -975,12 +982,24 @@ def _priority_actions_section(actions: list[PriorityAction]) -> str:
           <p class="empty-note">Nothing urgent across any league &mdash; hold.</p>
         </section>
         """
-    rows = "".join(_priority_action_row(a) for a in actions)
+    do_now, optional = split_actions(actions)
+    shared = shared_priority(actions)
+    shared_line = f'<p class="muted">{esc(ALL_SAME_PRIORITY_NOTE.format(priority=shared))}</p>' if shared else ""
+
+    def group(title: str, rows: list[PriorityAction], note: str = "") -> str:
+        if not rows:
+            return ""
+        sub = f' <span class="muted">&middot; {esc(note)}</span>' if note else ""
+        body = "".join(_priority_action_row(a, show_priority=not shared) for a in rows)
+        return f'<h4 class="action-group">{esc(title)}{sub}</h4><div class="action-list">{body}</div>'
+
     return f"""
     <section class="panel-block priority-block">
       <h3>Best moves right now</h3>
       <p class="muted">{esc(ORDERING_NOTE)}</p>
-      <div class="action-list">{rows}</div>
+      {shared_line}
+      {group("Do this week", do_now)}
+      {group("Optional value plays", optional, "" if do_now else NOTHING_URGENT_NOTE)}
     </section>
     """
 
