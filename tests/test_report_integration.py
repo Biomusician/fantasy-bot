@@ -275,7 +275,7 @@ def test_both_renderers_show_faab_health_and_diagnostics():
     for sentinel in (
         "$20 · Aggressive", "Suggested bid uses approximately 25% of remaining budget ($20 of $80)", "Only two managers can outbid 20",
         "RotoBaller · Stale · 3.0d · 400 rows", "RotoBaller is 3.0d old", NO_HISTORY_NOTE, "391/394 matched",
-        "Completed 1", "L: X — promoted", "4 more near-miss item(s) still watched",
+        "Completed 1", "L: X — promoted", "4 more item(s) watched with nothing new to say",
     ):
         assert sentinel in md, sentinel
         # The HTML renders the same facts as chips, so check the tokens rather than the joined line.

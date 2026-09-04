@@ -93,6 +93,7 @@ from sleeper_tool.waiver_engine import INSURANCE, MUST_ADD, STRONG_ADD, TimeSens
 from sleeper_tool.watchlist import Watchlist, load_watchlist
 from sleeper_tool.watchlist import candidates as watch_candidates
 from sleeper_tool.watchlist import render_lines as watchlist_lines
+from sleeper_tool.watchlist import render_sections as watchlist_sections
 from sleeper_tool.watchlist import update as update_watchlist
 
 logger = logging.getLogger(__name__)
@@ -211,6 +212,7 @@ class WeeklyReportData:
     watchlist: Watchlist | None = None  # this run's updated watchlist (in memory); daily_run persists it after a complete run
     watchlist_new: list[str] = field(default_factory=list)  # New Trigger lines only
     watchlist_watching: int = 0
+    watchlist_sections: dict[str, list[str]] = field(default_factory=dict)  # Triggered / Invalidated / Strengthened / Weakened
     ledger: Ledger | None = None  # this run's merged + observed ledger (in memory); daily_run persists it after a complete run
     ledger_new: int = 0  # recommendations first recorded this run
     ledger_summary: dict[str, dict[str, int]] = field(default_factory=dict)
@@ -1232,6 +1234,7 @@ def _attach_watchlist(report: WeeklyReportData, now: dt.datetime) -> None:
         found = [c for ld in ld_by_league.values() for c in watch_candidates(ld, report, role_trends=ld.role_trends)]
         report.watchlist = update_watchlist(existing, found, now=now, ld_by_league=ld_by_league)
         report.watchlist_new, report.watchlist_watching = watchlist_lines(report.watchlist)
+        report.watchlist_sections = {k: v for k, v in watchlist_sections(report.watchlist).items() if v}
     except Exception:
         logger.exception("Watchlist skipped")
 

@@ -444,7 +444,7 @@ def _trade_card(
 
 def _waiver_table(
     targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | None = None, conflicts: list[Conflict] | None = None,
-    faab: dict | None = None,
+    faab: dict | None = None, provenance: dict | None = None,
 ) -> str:
     if not targets:
         return '<p class="empty-note">No standout waiver targets this week.</p>'
@@ -477,11 +477,15 @@ def _waiver_table(
         chips_html = f'<div class="row-chips">{chips}</div>' if chips else ""
         # Everything the engine wrote that isn't the lead clause lives one
         # click away instead of turning the cell into a 600-character wall.
+        # Plus the two explanation rows provenance keeps off the capped
+        # lists: what the paired drop is, and what would make this wrong.
+        prov = (provenance or {}).get((WAIVER, t.player_id))
+        extras = [r.text for r in ((prov.why_drop, prov.invalidation) if prov is not None else ()) if r is not None]
         details = (
             '<details class="row-details"><summary>Details</summary>'
-            + "".join(f'<div class="impact-inline">{esc(d)}</div>' for d in row.details)
+            + "".join(f'<div class="impact-inline">{esc(d)}</div>' for d in [*row.details, *extras])
             + "</details>"
-            if row.details
+            if row.details or extras
             else ""
         )
         rows.append(
@@ -818,7 +822,7 @@ def _league_panel(data: LeagueReportData) -> str:
         waivers_html = (
             f'<p class="empty-note">{esc(data.waivers_note)}</p>'
             if data.waivers_note
-            else _waiver_table(data.waiver_targets, data.waiver_impacts, data.conflicts, data.faab)
+            else _waiver_table(data.waiver_targets, data.waiver_impacts, data.conflicts, data.faab, data.provenance)
         )
         if data.faab_note and not data.waivers_note and data.waiver_targets:
             waivers_html += f'<p class="muted">{esc(data.faab_note)}</p>'
@@ -1140,10 +1144,14 @@ def _diagnostics_section(report: WeeklyReportData) -> str:
         rows = "".join(f"<li>{esc(f.describe())}</li>" for f in observed[-MAX_DIAGNOSTIC_LINES:])
         more = f'<li class="muted">… {len(observed) - MAX_DIAGNOSTIC_LINES} earlier facts not shown</li>' if len(observed) > MAX_DIAGNOSTIC_LINES else ""
         parts.append(f'<h4>Outcome facts</h4><p class="muted">Descriptive; the value moves are the sources\', not a verdict.</p><ul class="alert-list">{rows}{more}</ul>')
-    if report.watchlist_new:
-        rows = "".join(f"<li>{_chip('New Trigger', 'accent')} {esc(line)}</li>" for line in report.watchlist_new)
+    if report.watchlist_sections or report.watchlist_new:
+        rows = "".join(
+            f"<li>{_chip(section, 'accent')} {esc(line)}</li>"
+            for section, lines_ in report.watchlist_sections.items()
+            for line in lines_
+        ) or "".join(f"<li>{_chip('New Trigger', 'accent')} {esc(line)}</li>" for line in report.watchlist_new)
         if report.watchlist_watching:
-            rows += f'<li class="muted">{report.watchlist_watching} more near-miss item(s) still watched</li>'
+            rows += f'<li class="muted">{report.watchlist_watching} more item(s) watched with nothing new to say</li>'
         parts.append(f'<h4>Watchlist</h4><ul class="alert-list">{rows}</ul>')
     if not parts:
         return ""

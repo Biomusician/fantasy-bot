@@ -434,7 +434,7 @@ _TIER_MARK = {"Must Add": "🔴", "Strong Add": "🟠", "Moderate": "🟡", "Spe
 
 def _render_waiver_targets(
     targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | None = None, conflicts: list[Conflict] | None = None,
-    faab: dict | None = None,
+    faab: dict | None = None, provenance: dict | None = None,
 ) -> list[str]:
     """The table keeps its columns; the Why cell keeps the engine's own
     lead clauses plus short chips. Notes, FAAB sizing and source/schedule
@@ -461,9 +461,15 @@ def _render_waiver_targets(
             f"| {mark} {t.priority_tier} | {t.name} | {t.position or '?'} | {t.team or '-'} | {drop} | "
             f"{t.horizon} | {bid_cell(advice, t.suggested_faab_pct)} | {row.lead}{chips} |"
         )
-        if row.details:
+        # The two explanation rows the provenance layer keeps off the
+        # capped lists: what the paired drop actually is, and what would
+        # make this read wrong.
+        prov = (provenance or {}).get((WAIVER, t.player_id))
+        extras = [r.text for r in ((prov.why_drop, prov.invalidation) if prov is not None else ()) if r is not None]
+        if row.details or extras:
             details.append(f"**{t.name}**")
             details.extend(f"- {d}" for d in row.details)
+            details.extend(f"- {d}" for d in extras)
             details.append("")
     if details:
         lines.append("")
@@ -701,7 +707,7 @@ def render_league_section(data: LeagueReportData) -> list[str]:
     waiver_lines = (
         [f"_{data.waivers_note}_", ""]
         if data.waivers_note
-        else _render_waiver_targets(data.waiver_targets, data.waiver_impacts, data.conflicts, data.faab) + [""]
+        else _render_waiver_targets(data.waiver_targets, data.waiver_impacts, data.conflicts, data.faab, data.provenance) + [""]
     )
     if data.faab_note and not data.waivers_note and data.waiver_targets:
         waiver_lines.extend([f"_{data.faab_note}_", ""])
@@ -802,12 +808,17 @@ def _render_diagnostics(report: WeeklyReportData) -> list[str]:
         if len(observed) > MAX_DIAGNOSTIC_LINES:
             body.append(f"- … {len(observed) - MAX_DIAGNOSTIC_LINES} earlier facts not shown")
         body.append("")
-    if report.watchlist_new:
-        body.append("**Watchlist:**")
+    if report.watchlist_sections or report.watchlist_new:
+        body.append("**Watchlist** (each item is a thesis; this is what happened to it since it was written):")
         body.append("")
-        body.extend(f"- 🆕 {line}" for line in report.watchlist_new)
+        for section, lines_ in report.watchlist_sections.items():
+            body.append(f"_{section}_")
+            body.extend(f"- {line}" for line in lines_)
+            body.append("")
+        if not report.watchlist_sections:
+            body.extend(f"- 🆕 {line}" for line in report.watchlist_new)
         if report.watchlist_watching:
-            body.append(f"- {report.watchlist_watching} more near-miss item(s) still watched")
+            body.append(f"- {report.watchlist_watching} more item(s) watched with nothing new to say")
         body.append("")
     if not body:
         return []

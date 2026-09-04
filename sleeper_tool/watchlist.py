@@ -88,6 +88,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from sleeper_tool.formatting import ordinal_pct
 from sleeper_tool.asset_value import need_percentile
 from sleeper_tool.market_velocity import DIRECTIONAL_MIN_MOVE, FALLING, RAPIDLY_FALLING, RAPIDLY_RISING, RISING, STABLE
 from sleeper_tool.opponent_blocker import open_roster_spots
@@ -588,7 +589,7 @@ def _where_phrase(m: dict[str, Any]) -> str:
 
 def _percentile_phrase(m: dict[str, Any]) -> str:
     p = m.get("percentile")
-    return f"{p:.0f}th percentile" if p is not None else "percentile unknown"
+    return ordinal_pct(p) if p is not None else "percentile unknown"
 
 
 def thesis_text(kind: str, m: dict[str, Any]) -> str:

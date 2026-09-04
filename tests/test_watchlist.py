@@ -554,10 +554,10 @@ def test_thesis_text_names_the_evidence_for_every_kind():
             "disagreement_gap": 25}
     assert thesis_text(ROLE_RISING_SHORT, base) == "usage rising (Role Rising), Moderate waiver row, value flat (Stable), roster full, no drop candidate"
     assert thesis_text(WAIVER_NO_DROP, base) == "Moderate add, roster full, no drop candidate, usage rising (Role Rising), value flat (Stable), replacement market Scarce"
-    assert thesis_text(STASH_BLOCKED, base) == "stash-worthy at the 62th percentile, roster full, no drop candidate, value flat (Stable), usage rising (Role Rising)"
+    assert thesis_text(STASH_BLOCKED, base) == "stash-worthy at the 62nd percentile, roster full, no drop candidate, value flat (Stable), usage rising (Role Rising)"
     assert thesis_text(VELOCITY_NEAR, base) == "value moved +6% against a 8% bar (Stable), usage rising (Role Rising), not on my roster"
     assert thesis_text(SOURCE_DISAGREEMENT, base) == "sources split by 25 places, not on my roster, value flat (Stable)"
-    assert thesis_text(TRADE_PRICE_HIGH, base) == "priced as Overpay (ratio 1.30), 62th percentile, value flat (Stable)"
+    assert thesis_text(TRADE_PRICE_HIGH, base) == "priced as Overpay (ratio 1.30), 62nd percentile, value flat (Stable)"
     assert thesis_text(INJURED_MAY_RETURN, base) == "injury Out, not on my roster, usage rising (Role Rising), value flat (Stable)"
     # Missing inputs are named as unknown, never dropped silently.
     assert thesis_text(ROLE_RISING_SHORT, {}) == "no role read, not on the waiver board, value unmeasured, roster full, no drop candidate"
