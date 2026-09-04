@@ -513,7 +513,9 @@ def build_league_report_data(
     time_sensitive = get_time_sensitive_notes(storage, my_roster, current_week=current_week)
     urgent_add_ids: set[str] = set()  # waiver targets that answer a bye hole (FAAB posture reads this)
     note_directions: dict[tuple[str, str], str] = {}  # (player_id, note) -> the side the note argues for
-    bye_collision = plan_bye_collisions(my_roster, current_week=current_week, lineup=lineup) if lineup is not None else None
+    # Pre-draft, the roster is keepers and placeholders: a week-5 bye hole is
+    # a draft-day fact, not a waiver move, and "drop" means "don't keep".
+    bye_collision = plan_bye_collisions(my_roster, current_week=current_week, lineup=lineup) if lineup is not None and not pre_draft else None
     if bye_collision is not None:
         # Next week's hole is this week's waiver move; further out is a heads-up.
         severity = "medium" if bye_collision.week == (current_week or 0) + 1 else "low"
@@ -533,7 +535,13 @@ def build_league_report_data(
     # Bench surplus is trade material by the report's own reading; the
     # same player can't also be a drop candidate two sections later.
     surplus_ids = frozenset(s.entry.player_id for s in lineup_leverage.bench_surplus) if lineup_leverage is not None else frozenset()
-    drop_candidates = identify_drop_candidates(my_roster, status_result.status, exclude_ids=proposed_give_ids | surplus_ids)
+    # lineup_optimizer owns who starts; a player it starts is never a drop,
+    # whatever Sleeper's set-lineup flag says about him.
+    starter_ids = frozenset(lineup.starter_ids) if lineup is not None else frozenset()
+    drop_candidates = (
+        identify_drop_candidates(my_roster, status_result.status, exclude_ids=proposed_give_ids | surplus_ids | starter_ids)
+        if not pre_draft else []
+    )
     # A clog that's already a drop candidate is surfaced there; listing him
     # twice under two headings is noise, not extra information.
     drop_ids = {d.entry.player_id for d in drop_candidates}

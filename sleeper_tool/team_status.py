@@ -186,7 +186,10 @@ def get_valued_picks_by_roster(
         traded_picks=traded_picks,
         draft_rounds=int(draft_rounds),
         seasons=relevant_seasons(season),
-        strength_by_roster=strengths,
+        # estimate_tier wants a league-relative rank (0-100, 100 = strongest),
+        # not the raw starter-percentile average: every real lineup averages
+        # 70-90 within position, which read every pick as "Late".
+        strength_by_roster={rid: _rank_percentile(strengths, rid) for rid in strengths},
     )
     return value_owned_picks(owned, engine.ktc_snapshot, is_superflex=any_roster.fmt.is_superflex)
 

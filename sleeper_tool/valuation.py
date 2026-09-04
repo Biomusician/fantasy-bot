@@ -134,18 +134,19 @@ def derive_league_format(league_data: dict) -> LeagueFormat:
     # entirely (as if they needed zero players) badly undercounts depth
     # need in the median real league, which runs 2-3 FLEX spots. Distribute
     # each FLEX slot's demand evenly across the positions eligible to fill
-    # it (RB/WR/TE for FLEX; every core position for SUPER_FLEX) rather
-    # than attributing it to none of them — still an approximation (real
-    # demand depends on which position actually gets started there most
-    # weeks), but a floor closer to reality than counting it as zero.
+    # it (RB/WR/TE for FLEX) rather than attributing it to none of them —
+    # still an approximation (real demand depends on which position actually
+    # gets started there most weeks), but a floor closer to reality than
+    # counting it as zero. A SUPER_FLEX slot is QB demand: nobody starts a
+    # TE there when a QB is available, and splitting it four ways made a
+    # third QB in Superflex read as "buried" surplus.
     flex_count = roster_positions.count("FLEX")
     if flex_count:
         for pos in ("RB", "WR", "TE"):
             starter_slots[pos] = starter_slots.get(pos, 0.0) + flex_count / 3
     superflex_count = roster_positions.count("SUPER_FLEX")
     if superflex_count:
-        for pos in CORE_SKILL_POSITIONS:
-            starter_slots[pos] = starter_slots.get(pos, 0.0) + superflex_count / len(CORE_SKILL_POSITIONS)
+        starter_slots["QB"] = starter_slots.get("QB", 0.0) + superflex_count
     return LeagueFormat(
         qb_format="SF" if is_sf else "1QB",
         ppr=float(scoring.get("rec", 0) or 0),
