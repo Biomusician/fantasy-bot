@@ -336,16 +336,21 @@ def _economics_chips(econ: TradeEconomics | None) -> str:
 def _conflict_block(conflict: Conflict | None, reasons_for: list[str], reasons_against: list[str]) -> str:
     if conflict is None:
         return ""
+    rows = ""
+    if reasons_for:
+        rows += f"<li><b>For:</b> {esc('; '.join(reasons_for))}</li>"
+    if reasons_against:
+        rows += f"<li><b>Against:</b> {esc('; '.join(reasons_against))}</li>"
     return (
-        f'<div class="caveats conflict-block"><span class="caveat-label">{_chip(esc(CONFLICTED), "negative")}</span><ul>'
-        f"<li><b>For:</b> {esc('; '.join(reasons_for) or 'see Why now above')}</li>"
-        f"<li><b>Against:</b> {esc('; '.join(reasons_against) or 'see Why now above')}</li></ul></div>"
+        f'<div class="caveats conflict-block"><span class="caveat-label">{_chip(esc(CONFLICTED), "negative")}</span>'
+        + (f"<ul>{rows}</ul>" if rows else "")
+        + "</div>"
     )
 
 
 def _rationale_items(texts: list[str]) -> str:
     if not texts:
-        return '<li class="muted">see Why now above</li>'
+        return ""
     return "".join(f"<li>{esc(t)}</li>" for t in texts)
 
 

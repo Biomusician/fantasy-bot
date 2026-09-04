@@ -407,12 +407,17 @@ def _render_trade_proposal(
         lines.extend(context)
         lines.append("")
     if conflict is not None:
+        # A side with nothing left to say after the card above is omitted:
+        # "see Why now above" under a heading is a row that costs a line
+        # and carries no fact.
         lines.append(f"⚠️ **{CONFLICTED}**")
-        lines.append(f"- For: {'; '.join(conflict_for_) or 'see Why now above'}")
-        lines.append(f"- Against: {'; '.join(conflict_against) or 'see Why now above'}")
+        if conflict_for_:
+            lines.append(f"- For: {'; '.join(conflict_for_)}")
+        if conflict_against:
+            lines.append(f"- Against: {'; '.join(conflict_against)}")
         lines.append("")
-    lines.extend(_bullets("Why it works for me:", mine, empty="see Why now above"))
-    lines.extend(_bullets(f"Why {p.target_username} plausibly says yes:", theirs, empty="see Why now above"))
+    lines.extend(_bullets("Why it works for me:", mine))
+    lines.extend(_bullets(f"Why {p.target_username} plausibly says yes:", theirs))
     if acceptance:
         lines.append("")
         lines.extend(_bullets("Acceptance factors:", acceptance))
