@@ -385,12 +385,31 @@ is fast and deterministic.
   season totals (its TE-premium column equals PPR in every cached file), so
   a league's projection is interpolated between the two by its PPR value;
   half PPR is halfway, not standard (fixed 2026-09-03).
-- **Multi-FLEX formats** (3-4 FLEX spots) aren't fully accounted for in
-  positional-need detection, which weighs each position's single best
-  player rather than full flex-slot demand. The depth-need signal
-  (`identify_depth_needs`) has the same gap — it counts exact QB/RB/WR/TE
-  slots from `roster_positions` but doesn't attribute FLEX/SUPER_FLEX
-  slots to any position, so it's a floor on real demand, not the total.
+- **Multi-FLEX formats** (3-4 FLEX spots) are approximated: each FLEX slot
+  spreads its demand evenly across RB/WR/TE, and a SUPER_FLEX slot counts
+  entirely as QB demand (nobody starts a TE there when a QB is available).
+  Real demand depends on which position actually gets started in the slot
+  most weeks, so this is a floor, not the total. `identify_needs` also
+  applies a depth term — a position already carrying its slots plus two
+  spare rosterable bodies is not a need, however weak its best player ranks
+  against the other positions.
+- **Buying a need is not something the trade engine can do.** Buy-low
+  targets require a "down" trend arrow, so a roster whose starters at a
+  position project below that league's own waiver wire gets no proposal to
+  fix it; the waiver table will suggest the best free agent there instead.
+  A rebuild's veterans are only shopped when the arrow says "rising".
+- **Bye planning looks 4 weeks ahead** (streaming 3), so a bye stack in
+  week 7 or 13 is invisible until it is close — sometimes until after the
+  league's trade deadline, when only a trade could have fixed it.
+- **Keeper leagues get no keeper logic.** A pre-draft keeper league is
+  analysed as a roster: the report offers trades and a lineup, and says
+  nothing about which players to keep.
+- **The 2025 role-signal replay is not reassuring.** On that season, the
+  rising labels preceded a loss of opportunity share more often than the
+  Stable label did (`data/backtest_report.md`, written by
+  `scripts/backtest_report.py`). It is the same season the thresholds were
+  built against, so the replay describes rather than validates — but role
+  labels should be read as "usage changed", never as "buy him".
 - **Acceptance ratings are a bucketed heuristic** (Very Low → High), not a
   calibrated probability — they're built from real, if incomplete, signals
   (does the offer fill an actual roster hole, does it match the other

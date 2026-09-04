@@ -3,6 +3,115 @@
 Consequential choices and why. Newest first. The module docstrings carry the
 mechanics; this file carries the reasoning that isn't obvious from the code.
 
+## 2026-09-04 — Night build: replay, thesis tracking, lineup decisions, and a red-team pass
+
+Ten reviewer agents read the real report end to end (three "would a skilled
+manager laugh at this" passes, two false-negative hunts, five personas). What
+follows is what their findings changed, and the reasoning that is not obvious
+from the diffs.
+
+### New capabilities
+
+- **Historical replay is descriptive, and says so.** `historical_replay.py`
+  replays 2025 role signals week by week from truncated usage (a future row
+  cannot reach the labeller), then reads the following three weeks purely to
+  describe what happened. Forward outcomes are named by what the share DID
+  ("share up", "share down", "no games"), never by whether the label was
+  vindicated — "reverted" means opposite things for Surging and Collapsing.
+  The 2025 season is the same one the thresholds were smoke-tested on, so the
+  report validates nothing; it describes. Its headline finding is recorded
+  under "Known problems" in HANDOFF, not acted on: on that season the rising
+  labels preceded a share LOSS three to four times more often than Stable did,
+  and the well-behaved part is the conservative one-week structural rule.
+- **The watchlist tracks a thesis, not a trigger.** Every item now carries the
+  reason it was written in evidence terms and is re-evaluated each run into
+  Triggered / Invalidated / Strengthened / Weakened / Unchanged, with named
+  invalidation conditions per kind. Invalidation outranks promotion on the
+  same run: a Must Add whose role collapsed is Invalidated, not Triggered.
+- **This week's decisions is a separate section from lineup leverage.**
+  `lineup_decisions.py` answers "what needs a decision before kickoff" (set-
+  lineup mismatches, toss-ups with what-if deltas, questionable starters,
+  holes, FLEX/Superflex explanations) on the week lineup with byes and outs
+  applied. Lineup leverage keeps only the structural fact (bench surplus,
+  which is trade material). The same close call was previously told twice.
+- **Cross-league asymmetry** names the league where a widely-held player is
+  cheapest to move against the one where he is dearest. It is a portfolio
+  fact for the trade engine to use, never a sell signal.
+- **Recommendation search** (`recommendation_search.py`, `scripts/search_recommendations.py`)
+  queries a built report; every hit is a sentence the report already holds.
+
+### Defects the red team found, and the rules that replaced them
+
+- **Every draft pick in every league read "Late".** `estimate_tier` wants a
+  league-relative rank; it was being handed the raw starter-percentile
+  average, which is 65-95 for every real roster. Bottom-third teams' own
+  firsts are Early picks and are priced roughly double a Late 1st, so every
+  pick-inclusive offer was mispriced.
+- **A SUPER_FLEX slot is QB demand.** Splitting it evenly across four
+  positions made a third QB in a Superflex league read as "buried" surplus
+  and a fourth QB in a 1QB league read as the roster's top need.
+- **A position already carrying its slots plus two spare bodies is not a
+  need.** Ranking four positions against each other has to put one last;
+  without a depth term that made a four-deep QB room "need #1", which is how
+  a fifth QB became a Strong Add at 19% of budget.
+- **K and DEF are slots, not assets.** Offering the roster's only kicker
+  manufactured an empty required slot the optimizer then priced as a
+  "Major Lineup Cost" — a conflict, a chip and a Best Move, all artefacts of
+  the give side. IR/PUP players are off the give side for the same reason.
+- **An optimizer starter is never a drop candidate, and never a paired
+  waiver drop across positions either.** The same-position veto was already
+  there; once earlier rows consumed the same-position bench bodies, the
+  fallback reached for whoever was cheapest anywhere, pairing a 6th-
+  percentile QB add with dropping a 76th-percentile TE.
+- **A youth premium is not a market overreaction.** The dynasty-minus-redraft
+  gap is the resting state for a first- or second-year player, so buy-low
+  fired on youth, not on dips.
+- **In redraft, value IS weekly production.** A buy-low target the league's
+  own wire already out-projects is not a trade; dynasty keeps its
+  developmental buys, where the price is the future rather than this week.
+- **An Abundant market caps a waiver tier.** An add that beats no starter
+  into a market where comparable production sits on the wire every week is
+  depth by definition, however good his rank. Three backup QBs in a 1QB
+  league at 8% of budget each was this rule missing.
+- **Preserve does not bid the tier's own floor.** "Preserve budget" at a
+  Strong Add's low bound is 8% of budget — eight times the largest winning
+  bid in some of these leagues. It bids the speculative floor.
+- **A sell-high never ships an optimizer starter unless something coming back
+  can start.** Otherwise it is a lineup hole bought with a bench piece.
+- **A trade that drops my own team status is an Against.** The impact block
+  printed "contender → middling" as a neutral line while the card carried no
+  argument against the move.
+- **Waivers see the wire, not just Sleeper's trending list.** The trending
+  endpoint is platform-wide and name-driven; the best projected free agent in
+  THIS league is often not on it. Each position's projection-best free agent
+  is now a candidate when he out-projects my weakest starter there, and
+  arrives with no trend count — a fact about the wire, not the player.
+- **The buyer board is built before the proposals.** Building proposals first
+  meant a sell-high card could name one counterparty while the board named a
+  different Strong Fit two sections down.
+- **Offers the engine itself rates Very Low are not printed** unless they are
+  all a league has. The engine expecting a refusal is the answer.
+
+### Presentation rules that came out of the persona reviews
+
+- **Best moves is two lists.** Time-boxed or materially lineup-changing moves
+  are "Do this week"; everything else is "Optional value plays". A Conflicted
+  move is never a to-do. When every row shares one priority line, it is
+  printed once above the list rather than on every row, because a line every
+  row shares discriminates nothing.
+- **One human name per slot.** `slot_label` in `lineup_optimizer` is the only
+  place a Sleeper token becomes prose ("SUPER_FLEX" → "Superflex").
+- **A percentile gap is "percentile pts", never "points".** The same card
+  carries fantasy points; two scales under one word was the tell. A gap that
+  rounds to zero is "comparable", not an upgrade, and never a reason for.
+- **Facts printed once.** The schedule-window sentence goes at the top of the
+  report when every league shares it; draft-capital picks that share a
+  classification and a reason are one row; an empty Time-sensitive section is
+  not rendered.
+- **Waiver rows carry "why this drop" and "what could invalidate this"** from
+  `Provenance.extras`, below the capped For/Against lists rather than
+  competing with them.
+
 ## 2026-09-03 — Intelligence & hardening tranche (usage, feedback, calibration, arbitration)
 
 - **The trade engine's primitives were extracted before anything else touched
