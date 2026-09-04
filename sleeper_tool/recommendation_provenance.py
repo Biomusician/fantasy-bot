@@ -234,6 +234,7 @@ _CONTAINS_CATEGORIES: tuple[tuple[str, str, str], ...] = (
 # a trade and "not an immediate upgrade" as evidence for one.
 _CONTEXT_ONLY_MARKERS = (
     "not an immediate upgrade",
+    "no measurable gap within position",  # a null result is not an argument for the trade
     "treat pick values as approximate",
     "as approximate",
     "treat these offers as more approximate",

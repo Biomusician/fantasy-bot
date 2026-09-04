@@ -225,3 +225,26 @@ def test_a_waiver_drop_is_never_a_better_player_than_the_add_even_across_positio
         add = _display_percentile(t.value, currency)
         if drop is not None and add is not None:
             assert drop <= add, f"{t.name} ({add}) paired with dropping {t.drop_candidate.name} ({drop})"
+
+
+def test_a_trade_that_downgrades_my_team_status_is_a_conflict():
+    from sleeper_tool.recommendation_conflicts import _status_downgrade
+    from sleeper_tool.team_status import CONTENDER, MIDDLING, REBUILD
+
+    class Side:
+        def __init__(self, status, displayed=None):
+            self.status, self.displayed_status = status, displayed
+
+    class Impact:
+        def __init__(self, before, after, pure_add=False):
+            self.before, self.after, self.pure_add = before, after, pure_add
+
+    assert _status_downgrade(Impact(Side(CONTENDER), Side(MIDDLING))) == "drops this team from contender to middling"
+    assert _status_downgrade(Impact(Side(MIDDLING), Side(REBUILD))) is not None
+    # Improvements, no-ops and pure adds are not conflicts.
+    assert _status_downgrade(Impact(Side(MIDDLING), Side(CONTENDER))) is None
+    assert _status_downgrade(Impact(Side(CONTENDER), Side(CONTENDER))) is None
+    assert _status_downgrade(Impact(Side(CONTENDER), Side(MIDDLING), pure_add=True)) is None
+    assert _status_downgrade(Impact(Side(None), Side(MIDDLING))) is None
+    # The headline (set-lineup) status is what the reader saw, so it wins.
+    assert _status_downgrade(Impact(Side(MIDDLING, displayed=CONTENDER), Side(MIDDLING))) is not None

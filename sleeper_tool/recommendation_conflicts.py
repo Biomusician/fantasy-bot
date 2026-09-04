@@ -26,6 +26,7 @@ from sleeper_tool.pick_opportunity import STRATEGIC
 from sleeper_tool.portfolio_exposure import VERY_HIGH
 from sleeper_tool.replacement_value import VERY_SCARCE
 from sleeper_tool.roster_clog import is_dynasty_developmental
+from sleeper_tool.team_status import CONTENDER, MIDDLING, REBUILD
 from sleeper_tool.trade_opportunity_cost import COSTS_LINEUP, FAVORABLE, MAJOR_LINEUP_COST, MOSTLY_NEUTRAL
 
 CONFLICTED = "Conflicted Move — Review Manually"
@@ -58,6 +59,25 @@ def _mentions_very_high(texts) -> bool:
     return any(VERY_HIGH in t for t in texts)
 
 
+# Worse-to-better order, so a move between two of them has a direction.
+_STATUS_RANK = {REBUILD: 0, MIDDLING: 1, CONTENDER: 2}
+
+
+def _status_downgrade(impact) -> str | None:
+    """"drops this team from contender to middling", when the previewed
+    move does exactly that. A pure add can't (nothing leaves), and an
+    unclassified side says nothing either way."""
+    if impact is None or getattr(impact, "pure_add", False):
+        return None
+    before = (impact.before.displayed_status or impact.before.status) if impact.before is not None else None
+    after = impact.after.status if impact.after is not None else None
+    if before is None or after is None or before == after:
+        return None
+    if _STATUS_RANK.get(after, 1) >= _STATUS_RANK.get(before, 1):
+        return None
+    return f"drops this team from {before} to {after}"
+
+
 def detect_conflicts(ld) -> list[Conflict]:
     """`ld` is a LeagueReportData (duck-typed; report_data imports this)."""
     out: list[Conflict] = []
@@ -79,6 +99,14 @@ def detect_conflicts(ld) -> list[Conflict]:
             scarce = sorted({e.position for e in p.give if e.position and ld.replacement.scarcity_of(e.position) == VERY_SCARCE})
             for pos in scarce:
                 against.append(f"{pos} replacement market is Very Scarce: no waiver replacement for what you'd send")
+        # A trade that moves my own team status the wrong way (contender →
+        # middling) is a strategic cost the card had no way to state: the
+        # impact block printed the transition as a neutral fact while the
+        # provenance card carried no Against at all.
+        impact = ld.trade_impacts[i] if i < len(ld.trade_impacts) else None
+        downgrade = _status_downgrade(impact)
+        if downgrade is not None:
+            against.append(downgrade)
         if _mentions_very_high(p.caveats):
             against.append("the acquisition would push cross-league exposure to Very High")
         if ld.pick_opportunity is not None and roster_econ == MOSTLY_NEUTRAL:
