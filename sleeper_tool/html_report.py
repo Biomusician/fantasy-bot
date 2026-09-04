@@ -28,6 +28,7 @@ from sleeper_tool.replacement_value import ABUNDANT, NORMAL, SCARCE, VERY_SCARCE
 from sleeper_tool.team_status import CONTENDER, MIDDLING, REBUILD
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
 from sleeper_tool.report_views import (
+    common_schedule_line,
     grouped_picks,
     pick_group_label,
     ALL_SAME_PRIORITY_NOTE,
@@ -579,8 +580,8 @@ def _buyer_board_section(boards) -> str:
     """
 
 
-def _schedule_section(windows) -> str:
-    if windows is None:
+def _schedule_section(windows, shared: str = "") -> str:
+    if windows is None or windows.describe() == shared:
         return ""
     return f"""
     <section class="panel-block">
@@ -784,7 +785,7 @@ _STATUS_CHIP_KIND = {CONTENDER: "positive", MIDDLING: "neutral", REBUILD: "cauti
 _PLAYOFF_CHIP_KIND = {COMFORTABLE: "positive", BUBBLE: "caution", LONG_SHOT: "caution", OUT: "negative"}
 
 
-def _league_panel(data: LeagueReportData) -> str:
+def _league_panel(data: LeagueReportData, shared_schedule: str = "") -> str:
     slug = _slug(data.league.name)
     status_chip = ""
     status_reason = ""
@@ -857,7 +858,7 @@ def _league_panel(data: LeagueReportData) -> str:
             + _replacement_market_section(data.replacement)
             + _stash_section(data.stash)
             + _buyer_board_section(data.buyer_boards)
-            + _schedule_section(data.windows)
+            + _schedule_section(data.windows, shared_schedule)
             + _pick_opportunity_section(data.pick_opportunity, data.replacement)
             + _league_economy_section(data.league_economy, data.roster.roster_id)
         )
@@ -1165,7 +1166,7 @@ def _diagnostics_section(report: WeeklyReportData) -> str:
     )
 
 
-def _overview_panel(report: WeeklyReportData) -> str:
+def _overview_panel(report: WeeklyReportData, shared_schedule: str = "") -> str:
     rows = "".join(_overview_row(d) for d in report.leagues)
     # A degraded run must be visible before anything else on the page, not
     # only down in the health section a reader may never reach.
@@ -1183,6 +1184,7 @@ def _overview_panel(report: WeeklyReportData) -> str:
         <p class="muted">Generated {report.generated_at.strftime('%b %d, %Y &middot; %H:%M UTC')}</p>
       </header>
       {banner_html}
+      {f'<p class="muted">Schedule: {esc(shared_schedule)}</p>' if shared_schedule else ""}
       {_priority_actions_section(report.priority_actions)}
       {_delta_section(report.delta)}
       <section class="panel-block">
@@ -1515,7 +1517,8 @@ JS = """
 
 def render_dashboard_html(report: WeeklyReportData) -> str:
     nav_items = _nav_items(report)
-    panels = _overview_panel(report) + "".join(_league_panel(d) for d in report.leagues)
+    shared_schedule = common_schedule_line(report.leagues)
+    panels = _overview_panel(report, shared_schedule) + "".join(_league_panel(d, shared_schedule) for d in report.leagues)
 
     # The charset declaration matters for the local double-click / static-server
     # case: without it a server that guesses latin-1 turns every em dash and
