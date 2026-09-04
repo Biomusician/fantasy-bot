@@ -63,7 +63,7 @@ MAX_CONTEXT having to grow to accommodate them.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from sleeper_tool.buyer_board import STRONG_FIT
 from sleeper_tool.move_impact import MATERIAL_WEEKLY_POINTS
@@ -327,10 +327,24 @@ class _Card:
 
     def finish(self) -> Provenance:
         p = self.prov
+        # Before the caps: a card with nothing on the For side reads as an
+        # argument against itself. When the move demonstrably puts someone
+        # in the lineup, that is the concrete reason — it sat in Context
+        # only because the weekly gain fell under the materiality bar,
+        # which is a statement about SIZE, not about whether it counts.
+        if not p.reasons_for:
+            promoted = next((r for r in p.context if r.source == "move_impact" and _enters_lineup(r.text)), None)
+            if promoted is not None:
+                p.context = [r for r in p.context if r is not promoted]
+                p.reasons_for = [replace(promoted, direction=FOR)]
         p.reasons_for = select(p.reasons_for, FOR)
         p.reasons_against = select(p.reasons_against, AGAINST)
         p.context = select(p.context, CONTEXT)
         return p
+
+
+def _enters_lineup(text: str) -> bool:
+    return "enters the lineup" in text or "enter the lineup" in text
 
 
 def _at(seq, i):

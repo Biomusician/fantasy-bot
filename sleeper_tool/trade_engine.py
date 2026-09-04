@@ -95,6 +95,17 @@ MAX_CANDIDATES_PER_OPPONENT = 3  # how many buy-low candidates to try matching p
 FREQUENT_TRADER_PROFILE = "active"
 
 
+def _return_quality(fitting, currency: str) -> float:
+    """How much the best incoming piece helps, as its within-position
+    percentile. Zero when nothing fits."""
+    if fitting is None:
+        return 0.0
+    offer_players, offer_picks, _notes, _all_fit = fitting
+    best_player = max((need_percentile(e.value, currency) or 0.0) for e in offer_players) if offer_players else 0.0
+    # A pick is real value but not lineup help; rank it below any fitting player.
+    return best_player if offer_players else (1.0 if offer_picks else 0.0)
+
+
 def _preferred_first(their_rosters: list[ValuedRoster], preferred_usernames: list[str]) -> list[ValuedRoster]:
     """The same rosters, with the buyer board's preferred counterparties
     pulled to the front in the board's own order. Everything else keeps the
@@ -1487,7 +1498,14 @@ def generate_trade_proposals(
             sell_value = value_for_currency(sell_entry.value, currency) or 0
             if not sell_value:
                 continue
-            for their_roster in _preferred_first(other_rosters, (preferred_buyers or {}).get(sell_entry.player_id) or []):
+            # Every eligible buyer is priced before one is picked: asking the
+            # first Strong Fit who can put together a package gets a
+            # plausible counterparty and an arbitrary return. Rank by what
+            # actually comes back, keeping the buyer board's order as the
+            # tie-break between equally useful returns.
+            ranked_buyers = _preferred_first(other_rosters, (preferred_buyers or {}).get(sell_entry.player_id) or [])
+            offers: list[tuple[float, int, ValuedRoster, TeamStatusResult, tuple]] = []
+            for order, their_roster in enumerate(ranked_buyers):
                 owner_key = their_roster.owner_username or ""
                 if owner_key in targeted_owners or not their_roster.entries:
                     continue
@@ -1504,6 +1522,9 @@ def generate_trade_proposals(
                 )
                 if fitting is None:
                     continue  # nothing they'd send back would actually help my roster either
+                offers.append((_return_quality(fitting, currency), -order, their_roster, their_status_result, fitting))
+            for _quality, _order, their_roster, their_status_result, fitting in sorted(offers, key=lambda o: (-o[0], -o[1])):
+                owner_key = their_roster.owner_username or ""
                 offer_players, offer_picks, my_side_fit_notes, _my_side_all_fit = fitting
                 # Selling a player the optimizer starts is only a trade if
                 # something coming back can start. Otherwise it is a lineup

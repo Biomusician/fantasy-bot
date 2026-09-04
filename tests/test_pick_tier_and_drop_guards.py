@@ -248,3 +248,26 @@ def test_a_trade_that_downgrades_my_team_status_is_a_conflict():
     assert _status_downgrade(Impact(Side(None), Side(MIDDLING))) is None
     # The headline (set-lineup) status is what the reader saw, so it wins.
     assert _status_downgrade(Impact(Side(MIDDLING, displayed=CONTENDER), Side(MIDDLING))) is not None
+
+
+def test_a_card_with_no_reason_for_promotes_the_lineup_entry_fact():
+    """A sub-material gain is a statement about size, not about whether the
+    move counts: if nothing else argues for the trade, "he enters the
+    lineup" does."""
+    from sleeper_tool.recommendation_provenance import CONTEXT, FOR, ROSTER, _Card
+
+    card = _Card("trade", "0", "X for Y", None)
+    card.add(ROSTER, CONTEXT, "Move Impact: Y enters the lineup; X drops out", "move_impact")
+    card.add(ROSTER, CONTEXT, "some other context", "trade_engine")
+    prov = card.finish()
+    assert [r.text for r in prov.reasons_for] == ["Move Impact: Y enters the lineup; X drops out"]
+    assert all(r.direction == CONTEXT for r in prov.context)
+    assert "enters the lineup" not in " ".join(r.text for r in prov.context)
+
+    # With a real For already present, nothing is promoted.
+    card2 = _Card("trade", "1", "A for B", None)
+    card2.add(ROSTER, FOR, "a genuine reason", "trade_engine")
+    card2.add(ROSTER, CONTEXT, "Move Impact: B enters the lineup", "move_impact")
+    prov2 = card2.finish()
+    assert [r.text for r in prov2.reasons_for] == ["a genuine reason"]
+    assert any("enters the lineup" in r.text for r in prov2.context)
