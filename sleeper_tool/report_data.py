@@ -89,7 +89,7 @@ from sleeper_tool.trade_engine import generate_trade_proposals, identify_drop_ca
 from sleeper_tool.trade_opportunity_cost import MAJOR_LINEUP_COST, TradeEconomics, analyze_trade
 from sleeper_tool.trade_rating import VERY_LOW_ACCEPTANCE
 from sleeper_tool.trade_types import DropCandidate, TradeProposal
-from sleeper_tool.valuation import LeagueFormat, ValuationEngine, games_remaining
+from sleeper_tool.valuation import LeagueFormat, ValuationEngine, games_remaining, weekly_projection
 from sleeper_tool.waiver_engine import INSURANCE, MUST_ADD, STRONG_ADD, TimeSensitiveNote, WaiverTarget, get_time_sensitive_notes, get_waiver_targets
 from sleeper_tool.watchlist import Watchlist, load_watchlist
 from sleeper_tool.watchlist import candidates as watch_candidates
@@ -534,11 +534,30 @@ def build_league_report_data(
             candidate_roles = {
                 pid: t.label for pid, t in trends_for(usage, crosswalk, sorted(trending_add_ids)).items()
             }
+        # The free agents worth a look regardless of what Sleeper is
+        # trending: at each position, the best projected free agent when he
+        # out-projects my weakest optimizer starter there. The waiver rules
+        # decide what to do with them; this only makes them visible.
+        projection_finds: list[RosterEntry] = []
+        if replacement is not None and lineup is not None:
+            for pos, market in replacement.positions.items():
+                best = market.waiver_replacement
+                if best is None or market.waiver_replacement_projection is None:
+                    continue
+                mine = [
+                    weekly_projection(e.value, current_week)
+                    for e in my_roster.entries
+                    if e.player_id in lineup.starter_ids and e.position == pos
+                ]
+                weakest = min((p for p in mine if p is not None), default=None)
+                if weakest is not None and market.waiver_replacement_projection > weakest:
+                    projection_finds.append(best)
         waiver_targets = get_waiver_targets(
             storage, engine, league, my_roster, current_week=current_week, waiver_budget=waiver_budget, clog_ids=clog_ids,
             starter_ids=lineup.starter_ids if lineup is not None else None,
             protected_ids=lineup.starter_ids if lineup is not None else (),
             role_labels=candidate_roles or None,
+            extra_candidates=projection_finds,
         )
     insurance: list[InsuranceRecommendation] = []
     if status_result.status == CONTENDER and lineup is not None and not pre_draft:

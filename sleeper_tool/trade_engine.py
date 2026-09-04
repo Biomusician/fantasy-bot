@@ -85,6 +85,7 @@ CLEAR_STARTER_MIN_GAP = 10
 BUY_LOW_TREND = "down"
 VALUE_TOLERANCE = 0.20  # accept offers where value ratio is within +/-20%
 ELITE_ASSET_PERCENTILE = 90.0  # bypass age filtering for a clear top-tier asset regardless of team timeline
+NEED_DEPTH_SATISFIED = 2  # rosterable bodies beyond the slot count that make a position no longer a need
 BUY_LOW_MIN_EXPERIENCE = 2  # NFL seasons; below this a dynasty-over-redraft gap is youth, not a dip
 DECLINE_CONFIRMATION_GAP = 10.0  # dynasty_pctl - redraft_pctl must clear this to call a dip a buy-low, not a real decline
 MAX_CANDIDATES_PER_OPPONENT = 3  # how many buy-low candidates to try matching per opponent before giving up on them
@@ -279,7 +280,18 @@ def identify_needs(roster: ValuedRoster) -> list[str]:
             e for e in roster.by_position(pos) if corroborated(e, currency) and need_percentile(e.value, currency) is not None
         ]
         best_by_position[pos] = max((need_percentile(e.value, currency) for e in entries), default=0.0)
-    return sorted(POSITION_ORDER, key=lambda p: best_by_position[p])
+    # Ranking positions against each other with no depth term made a
+    # four-deep QB room in a 1QB league the "worst" position — the whole
+    # roster's weakest single player still has to be somebody. A position
+    # already carrying its slots plus a spare bench body is not a need,
+    # whatever its top player's percentile says.
+    satisfied = {
+        pos for pos in POSITION_ORDER
+        if position_rosterable_count(roster, pos, currency)
+        >= (roster.fmt.starter_slots.get(pos, 1.0) + NEED_DEPTH_SATISFIED)
+    }
+    ranked = sorted(POSITION_ORDER, key=lambda p: best_by_position[p])
+    return [p for p in ranked if p not in satisfied] + [p for p in ranked if p in satisfied]
 
 
 def identify_depth_needs(roster: ValuedRoster, min_starters: dict[str, int] | None = None) -> list[str]:

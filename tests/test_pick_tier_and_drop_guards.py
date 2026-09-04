@@ -135,3 +135,57 @@ def test_redraft_buy_low_must_beat_this_leagues_wire():
     assert names == {"better"}
     # Without a market to compare against, the gate never fires.
     assert {e.player_id for e in identify_buy_low(roster)} == {"better", "worse"}
+
+
+def test_a_deep_position_is_not_a_need_however_weak_its_best_player_ranks():
+    """Four rosterable QBs in a 1QB league were "need #1" because ranking
+    positions against each other has to put somebody last."""
+    from conftest import make_entry, make_format, make_roster, make_value
+
+    from sleeper_tool.trade_engine import identify_needs
+
+    def player(pid, pos, pctl):
+        return make_entry(player_id=pid, name=pid, position=pos,
+                          value=make_value(position=pos, dynasty_value=3000 + pctl,
+                                           dynasty_value_percentile=pctl, dynasty_positional_percentile=pctl))
+
+    from dataclasses import replace
+    fmt = replace(make_format(), starter_slots={"QB": 1.0, "RB": 2.0, "WR": 2.0, "TE": 1.0})
+    roster = make_roster(fmt=fmt, entries=[
+        *[player(f"qb{i}", "QB", 70.0 + i) for i in range(4)],   # slots 1 + spare + spare
+        player("rb1", "RB", 95.0), player("rb2", "RB", 94.0),
+        player("wr1", "WR", 99.0), player("wr2", "WR", 98.0),
+        player("te1", "TE", 96.0),
+    ])
+    needs = identify_needs(roster)
+    assert needs[0] != "QB"          # depth-satisfied, so never the top need
+    assert needs[-1] == "QB"
+
+
+def test_a_projection_found_free_agent_is_a_candidate_without_a_trend_count():
+    """The best free agent by projection is often not on Sleeper's
+    platform-wide trending list; he still has to be a row."""
+    from conftest import make_entry, make_value
+    from fake_storage import make_engine, make_player_pool, make_storage, make_synthetic_league
+
+    from sleeper_tool.roster_analysis import build_all_valued_rosters
+    from sleeper_tool.waiver_engine import get_waiver_targets
+
+    synth = make_synthetic_league()
+    storage = make_storage(synth)
+    engine = make_engine(synth.players)
+    rosters = build_all_valued_rosters(storage, engine, synth.info)
+    mine = rosters[synth.my_roster["roster_id"]]
+
+    trending_ids = {row["player_id"] for row in storage.get_trending("add")}
+    free_agent_id = next(
+        pid for pid in synth.players
+        if pid not in trending_ids and not any(pid in (r.get("players") or []) for r in synth.rosters)
+    )
+    extra = make_entry(player_id=free_agent_id, name="Wire Find", position="RB", value=make_value(position="RB"))
+
+    without = {t.player_id for t in get_waiver_targets(storage, engine, synth.info, mine, top_n=50)}
+    rows = get_waiver_targets(storage, engine, synth.info, mine, top_n=50, extra_candidates=[extra])
+    assert free_agent_id not in without
+    row = next(t for t in rows if t.player_id == free_agent_id)
+    assert row.trend_count == 0 and "found by projection" in row.reason

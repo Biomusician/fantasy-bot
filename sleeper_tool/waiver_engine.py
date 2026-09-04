@@ -248,7 +248,7 @@ def _role_tier_floor(role_label: str | None, pctl: float | None) -> str | None:
 
 
 def _priority_tier(
-    fills_need: bool, pctl: float | None, trend_rank: int, upgrades_starter: bool | None = None,
+    fills_need: bool, pctl: float | None, trend_rank: int | None, upgrades_starter: bool | None = None,
     role_label: str | None = None,
 ) -> str:
     """`upgrades_starter` False demotes a would-be Must Add to Strong Add: a
@@ -266,7 +266,7 @@ def _priority_tier(
         tier = STRONG_ADD
     elif fills_need or p >= MIN_ROSTERABLE_PERCENTILE:
         tier = MODERATE
-    elif trend_rank < TOP_TREND_RANK_CUTOFF:
+    elif trend_rank is not None and trend_rank < TOP_TREND_RANK_CUTOFF:
         tier = SPECULATIVE
     else:
         tier = MONITOR
@@ -338,6 +338,7 @@ def get_waiver_targets(
     starter_ids: Collection[str] | None = None,
     protected_ids: Collection[str] = (),
     role_labels: dict[str, str] | None = None,
+    extra_candidates: Collection[RosterEntry] = (),
 ) -> list[WaiverTarget]:
     """`clog_ids`: roster_clog's dead-weight players, preferred as the drop
     paired with each add (see find_drop_candidate). `starter_ids`: the
@@ -364,8 +365,20 @@ def get_waiver_targets(
     needs_ranked = identify_needs(my_roster)
     currency = value_currency(my_roster)
 
+    # Sleeper's trending list is platform-wide and name-driven; the best
+    # free agent in THIS league by projection is often not on it (a 6.4/wk
+    # RB nobody is adding, while my starters project 3.8 and 2.5). Those
+    # candidates ride the same rules — they simply arrive with no trend
+    # count, which is a fact about the wire, not about the player.
+    rows: list[tuple[int | None, dict]] = [(rank, row) for rank, row in enumerate(trending)]
+    seen_pids = {row["player_id"] for _, row in rows}
+    for entry in extra_candidates or ():
+        if entry.player_id not in seen_pids:
+            rows.append((None, {"player_id": entry.player_id, "count": 0}))
+            seen_pids.add(entry.player_id)
+
     targets: list[WaiverTarget] = []
-    for trend_rank, row in enumerate(trending):
+    for trend_rank, row in rows:
         pid = row["player_id"]
         if pid in rostered_ids:
             continue  # already on a roster in this league — not a valid waiver target here
@@ -409,8 +422,11 @@ def get_waiver_targets(
             reason_bits.append(f"fills your {ordinal(need_rank + 1)}-worst need at {position}")
         # Sleeper's trending endpoint is platform-wide (all leagues, not just
         # this one) — there's no per-league trending data available via the API.
-        reason_bits.append(f"{row.get('count', 0)} adds across Sleeper in the last 48h")
-        if current_week is not None and current_week < EARLY_SEASON_WEEK_CUTOFF:
+        if trend_rank is not None:
+            reason_bits.append(f"{row.get('count', 0)} adds across Sleeper in the last 48h")
+        else:
+            reason_bits.append("not on Sleeper's trending list — found by projection on this league's own wire")
+        if trend_rank is not None and current_week is not None and current_week < EARLY_SEASON_WEEK_CUTOFF:
             # Early-season trending is hype/name-recognition driven more than
             # usage-driven — there just isn't enough game data yet for adds
             # to reflect real opportunity share the way they will by week 4+.
