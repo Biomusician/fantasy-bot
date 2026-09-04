@@ -48,6 +48,17 @@ from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
 from sleeper_tool.valuation import composite_overall_rank
 
 NON_STARTER_SLOTS = frozenset({"BN", "IR", "TAXI"})
+# Sleeper's own tokens leak into prose ("SUPER_FLEX: Bryce Young on bye"),
+# so everything that prints a slot name goes through here.
+SLOT_LABELS = {"SUPER_FLEX": "Superflex", "WRRB_FLEX": "RB/WR FLEX", "REC_FLEX": "WR/TE FLEX", "IDP_FLEX": "IDP FLEX", "DEF": "DST"}
+
+
+def slot_label(slot: str | None) -> str:
+    if not slot:
+        return "?"
+    return SLOT_LABELS.get(slot, slot)
+
+
 FLEX_ELIGIBILITY: dict[str, frozenset[str]] = {
     "FLEX": frozenset({"RB", "WR", "TE"}),
     "SUPER_FLEX": frozenset({"QB", "RB", "WR", "TE"}),

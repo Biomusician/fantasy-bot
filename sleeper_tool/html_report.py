@@ -15,6 +15,7 @@ from sleeper_tool.decision_outcomes import OBSERVED
 from sleeper_tool.faab_strategy import bid_cell, bid_detail
 from sleeper_tool.formatting import age_str
 from sleeper_tool.league_economy import LeagueEconomy
+from sleeper_tool.lineup_optimizer import slot_label
 from sleeper_tool.lineup_leverage import LineupLeverage
 from sleeper_tool.matchup_leverage import LARGE_DEFICIT, MODEST_DEFICIT, MODEST_EDGE, STRONG_EDGE, MatchupLeverage
 from sleeper_tool.move_impact import MoveImpact
@@ -192,16 +193,45 @@ def _roster_section(roster: ValuedRoster, currency: str) -> str:
 _DECISION_CHIP_KIND = {"Toss-Up": "caution", "Lean Start": "neutral"}
 
 
-def _lineup_leverage_section(lev: LineupLeverage | None, currency: str, clauses: dict[str, str] | None = None) -> str:
-    if lev is None or (not lev.close_calls and not lev.bench_surplus):
+def _lineup_decisions_section(dec) -> str:
+    if dec is None:
+        return ""
+    week = f"week {dec.week}" if dec.week else "this week"
+    if not dec.items:
+        body = '<p class="empty-note">Lineup is already the best legal one &mdash; nothing to change before kickoff.</p>'
+    else:
+        items = []
+        for item in dec.items:
+            extras = "".join(f'<div class="drop-reasons">{esc(x)}</div>' for x in ([item.what_if] if item.what_if else []) + list(item.context))
+            items.append(
+                f'<li class="alert-item">{_chip(item.kind, "accent")} {esc(item.summary)}{extras}</li>'
+            )
+        stake = (
+            f'<p class="muted">{dec.close_call_stake:.1f} pts/wk rides on the close calls above.</p>'
+            if dec.close_call_stake else ""
+        )
+        body = f'<ul class="alert-list">{"".join(items)}</ul>{stake}'
+    return f"""
+    <section class="panel-block">
+      <h3>This week&rsquo;s decisions <span class="muted">&middot; {esc(week)}</span></h3>
+      {body}
+    </section>
+    """
+
+
+def _lineup_leverage_section(
+    lev: LineupLeverage | None, currency: str, clauses: dict[str, str] | None = None, *, close_calls_shown: bool = False
+) -> str:
+    calls = [] if close_calls_shown else (lev.close_calls if lev is not None else [])
+    if lev is None or (not calls and not lev.bench_surplus):
         return ""
     clauses = clauses or {}
     items = []
-    for d in lev.close_calls:
+    for d in calls:
         hint = " &middot; close enough that matchup should decide" if d.label == "Toss-Up" else ""
         items.append(
             f'<li class="alert-item alert-{_DECISION_CHIP_KIND.get(d.label, "neutral")}">'
-            f'{_chip(d.label, _DECISION_CHIP_KIND.get(d.label, "neutral"))} <strong>{esc(d.slot)}</strong>: '
+            f'{_chip(d.label, _DECISION_CHIP_KIND.get(d.label, "neutral"))} <strong>{esc(slot_label(d.slot))}</strong>: '
             f"{esc(d.starter.name)} <span class=\"tabular\">{d.starter_weekly:.1f}</span>/wk over "
             f"{esc(d.alternative.name)} <span class=\"tabular\">{d.alternative_weekly:.1f}</span>/wk{hint}"
             + (f' <span class="muted">&middot; {esc(d.schedule_note)}</span>' if d.schedule_note else "")
@@ -212,7 +242,7 @@ def _lineup_leverage_section(lev: LineupLeverage | None, currency: str, clauses:
         items.append(
             f'<li class="alert-item">{_chip("Bench surplus", "accent")} <strong>{esc(s.entry.name)}</strong> '
             f"({esc(s.entry.position or '?')}, {pctl} {esc(value_label_for_currency(currency))}) projects at "
-            f"{s.ratio:.0%} of {esc(s.displaced_starter.name)} ({esc(s.displaced_slot)}) but sits "
+            f"{s.ratio:.0%} of {esc(s.displaced_starter.name)} ({esc(slot_label(s.displaced_slot))}) but sits "
             '<div class="drop-reasons">Value that could be traded for a starter without costing lineup points'
             + (f" &middot; {esc(clauses[s.entry.player_id])}" if s.entry.player_id in clauses else "")
             + "</div></li>"
@@ -831,7 +861,11 @@ def _league_panel(data: LeagueReportData) -> str:
         body = (
             (alerts_section if has_high_alert else "")
             + _matchup_section(data.matchup)
-            + _lineup_leverage_section(data.lineup_leverage, data.currency, data.replacement_clauses)
+            + _lineup_decisions_section(data.lineup_decisions)
+            + _lineup_leverage_section(
+                data.lineup_leverage, data.currency, data.replacement_clauses,
+                close_calls_shown=data.lineup_decisions is not None,
+            )
             + trades_and_waivers
             + ("" if has_high_alert else alerts_section)
             + context

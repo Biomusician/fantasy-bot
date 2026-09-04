@@ -29,6 +29,7 @@ from sleeper_tool.faab_strategy import FaabAdvice, FaabContext, TargetFacts, bud
 from sleeper_tool.faab_strategy import advise as faab_advise
 from sleeper_tool.faab_strategy import status_note as faab_status_note
 from sleeper_tool.league_economy import LeagueEconomy, build_league_economy
+from sleeper_tool.lineup_decisions import LineupDecisions, build_lineup_decisions
 from sleeper_tool.lineup_leverage import LineupLeverage, build_lineup_leverage
 from sleeper_tool.lineup_optimizer import LineupResult, UnsupportedSlotError, optimize_lineup
 from sleeper_tool.market_velocity import Velocity, annotate_league, build_velocities
@@ -136,6 +137,7 @@ class LeagueReportData:
     roster_clogs: list[RosterClog] = field(default_factory=list)  # excludes players already listed as drop candidates
     lineup: LineupResult | None = None  # my best legal lineup (structural: no bye-week exclusions)
     lineup_leverage: LineupLeverage | None = None
+    lineup_decisions: LineupDecisions | None = None  # what needs deciding about THIS week's lineup
     insurance: list[InsuranceRecommendation] = field(default_factory=list)  # contenders only; also merged into waiver_targets
     bye_collision: ByeCollision | None = None  # earliest look-ahead week with a Bye Hole; also a time_sensitive note
     league_economy: LeagueEconomy | None = None  # per-manager trade/pick/position tendencies, current season
@@ -411,13 +413,8 @@ def build_league_report_data(
     status_result = classify_team_status(
         my_roster.roster_id, rosters, currency, storage=storage, engine=engine, valued_picks=valued_picks
     )
-    proposals = generate_trade_proposals(league, rosters, status_result=status_result, storage=storage, engine=engine)
     league_data = storage.get_league(league.league_id) or {}
     waiver_budget = (league_data.get("settings") or {}).get("waiver_budget")
-    # Exclude anyone already used as a give-piece in a live trade proposal
-    # this run -- otherwise the same player could be told to both trade
-    # away for value and cut for nothing in the same report.
-    proposed_give_ids = frozenset(e.player_id for p in proposals for e in p.give)
     trending_add_ids = {row["player_id"] for row in storage.get_trending("add")}
     # Every lineup-based feature below is optional: a league whose slot
     # list this optimizer can't model (an unknown slot type, an empty
@@ -465,6 +462,30 @@ def build_league_report_data(
         for r in rosters.values()
         if r.entries
     }
+    league_economy = build_league_economy(
+        rosters, storage.get_all_transactions(league.league_id), storage.get_traded_picks(league.league_id),
+        season=str(league_data.get("season") or ""),
+    )
+    # The buyer board says WHICH manager should receive a sell-high; building
+    # proposals first meant a card could name one counterparty while the
+    # board named a different Strong Fit two sections down. Board first, then
+    # the engine prefers its fits and can see the league's own trade record.
+    pre_boards = (
+        build_buyer_boards(
+            my_roster, rosters, sell_high_candidates(my_roster, []),
+            status_of=status_of, economy=league_economy, market=replacement, valued_picks=valued_picks,
+        )
+        if not pre_draft else []
+    )
+    proposals = generate_trade_proposals(
+        league, rosters, status_result=status_result, storage=storage, engine=engine,
+        preferred_buyers={b.candidate.player_id: [f.username for f in b.buyers if f.username] for b in pre_boards},
+        manager_labels={m.username: m.labels for m in league_economy.managers.values() if m.username},
+    )
+    # Exclude anyone already used as a give-piece in a live trade proposal
+    # this run -- otherwise the same player could be told to both trade
+    # away for value and cut for nothing in the same report.
+    proposed_give_ids = frozenset(e.player_id for p in proposals for e in p.give)
     # 2-for-1 consolidations are TradeProposals like any other: appended to
     # the list so every annotation pass, preview, economics line, conflict
     # check and the Best Moves list see them. `consolidations` keeps the
@@ -491,10 +512,20 @@ def build_league_report_data(
         waiver_targets: list[WaiverTarget] = []
         waivers_note = "League is still pre-draft on Sleeper — waiver and insurance targets are suppressed until the draft."
     else:
+        # Role labels for the candidate pool before tiering, not after: a
+        # Role Surging free agent is a different add from a trending name,
+        # and the tier is where that has to land. Dormant until the season
+        # publishes usage rows, like every other role reading.
+        candidate_roles: dict[str, str] = {}
+        if usage is not None and crosswalk and "role_trends" not in suppressed:
+            candidate_roles = {
+                pid: t.label for pid, t in trends_for(usage, crosswalk, sorted(trending_add_ids)).items()
+            }
         waiver_targets = get_waiver_targets(
             storage, engine, league, my_roster, current_week=current_week, waiver_budget=waiver_budget, clog_ids=clog_ids,
             starter_ids=lineup.starter_ids if lineup is not None else None,
             protected_ids=lineup.starter_ids if lineup is not None else (),
+            role_labels=candidate_roles or None,
         )
     insurance: list[InsuranceRecommendation] = []
     if status_result.status == CONTENDER and lineup is not None and not pre_draft:
@@ -595,10 +626,6 @@ def build_league_report_data(
             t.notes.append(note)
             note_directions[(t.player_id, note)] = CONTEXT
 
-    league_economy = build_league_economy(
-        rosters, storage.get_all_transactions(league.league_id), storage.get_traded_picks(league.league_id),
-        season=str(league_data.get("season") or ""),
-    )
     _annotate_proposals_with_league_economy(proposals, league_economy, rosters)
 
     settings = league_data.get("settings") or {}
@@ -669,6 +696,18 @@ def build_league_report_data(
         named |= {c.entry.player_id for c in stash}
         role_trends = trends_for(usage, crosswalk, sorted(named))
 
+    # This week's lineup decisions read the week lineup the matchup already
+    # solved (byes and game-day outs applied), so nothing is re-optimized.
+    lineup_decisions = (
+        build_lineup_decisions(
+            my_roster, structural_lineup=lineup, week_lineup=matchup.my_lineup if matchup is not None else None,
+            leverage=lineup_leverage, bye_collision=bye_collision, matchup=matchup, current_week=current_week,
+            schedule=schedule, free_agents=[fa for fa in free_agents if fa.value.proj_points is not None],
+            context_lines={pid: [t.describe()] for pid, t in role_trends.items()} or None,
+        )
+        if lineup is not None else None
+    )
+
     faab_ctx = context_from_sleeper(
         league_data, storage.get_rosters(league.league_id), storage.get_all_transactions(league.league_id),
         my_roster.roster_id, current_week=current_week, pre_draft=pre_draft,
@@ -689,6 +728,7 @@ def build_league_report_data(
         roster_clogs=roster_clogs,
         lineup=lineup,
         lineup_leverage=lineup_leverage,
+        lineup_decisions=lineup_decisions,
         insurance=insurance,
         bye_collision=bye_collision,
         league_economy=league_economy,

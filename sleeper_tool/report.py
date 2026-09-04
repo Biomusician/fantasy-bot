@@ -18,6 +18,7 @@ from sleeper_tool.decision_outcomes import OBSERVED
 from sleeper_tool.faab_strategy import bid_cell, bid_detail
 from sleeper_tool.formatting import age_str, ordinal_pct
 from sleeper_tool.league_economy import LeagueEconomy
+from sleeper_tool.lineup_optimizer import slot_label
 from sleeper_tool.lineup_leverage import LineupLeverage
 from sleeper_tool.move_impact import MoveImpact
 from sleeper_tool.negotiation_ladder import NegotiationLadder
@@ -234,14 +235,44 @@ def _render_roster_snapshot(roster: ValuedRoster, currency: str) -> list[str]:
 _DECISION_MARK = {"Toss-Up": "🟡", "Lean Start": "⚪"}
 
 
-def _render_lineup_leverage(lev: LineupLeverage | None, currency: str, clauses: dict[str, str] | None = None) -> list[str]:
-    if lev is None or (not lev.close_calls and not lev.bench_surplus):
+def _render_lineup_decisions(dec) -> list[str]:
+    """This week's lineup, as a short list of things that need a decision —
+    and the verdict when nothing does. Structural leverage (who to trade,
+    who sits every week) stays in Lineup leverage below."""
+    if dec is None:
+        return []
+    week = f"week {dec.week}" if dec.week else "this week"
+    lines = [_heading("This week's decisions", week), ""]
+    if not dec.items:
+        lines.extend(["Lineup is already the best legal one — nothing to change before kickoff.", ""])
+        return lines
+    for item in dec.items:
+        lines.append(f"- **{item.kind}** — {item.summary}")
+        if item.what_if:
+            lines.append(f"    - {item.what_if}")
+        for note in item.context:
+            lines.append(f"    - _{note}_")
+    if dec.close_call_stake:
+        lines.append("")
+        lines.append(f"_{dec.close_call_stake:.1f} pts/wk rides on the close calls above._")
+    lines.append("")
+    return lines
+
+
+def _render_lineup_leverage(
+    lev: LineupLeverage | None, currency: str, clauses: dict[str, str] | None = None, *, close_calls_shown: bool = False
+) -> list[str]:
+    """`close_calls_shown`: this week's decisions block already listed the
+    start/sit calls, so only the structural fact (bench surplus, which is
+    trade material rather than a lineup change) stays here."""
+    calls = [] if close_calls_shown else (lev.close_calls if lev is not None else [])
+    if lev is None or (not calls and not lev.bench_surplus):
         return []
     clauses = clauses or {}
     lines = [_heading("Lineup leverage", f"best legal lineup ~{lev.weekly_starter_points:.0f} pts/week"), ""]
-    for d in lev.close_calls:
+    for d in calls:
         lines.append(
-            f"- {_DECISION_MARK.get(d.label, '')} **{d.label}** at {d.slot}: {d.starter.name} "
+            f"- {_DECISION_MARK.get(d.label, '')} **{d.label}** at {slot_label(d.slot)}: {d.starter.name} "
             f"({d.starter_weekly:.1f}/wk) over {d.alternative.name} ({d.alternative_weekly:.1f}/wk)"
             + (" — close enough that matchup should decide" if d.label == "Toss-Up" else "")
             + (f" — {d.schedule_note}" if d.schedule_note else "")
@@ -250,7 +281,7 @@ def _render_lineup_leverage(lev: LineupLeverage | None, currency: str, clauses: 
         pctl = ordinal_pct(s.value_percentile) if s.value_percentile is not None else "unranked"
         lines.append(
             f"- **Bench surplus:** {s.entry.name} ({s.entry.position or '?'}, {pctl} {value_label_for_currency(currency)}) "
-            f"projects at {s.ratio:.0%} of {s.displaced_starter.name} ({s.displaced_slot}) but sits — "
+            f"projects at {s.ratio:.0%} of {s.displaced_starter.name} ({slot_label(s.displaced_slot)}) but sits — "
             "value that could be traded for a starter without costing lineup points"
             + (f" · {clauses[s.entry.player_id]}" if s.entry.player_id in clauses else "")
         )
@@ -612,7 +643,14 @@ def render_league_section(data: LeagueReportData) -> list[str]:
             [data.matchup.describe(), "", "This-week lineups with byes and outs applied.", ""],
         ))
 
-    leverage = _render_lineup_leverage(data.lineup_leverage, data.currency, data.replacement_clauses)
+    decisions = _render_lineup_decisions(data.lineup_decisions)
+    if decisions:
+        sections.append((decisions[0], decisions[2:]))
+
+    leverage = _render_lineup_leverage(
+        data.lineup_leverage, data.currency, data.replacement_clauses,
+        close_calls_shown=bool(decisions),
+    )
     if leverage:
         sections.append((leverage[0], leverage[2:]))  # [0] heading, [1] its blank line
 

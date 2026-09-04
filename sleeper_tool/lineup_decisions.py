@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 
 from sleeper_tool.bye_collision import BYE_HOLE_REPLACEMENT_RATIO, ByeCollision
 from sleeper_tool.lineup_leverage import LEAN_START, TOSS_UP, LineupLeverage, StartSitDecision, build_lineup_leverage
+from sleeper_tool.lineup_optimizer import slot_label
 from sleeper_tool.lineup_optimizer import (
     DEDICATED_POSITIONS,
     FLEX_ELIGIBILITY,
@@ -276,7 +277,7 @@ def _close_calls(
         items.append(
             LineupDecision(
                 d.label, slot, [d.starter, d.alternative], [starter_weekly, alt_weekly], abs(cost),
-                f"{slot}: {d.starter.name} ({starter_weekly:.1f}/wk) over {d.alternative.name} ({alt_weekly:.1f}/wk)",
+                f"{slot_label(slot)}: {d.starter.name} ({starter_weekly:.1f}/wk) over {d.alternative.name} ({alt_weekly:.1f}/wk)",
                 what_if, context,
             )
         )
@@ -343,7 +344,7 @@ def _holes(
         items.append(
             LineupDecision(
                 EMPTY_SLOT, slot, [], [], 0.0,
-                f"{slot} is empty this week — no rostered player can legally fill it",
+                f"{slot_label(slot)} is empty this week — no rostered player can legally fill it",
                 _fill_line(fa, games_left),
             )
         )
@@ -375,11 +376,11 @@ def _holes(
         if replacement is None:
             if slot in unfilled:
                 continue  # already reported as an empty slot above
-            positions = {slot} if slot in DEDICATED_POSITIONS else {starter.position} if starter.position else set()
+            positions = {slot_label(slot)} if slot in DEDICATED_POSITIONS else {starter.position} if starter.position else set()
             items.append(
                 LineupDecision(
                     BYE_HOLE, slot, [starter], [starter_weekly], starter_weekly,
-                    f"{slot}: {starter.name} is {reason} and no rostered player can legally cover him",
+                    f"{slot_label(slot)}: {starter.name} is {reason} and no rostered player can legally cover him",
                     _fill_line(_best_free_agent(free_agents, positions, current_week), games_left),
                 )
             )
@@ -387,14 +388,14 @@ def _holes(
         replacement_weekly = _weekly(replacement_proj, games_left)
         delta = starter_weekly - replacement_weekly
         ratio = replacement_proj / starter_proj if starter_proj else 0.0
-        positions = {slot} if slot in DEDICATED_POSITIONS else {starter.position} if starter.position else set()
+        positions = {slot_label(slot)} if slot in DEDICATED_POSITIONS else {starter.position} if starter.position else set()
         fa = _best_free_agent(free_agents, positions, current_week)
         if fa is not None and projection_of(fa) <= replacement_proj:
             fa = None  # the wire doesn't beat what's already filling in
         items.append(
             LineupDecision(
                 BYE_HOLE, slot, [starter, replacement], [starter_weekly, replacement_weekly], delta,
-                f"{slot}: {starter.name} is {reason}; {replacement.name} fills in at {ratio:.0%} of his projection (-{delta:.1f}/wk)",
+                f"{slot_label(slot)}: {starter.name} is {reason}; {replacement.name} fills in at {ratio:.0%} of his projection (-{delta:.1f}/wk)",
                 _fill_line(fa, games_left),
             )
         )
