@@ -403,3 +403,160 @@ def test_describe_lines_name_the_direction_and_the_category():
     assert lines == ["FOR — Market: Buy low on in: he is cheap right now"]
     assert CONTEXT == "CONTEXT" and FOR == "FOR" and AGAINST == "AGAINST"
     assert STREAMER == "streamer"
+
+
+# -- waiver explanation rows: why this drop, and what would make it wrong -----
+
+
+def _source_view(consensus):
+    from sleeper_tool.source_disagreement import SourceView
+
+    return SourceView(
+        name="W1", position="WR", consensus=consensus, consensus_gap=30,
+        consensus_pair=("KTC", "FantasyPros dynasty"), direction=None,
+        market_rank=20, projection_rank=50, expert_note=None,
+    )
+
+
+def test_why_this_drop_uses_the_roster_clog_reason_when_there_is_one():
+    from sleeper_tool.recommendation_provenance import WHY_DROP_PREFIX
+    from sleeper_tool.roster_clog import RosterClog
+
+    drop = _p("bench", "WR")
+    clog = RosterClog(entry=drop, reasons=["no path to the lineup at WR", "23rd percentile within position"], composite_rank=1.0)
+    prov = build_provenance(_ld(waiver_targets=[_target(drop=drop)], roster_clogs=[clog]), _report())[(WAIVER, "w1")]
+    why = prov.why_drop
+    assert why is not None
+    assert why.text == f"{WHY_DROP_PREFIX} bench — no path to the lineup at WR; 23rd percentile within position"
+    assert (why.category, why.source, why.direction) == (ROSTER, "roster_clog", CONTEXT)
+
+
+def test_why_this_drop_falls_back_to_the_drop_candidate_reasons_then_to_the_engine_rule():
+    from sleeper_tool.recommendation_provenance import WEAKEST_AT_POSITION, WEAKEST_BENCH_PIECE, WHY_DROP_PREFIX
+
+    drop = _p("bench", "WR")
+    candidate = DropCandidate(entry=drop, priority="Consider Dropping", reasons=["buried behind 3 better WR options"])
+    with_candidate = build_provenance(_ld(waiver_targets=[_target(drop=drop)], drop_candidates=[candidate]), _report())
+    assert with_candidate[(WAIVER, "w1")].why_drop.text.endswith("buried behind 3 better WR options")
+    assert with_candidate[(WAIVER, "w1")].why_drop.source == "trade_engine"
+
+    # No module judged him: the waiver engine's own two rules, said out loud.
+    same_position = build_provenance(_ld(waiver_targets=[_target(drop=drop)]), _report())[(WAIVER, "w1")]
+    assert same_position.why_drop.text == f"{WHY_DROP_PREFIX} bench — {WEAKEST_AT_POSITION}"
+    other_position = build_provenance(_ld(waiver_targets=[_target(drop=_p("bench", "TE"))]), _report())[(WAIVER, "w1")]
+    assert other_position.why_drop.text == f"{WHY_DROP_PREFIX} bench — {WEAKEST_BENCH_PIECE}"
+
+
+def test_a_waiver_row_with_no_paired_drop_has_no_why_drop_row():
+    prov = build_provenance(_ld(waiver_targets=[_target(drop=None)]), _report())[(WAIVER, "w1")]
+    assert prov.why_drop is None
+
+
+def test_the_drop_reasons_are_capped_so_the_row_stays_one_sentence():
+    from sleeper_tool.recommendation_provenance import MAX_DROP_REASONS
+    from sleeper_tool.roster_clog import RosterClog
+
+    drop = _p("bench", "WR")
+    clog = RosterClog(entry=drop, reasons=["one", "two", "three", "four"], composite_rank=1.0)
+    prov = build_provenance(_ld(waiver_targets=[_target(drop=drop)], roster_clogs=[clog]), _report())[(WAIVER, "w1")]
+    assert prov.why_drop.text.count(";") == MAX_DROP_REASONS - 1
+
+
+def test_invalidation_assembles_only_the_facts_this_run_actually_has():
+    from sleeper_tool.recommendation_provenance import INVALIDATION_PREFIX
+    from sleeper_tool.replacement_value import ABUNDANT
+    from sleeper_tool.source_disagreement import SOURCE_DISAGREEMENT
+    from sleeper_tool.waiver_engine import EARLY_SEASON_CLAUSE
+
+    target = _target(reason=f"fills your worst need at WR; 40 adds across Sleeper in the last 48h; {EARLY_SEASON_CLAUSE}", trend=40)
+    market = ReplacementMarket(positions={"WR": PositionMarket("WR", None, None, None, None, ABUNDANT, None)}, players={})
+    ld = _ld(waiver_targets=[target], replacement=market, source_views={"w1": _source_view(SOURCE_DISAGREEMENT)})
+    prov = build_provenance(ld, _report())[(WAIVER, "w1")]
+    row = prov.invalidation
+    assert row is not None and row.text.startswith(INVALIDATION_PREFIX) and row.text.endswith(".")
+    assert "40 adds" in row.text and "early-season sample" in row.text
+    assert f"market here is {ABUNDANT}" in row.text
+    assert "sources split on him" in row.text
+    assert (row.category, row.direction) == (RISK, CONTEXT)
+
+
+def test_invalidation_covers_a_healthy_insured_starter_and_a_thin_role_record():
+    from sleeper_tool.contender_insurance import InsuranceRecommendation
+    from sleeper_tool.role_trends import INSUFFICIENT, RoleTrend
+
+    healthy = _p("starter-qb", "QB")
+    row = InsuranceRecommendation(
+        starter=healthy, slot="QB", starter_projection=18.0, replacement_projection=6.0,
+        candidate=_p("w1", "QB"), restored_projection=12.0,
+    )
+    ld = _ld(
+        waiver_targets=[_target()], insurance=[row],
+        role_trends={"w1": RoleTrend(gsis_id="g1", label=INSUFFICIENT, games=1)},
+    )
+    text = build_provenance(ld, _report())[(WAIVER, "w1")].invalidation.text
+    assert "starter-qb is healthy" in text
+    assert INSUFFICIENT.lower() in text
+
+
+def test_an_injured_insured_starter_is_not_an_invalidation():
+    from sleeper_tool.contender_insurance import InsuranceRecommendation
+
+    hurt = make_entry(player_id="starter-qb", name="starter-qb", position="QB", injury_status="IR", value=make_value(position="QB"))
+    row = InsuranceRecommendation(
+        starter=hurt, slot="QB", starter_projection=18.0, replacement_projection=6.0,
+        candidate=_p("w1", "QB"), restored_projection=12.0,
+    )
+    prov = build_provenance(_ld(waiver_targets=[_target()], insurance=[row]), _report())[(WAIVER, "w1")]
+    assert prov.invalidation is None
+
+
+def test_no_invalidation_row_when_nothing_in_the_inputs_undercuts_the_read():
+    from sleeper_tool.source_disagreement import STRONG_CONSENSUS
+
+    ld = _ld(waiver_targets=[_target()], source_views={"w1": _source_view(STRONG_CONSENSUS)})
+    assert build_provenance(ld, _report())[(WAIVER, "w1")].invalidation is None
+
+
+def test_invalidation_facts_are_capped():
+    from sleeper_tool.contender_insurance import InsuranceRecommendation
+    from sleeper_tool.recommendation_provenance import MAX_INVALIDATION_FACTS
+    from sleeper_tool.replacement_value import ABUNDANT
+    from sleeper_tool.role_trends import INSUFFICIENT, RoleTrend
+    from sleeper_tool.source_disagreement import HIGH_DISAGREEMENT
+    from sleeper_tool.waiver_engine import EARLY_SEASON_CLAUSE
+
+    target = _target(reason=f"fills your worst need at WR; {EARLY_SEASON_CLAUSE}")
+    ld = _ld(
+        waiver_targets=[target],
+        replacement=ReplacementMarket(positions={"WR": PositionMarket("WR", None, None, None, None, ABUNDANT, None)}, players={}),
+        insurance=[InsuranceRecommendation(starter=_p("starter-wr", "WR"), slot="WR", starter_projection=18.0,
+                                           replacement_projection=6.0, candidate=_p("w1", "WR"), restored_projection=12.0)],
+        role_trends={"w1": RoleTrend(gsis_id="g1", label=INSUFFICIENT, games=1)},
+        source_views={"w1": _source_view(HIGH_DISAGREEMENT)},
+    )
+    text = build_provenance(ld, _report())[(WAIVER, "w1")].invalidation.text
+    assert text.count(";") == MAX_INVALIDATION_FACTS - 1
+
+
+def test_the_explanation_rows_never_widen_the_context_cap():
+    # Both rows exist on a card whose Context slots are already spoken for by
+    # the timing reasons — they live on `extras` instead of pushing MAX_CONTEXT up.
+    from sleeper_tool.recommendation_provenance import INVALIDATION_PREFIX, WHY_DROP_PREFIX
+    from sleeper_tool.replacement_value import ABUNDANT
+
+    drop = _p("bench", "WR")
+    target = _target(drop=drop, faab=25)
+    ld = _ld(
+        waiver_targets=[target],
+        replacement=ReplacementMarket(positions={"WR": PositionMarket("WR", None, None, None, None, ABUNDANT, None)}, players={}),
+        playoff=PlayoffLeverage(
+            label=BUBBLE, wins=3, losses=3, ties=0, games_remaining=6, seed=6, playoff_teams=6,
+            cut_wins=3, deadline_window=True, trade_deadline_week=11, reason="3-3, seed 6 of 12",
+        ),
+    )
+    prov = build_provenance(ld, _report())[(WAIVER, "w1")]
+    assert len(prov.context) == MAX_CONTEXT
+    assert {r.category for r in prov.context} == {TIMING}  # the trending count and the deadline window
+    assert not any(r.text.startswith((WHY_DROP_PREFIX, INVALIDATION_PREFIX)) for r in prov.context)
+    assert prov.why_drop is not None and prov.invalidation is not None
+    assert [r.direction for r in prov.extras] == [CONTEXT, CONTEXT]

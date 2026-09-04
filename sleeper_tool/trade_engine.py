@@ -51,6 +51,7 @@ from sleeper_tool.asset_value import (
 from sleeper_tool.config import LeagueInfo, MY_USER_ID
 from sleeper_tool.draft_picks import OwnedPick, pick_key
 from sleeper_tool.formatting import article, ordinal_pct
+from sleeper_tool.league_economy import INACTIVE_TRADER
 from sleeper_tool.owner_profiles import get_owner_profile
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
 from sleeper_tool.roster_assets import (
@@ -84,6 +85,51 @@ VALUE_TOLERANCE = 0.20  # accept offers where value ratio is within +/-20%
 ELITE_ASSET_PERCENTILE = 90.0  # bypass age filtering for a clear top-tier asset regardless of team timeline
 DECLINE_CONFIRMATION_GAP = 10.0  # dynasty_pctl - redraft_pctl must clear this to call a dip a buy-low, not a real decline
 MAX_CANDIDATES_PER_OPPONENT = 3  # how many buy-low candidates to try matching per opponent before giving up on them
+
+# owner_profiles.trades_often value that makes rate_acceptance say "trades
+# often" — the only profile reading the league's own record can contradict.
+FREQUENT_TRADER_PROFILE = "active"
+
+
+def _preferred_first(their_rosters: list[ValuedRoster], preferred_usernames: list[str]) -> list[ValuedRoster]:
+    """The same rosters, with the buyer board's preferred counterparties
+    pulled to the front in the board's own order. Everything else keeps the
+    order it already had, so the only behaviour that changes is WHICH
+    equally-eligible buyer gets asked first — the eligibility rules below
+    are untouched.
+    """
+    if not preferred_usernames:
+        return their_rosters
+    by_username: dict[str, ValuedRoster] = {}
+    for r in their_rosters:
+        by_username.setdefault(r.owner_username or "", r)
+    preferred = [by_username[u] for u in dict.fromkeys(preferred_usernames) if u in by_username]
+    chosen = {r.roster_id for r in preferred}
+    return [*preferred, *(r for r in their_rosters if r.roster_id not in chosen)]
+
+
+def _inactive_trader_contradiction(
+    league: LeagueInfo, username: str, manager_labels: dict[str, list[str]] | None
+) -> str | None:
+    """The owner-profile note ("trades often", a manual 2026-08 read) and
+    league_economy's Inactive Trader label (this season's actual completed
+    trades) can point opposite ways — a documented limitation that used to
+    be invisible: the acceptance reasons would say the manager trades often
+    while the League Economy panel said they had made none. Says so once,
+    as a caveat. It never moves the rating: which of the two facts is right
+    is not something this tool can decide.
+    """
+    labels = (manager_labels or {}).get(username or "") or []
+    if INACTIVE_TRADER not in labels:
+        return None
+    profile = get_owner_profile(username or "", league.name)
+    if profile.trades_often != FREQUENT_TRADER_PROFILE:
+        return None
+    return (
+        f"The acceptance read says {username or 'this owner'} trades often (owner notes), but this league's "
+        f"transaction record labels them {INACTIVE_TRADER} this season — the two disagree, so treat the "
+        "acceptance rating as the optimistic side of that."
+    )
 
 
 def identify_sell_high(roster: ValuedRoster, exclude_top: int = UNTOUCHABLE_COUNT) -> list[RosterEntry]:
@@ -384,14 +430,38 @@ def _rookie_context_suffix(entry: RosterEntry) -> str:
     return ""
 
 
-def _age_note(entry: RosterEntry, my_status: str) -> str | None:
-    if entry.age is None:
+def _age_note(entry: RosterEntry, my_status: str, currency: str = DYNASTY_CURRENCY) -> str | None:
+    """Silent in redraft currency: contender/rebuild is a multi-season
+    timeline, and a one-season roster has no timeline for an age to fit or
+    cut against. Saying "a proven veteran, fine for a win-now contender"
+    about a redraft team says nothing at all — every redraft team is
+    win-now."""
+    if entry.age is None or currency == REDRAFT_CURRENCY:
         return None
     if my_status in (MIDDLING, REBUILD) and entry.age <= young_max_age(entry.position):
         return f"age {entry.age:g} fits your team's youth priority for a {entry.position or 'skill'} player"
     if my_status == CONTENDER and entry.age >= veteran_min_age(entry.position):
         return f"age {entry.age:g} — a proven {entry.position or ''} veteran, fine for a win-now contender"
     return None
+
+
+# The "trending up, sell before regression" line reads off a rank arrow the
+# sources publish only for players they rank as fantasy skill assets; K and
+# DEF ranks move for reasons (a matchup, a bye) that have nothing to do with
+# a player's own market.
+SELL_TREND_NOTE_POSITIONS = ("QB", "RB", "WR", "TE")
+
+
+def _sell_trend_note(entry: RosterEntry, currency: str) -> str | None:
+    """"He's peaking, sell now" — but only where the trend arrow means
+    that. In redraft currency the arrow is RotoBaller's own redraft rank
+    move, which is what the offer is priced on in the first place, so
+    calling it a regression signal double-counts one number."""
+    if currency == REDRAFT_CURRENCY or entry.position not in SELL_TREND_NOTE_POSITIONS:
+        return None
+    if entry.value.trend != SELL_HIGH_TREND:
+        return None
+    return f"{entry.name} is trending up right now — good time to sell before regression."
 
 
 def _roster_impact_note(
@@ -433,13 +503,18 @@ def _roster_impact_note(
     if weak_pctl is None or incoming_pctl is None:
         return None
     weak_phrase = _pctl_phrase(weakest.value, currency)
+    gap = round(abs(incoming_pctl - weak_pctl))
+    # "points" alone reads as fantasy points on a page full of them; every
+    # gap here is percentile places. A gap that rounds to zero is neither
+    # an upgrade nor depth — it is the same player twice, and saying
+    # "edges past him by 0 points" was the tell.
+    if gap == 0:
+        return f"This is comparable to {possessive} current starting {position}, {weakest.name} ({weak_phrase}) — no measurable gap within position."
     if incoming_pctl > weak_pctl:
-        gap = round(incoming_pctl - weak_pctl)
         if gap < CLEAR_STARTER_MIN_GAP:
-            return f"This edges past {possessive} current starting {position}, {weakest.name} ({weak_phrase}) — a marginal upgrade, {gap} point{'s' if gap != 1 else ''} within position."
-        return f"This clears {possessive} current starting {position}, {weakest.name} ({weak_phrase}) — {article(gap)} {gap}-point jump, not a marginal swap."
-    gap = round(weak_pctl - incoming_pctl)
-    return f"This slots in as depth behind {weakest.name} ({weak_phrase}) at {position}, {gap} points back — not an immediate upgrade for {possessive} lineup."
+            return f"This edges past {possessive} current starting {position}, {weakest.name} ({weak_phrase}) — a marginal upgrade, {gap} percentile pt{'s' if gap != 1 else ''} within position."
+        return f"This clears {possessive} current starting {position}, {weakest.name} ({weak_phrase}) — {article(gap)} {gap}-percentile-point jump, not a marginal swap."
+    return f"This slots in as depth behind {weakest.name} ({weak_phrase}) at {position}, {gap} percentile pts back — not an immediate upgrade for {possessive} lineup."
 
 
 def _value_annotated_names(entries: list[RosterEntry], picks: list[OwnedPick], currency: str) -> str:
@@ -741,12 +816,13 @@ def _build_rationale(
         # it only appears when nothing more specific to this trade fired.
         mine.append(f"Your team profiles as {status_labels[my_status]} in this league ({status_result.reason}).")
 
-    age_note = _age_note(target_entry, my_status)
+    age_note = _age_note(target_entry, my_status, currency)
     if age_note:
         mine.append(f"{target_entry.name}: {age_note}.")
     for give_entry in give:
-        if give_entry.value.trend == SELL_HIGH_TREND:
-            mine.append(f"{give_entry.name} is trending up right now — good time to sell before regression.")
+        trend_note = _sell_trend_note(give_entry, currency)
+        if trend_note:
+            mine.append(trend_note)
         if my_status in (MIDDLING, REBUILD) and give_entry.age is not None and give_entry.age >= veteran_min_age(give_entry.position):
             mine.append(f"{give_entry.name} (age {give_entry.age:g}) is a win-now veteran worth shedding on a {status_labels[my_status]} team.")
     consolidation = _consolidation_note(give)
@@ -830,20 +906,25 @@ def _build_sell_high_rationale(
     caveats: list[str] = []
     label = value_label_for_currency(currency)
 
+    status_labels = {CONTENDER: "a contender", MIDDLING: "middling", REBUILD: "a rebuild candidate"}
     timing = _sell_high_timing_note(sell_entry, currency)
     if timing:
         mine.append(timing)
     else:
         # Honest fallback: the sharper KTC-vs-FantasyPros divergence signal
-        # isn't always available (redraft currency, or the sources happen
-        # to agree) — the plain trend label still says something, just
-        # without the magnitude the sharper check provides.
-        # The percentile is where he sits, not evidence that he is peaking —
-        # it stays off this sentence (the card header already shows it).
+        # isn't always available (the sources happen to agree) — the plain
+        # trend label still says something, just without the magnitude.
+        # _sell_trend_note is silent in redraft and on K/DEF, where the
+        # arrow isn't a regression signal at all.
+        mine.append(_sell_trend_note(sell_entry, currency))
+    # The actual reason a rebuild shops a 31-year-old is his age, and it
+    # never appeared anywhere in the pitch.
+    if currency == DYNASTY_CURRENCY and sell_entry.age is not None and sell_entry.age >= veteran_min_age(sell_entry.position):
         mine.append(
-            f"{sell_entry.name} is trending up on the projection source right now — a window to sell before "
-            "performance regresses toward his underlying value profile."
+            f"{sell_entry.name} (age {sell_entry.age:g}) is past the {sell_entry.position or 'skill'} veteran line — "
+            "his trade value is worth more to this roster than his remaining seasons."
         )
+    mine = [m for m in mine if m]
     if receive:
         primary = max(receive, key=lambda e: need_percentile(e.value, currency) or 0)
         impact = _roster_impact_note(
@@ -852,6 +933,10 @@ def _build_sell_high_rationale(
         )
         if impact:
             mine.append(impact)
+    if not mine:
+        # Same honest fallback _build_rationale uses: a proposal never
+        # ships with an empty "why it works for me" list.
+        mine.append(f"Your team profiles as {status_labels[status_result.status]} in this league ({status_result.reason}).")
 
     # "Why THEY say yes" — the recipient's need is now SUBSTANTIATED
     # against their actual roster (previously just asserted: "fits a need
@@ -1156,6 +1241,8 @@ def generate_trade_proposals(
     storage=None,
     engine=None,
     status_result: TeamStatusResult | None = None,
+    preferred_buyers: dict[str, list[str]] | None = None,
+    manager_labels: dict[str, list[str]] | None = None,
 ) -> list[TradeProposal]:
     """`storage`/`engine` are optional — when provided (and `status_result`
     isn't already supplied), team-status classification also factors in
@@ -1164,6 +1251,22 @@ def generate_trade_proposals(
     biasing a percentile. Pass a pre-computed `status_result` (e.g. from
     report_data.py, which needs it separately anyway) to avoid classifying
     twice.
+
+    Two thin hooks for facts other modules own, both optional and both
+    annotation-shaped — neither invents a rule this module didn't already
+    have:
+
+    `preferred_buyers` (my player_id -> usernames, best buyer first, from
+    buyer_board) reorders WHO pass 2 pitches a sell-high piece to. Without
+    it, pass 2 takes the first roster in iteration order whose top-two
+    needs include the position, which is how the report could name one
+    counterparty in a sell-high card and a different Strong Fit on the
+    Buyer Board for the same player. Every eligibility test is unchanged;
+    only the order they are tried in moves.
+
+    `manager_labels` (username -> league_economy labels) is used for one
+    thing: saying so when the owner profile's "trades often" note and this
+    season's Inactive Trader label contradict each other.
     """
     my_roster = next((r for r in rosters.values() if r.owner_id == MY_USER_ID), None)
     if my_roster is None or not my_roster.entries:
@@ -1342,7 +1445,7 @@ def generate_trade_proposals(
             sell_value = value_for_currency(sell_entry.value, currency) or 0
             if not sell_value:
                 continue
-            for their_roster in other_rosters:
+            for their_roster in _preferred_first(other_rosters, (preferred_buyers or {}).get(sell_entry.player_id) or []):
                 owner_key = their_roster.owner_username or ""
                 if owner_key in targeted_owners or not their_roster.entries:
                     continue
@@ -1453,5 +1556,12 @@ def generate_trade_proposals(
             if pick_proposal is not None:
                 proposals.append(pick_proposal)
                 break
+
+    # One pass over everything generated above, so the contradiction is
+    # surfaced on whichever shape of proposal happened to reach this owner.
+    for p in proposals:
+        contradiction = _inactive_trader_contradiction(league, p.target_username, manager_labels)
+        if contradiction:
+            p.caveats.append(contradiction)
 
     return proposals

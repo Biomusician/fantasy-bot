@@ -53,6 +53,13 @@ The ordering, and why:
            Schedule > Roster > Role > Market > Projection > Portfolio > Risk
 The tail of each list (past the categories the ordering is really about)
 exists so every category is ranked and selection stays deterministic.
+
+Waiver cards additionally carry two explanation rows on `Provenance.extras`
+(`why_drop`, `invalidation`) — the drop half of the transaction explained in
+the engine's own words, and the facts already on this card that would make
+the read wrong. Both are Context and both compete for a Context slot like
+everything else; `extras` is what lets a renderer show them without
+MAX_CONTEXT having to grow to accommodate them.
 """
 from __future__ import annotations
 
@@ -63,11 +70,14 @@ from sleeper_tool.move_impact import MATERIAL_WEEKLY_POINTS
 from sleeper_tool.pick_opportunity import SPENDABLE, STRATEGIC
 from sleeper_tool.portfolio_exposure import acquisition_exposure_note
 from sleeper_tool.recommendation_conflicts import TRADE, WAIVER, conflict_for
+from sleeper_tool.replacement_value import ABUNDANT
+from sleeper_tool.role_trends import INSUFFICIENT as ROLE_INSUFFICIENT
 from sleeper_tool.schedule_window import team_window
-from sleeper_tool.source_disagreement import PROJECTION_ABOVE_MARKET
+from sleeper_tool.source_disagreement import HIGH_DISAGREEMENT, PROJECTION_ABOVE_MARKET, SOURCE_DISAGREEMENT
 from sleeper_tool.stash_board import PRIORITY_STASH
 from sleeper_tool.streamer_planner import ADD, HOLD
 from sleeper_tool.trade_opportunity_cost import FAVORABLE, MAJOR_LINEUP_COST, STRATEGIC_TRADEOFF, UNFAVORABLE
+from sleeper_tool.waiver_engine import EARLY_SEASON_CLAUSE
 
 # -- evidence categories -----------------------------------------------------
 MARKET = "Market"
@@ -102,6 +112,19 @@ ALERT = "alert"
 MAX_FOR = 3
 MAX_AGAINST = 2
 MAX_CONTEXT = 2
+
+# Two per-card explanation rows (see _waiver_card) that answer questions the
+# For/Against/Context ledger never did: what the paired drop actually is,
+# and what would make this read wrong. They are Context like anything else
+# and take their chances against MAX_CONTEXT — raising the cap for them
+# would make every card's "at most two" claim false — but they are also
+# always kept on `Provenance.extras`, so a renderer can put them below the
+# card without the caps having to lie.
+EXTRA_CONTEXT_PRIORITY = 50  # after every module-written context reason in the same category
+WHY_DROP_PREFIX = "Why this drop:"
+INVALIDATION_PREFIX = "What could invalidate this:"
+MAX_DROP_REASONS = 2  # the drop's own reasons, capped so the row stays one sentence
+MAX_INVALIDATION_FACTS = 3
 
 CATEGORY_PRIORITY: dict[str, tuple[str, ...]] = {
     FOR: (ROSTER, ROLE, REPLACEMENT_MARKET, MARKET, PROJECTION, LEAGUE_ECONOMY, SCHEDULE, OPPONENT, TIMING, PORTFOLIO, RISK),
@@ -141,6 +164,10 @@ class Provenance:
     reasons_for: list[Reason] = field(default_factory=list)
     reasons_against: list[Reason] = field(default_factory=list)
     context: list[Reason] = field(default_factory=list)
+    # Explanation rows that survive the MAX_* caps because they are not
+    # competing for the same slots: a renderer shows them below the card.
+    # A reason here may ALSO have made the Context list on its own merit.
+    extras: list[Reason] = field(default_factory=list)
 
     def describe(self) -> list[str]:
         return [r.describe() for r in (*self.reasons_for, *self.reasons_against, *self.context)]
@@ -148,6 +175,14 @@ class Provenance:
     @property
     def all_reasons(self) -> list[Reason]:
         return [*self.reasons_for, *self.reasons_against, *self.context]
+
+    @property
+    def why_drop(self) -> Reason | None:
+        return next((r for r in self.extras if r.text.startswith(WHY_DROP_PREFIX)), None)
+
+    @property
+    def invalidation(self) -> Reason | None:
+        return next((r for r in self.extras if r.text.startswith(INVALIDATION_PREFIX)), None)
 
 
 def sort_key(reason: Reason) -> tuple:
@@ -177,6 +212,7 @@ _PREFIX_CATEGORIES: tuple[tuple[str, str, str], ...] = (
     ("Sources:", PROJECTION, "source_disagreement"),
     ("Market velocity:", MARKET, "market_velocity"),
     ("market velocity", MARKET, "market_velocity"),
+    ("Role:", ROLE, "role_trends"),
     ("Schedule:", SCHEDULE, "schedule_window"),
     ("Portfolio exposure:", PORTFOLIO, "portfolio_exposure"),
     ("portfolio exposure:", PORTFOLIO, "portfolio_exposure"),
@@ -266,6 +302,20 @@ class _Card:
                 freshness=self._freshness.get(freshness_key or source), priority=priority,
             )
         )
+
+    def add_extra(self, category: str, text: str | None, source: str, *, fact: tuple) -> None:
+        """A per-card explanation row. Always kept on `extras`; also offered
+        to Context, where it competes for a slot like any other reason
+        rather than being handed one by raising the cap."""
+        if not text:
+            return
+        self.prov.extras.append(
+            Reason(
+                category=category, direction=CONTEXT, text=text.strip(), source=source,
+                freshness=self._freshness.get(source), priority=EXTRA_CONTEXT_PRIORITY,
+            )
+        )
+        self.add(category, CONTEXT, text, source, fact=fact, priority=EXTRA_CONTEXT_PRIORITY)
 
     def add_annotation(self, text: str, direction: str, default: tuple[str, str], *, priority: int = 0) -> None:
         category, source = classify_annotation(text, default=default)
@@ -454,6 +504,74 @@ def _manager_for(economy, username: str | None):
     return next((m for m in economy.managers.values() if m.username == username), None)
 
 
+# What the paired drop is, when no module wrote a reason for him: the
+# waiver engine's own two fallback rules, said out loud.
+WEAKEST_AT_POSITION = "the weakest bench player at his position"
+WEAKEST_BENCH_PIECE = "the roster's weakest bench piece"
+
+
+def _engine_drop_reasons(ld, player_id: str) -> tuple[str, str] | None:
+    """(reason text, source module) for a drop the decision layer already
+    judged — a roster clog or a standing drop candidate. Their sentences,
+    not a re-derivation."""
+    for clog in getattr(ld, "roster_clogs", None) or []:
+        if clog.entry.player_id == player_id and clog.reasons:
+            return "; ".join(clog.reasons[:MAX_DROP_REASONS]), "roster_clog"
+    for candidate in getattr(ld, "drop_candidates", None) or []:
+        if candidate.entry.player_id == player_id and candidate.reasons:
+            return "; ".join(candidate.reasons[:MAX_DROP_REASONS]), "trade_engine"
+    return None
+
+
+def _why_drop(ld, target) -> tuple[str, str] | None:
+    """The drop half of a waiver row is half the transaction and had no
+    explanation anywhere in the card: it named the cost ("Costs X the
+    roster spot") without ever saying why X."""
+    drop = target.drop_candidate
+    if drop is None:
+        return None
+    judged = _engine_drop_reasons(ld, drop.player_id)
+    if judged is not None:
+        why, source = judged
+    else:
+        why = WEAKEST_AT_POSITION if drop.position == target.position else WEAKEST_BENCH_PIECE
+        source = "waiver_engine"
+    return f"{WHY_DROP_PREFIX} {drop.name} — {why}", source
+
+
+def _invalidation(ld, target) -> str | None:
+    """The facts already on this card's inputs that would make the read
+    wrong, in one sentence. Assembled, not inferred: each clause is a
+    structured fact some module computed, and when none of them are true
+    the row is simply absent rather than filled with a hedge.
+    """
+    facts: list[str] = []
+    if EARLY_SEASON_CLAUSE in (target.reason or ""):
+        facts.append(
+            f"the trending count ({target.trend_count} adds) is an early-season sample, so it may be "
+            "name recognition rather than usage"
+        )
+    market = getattr(ld, "replacement", None)
+    if market is not None and market.scarcity_of(target.position) == ABUNDANT:
+        facts.append(
+            f"the {target.position} market here is {ABUNDANT} — comparable production stays available if he misses"
+        )
+    insurance = next(
+        (i for i in (getattr(ld, "insurance", None) or []) if i.candidate.player_id == target.player_id), None
+    )
+    if insurance is not None and not insurance.starter.injury_status:
+        facts.append(f"{insurance.starter.name} is healthy, so this cover may never be used")
+    trend = (getattr(ld, "role_trends", None) or {}).get(target.player_id)
+    if getattr(trend, "label", None) == ROLE_INSUFFICIENT:
+        facts.append(f"the usage record is still {ROLE_INSUFFICIENT.lower()}")
+    view = (getattr(ld, "source_views", None) or {}).get(target.player_id)
+    if view is not None and view.consensus in (SOURCE_DISAGREEMENT, HIGH_DISAGREEMENT):
+        facts.append(f"the ranking sources split on him ({view.consensus.lower()})")
+    if not facts:
+        return None
+    return f"{INVALIDATION_PREFIX} " + "; ".join(facts[:MAX_INVALIDATION_FACTS]) + "."
+
+
 def _waiver_card(ld, report, target, *, schedule, freshness_by_source) -> Provenance:
     drop_note = f", drop {target.drop_candidate.name}" if target.drop_candidate else ""
     card = _Card(WAIVER, target.player_id, f"Add {target.name}{drop_note}", freshness_by_source)
@@ -512,6 +630,10 @@ def _waiver_card(ld, report, target, *, schedule, freshness_by_source) -> Proven
             ROSTER, CONTEXT, f"Costs {drop.name} ({drop.position or '?'}) the roster spot", "waiver_engine", fact=("drop",), priority=5,
         )
     _timing_reasons(card, ld)
+    why_drop = _why_drop(ld, target)
+    if why_drop is not None:
+        card.add_extra(ROSTER, why_drop[0], why_drop[1], fact=("why_drop",))
+    card.add_extra(RISK, _invalidation(ld, target), "recommendation_provenance", fact=("invalidation",))
     return card.finish()
 
 

@@ -404,17 +404,18 @@ def test_derive_league_format_distributes_flex_and_superflex_demand():
     # FLEX/SUPER_FLEX previously contributed zero demand to any position,
     # badly undercounting depth need in the median real league (2-3 FLEX
     # spots is typical). Each FLEX slot should add real, if approximate,
-    # demand to RB/WR/TE; each SUPER_FLEX slot to all four core positions.
+    # demand to RB/WR/TE; each SUPER_FLEX slot is QB demand (nobody starts
+    # a TE there when a QB is available).
     from sleeper_tool.valuation import derive_league_format
 
     fmt = derive_league_format({
         "scoring_settings": {},
         "roster_positions": ["QB", "RB", "WR", "TE", "FLEX", "SUPER_FLEX", "BN"],
     })
-    assert fmt.starter_slots["QB"] == pytest.approx(1 + 1 / 4)
-    assert fmt.starter_slots["RB"] == pytest.approx(1 + 1 / 3 + 1 / 4)
-    assert fmt.starter_slots["WR"] == pytest.approx(1 + 1 / 3 + 1 / 4)
-    assert fmt.starter_slots["TE"] == pytest.approx(1 + 1 / 3 + 1 / 4)
+    assert fmt.starter_slots["QB"] == pytest.approx(2.0)
+    assert fmt.starter_slots["RB"] == pytest.approx(1 + 1 / 3)
+    assert fmt.starter_slots["WR"] == pytest.approx(1 + 1 / 3)
+    assert fmt.starter_slots["TE"] == pytest.approx(1 + 1 / 3)
 
 
 # -- identify_drop_candidates: proactive roster-cleanup recommendations -----
@@ -1579,11 +1580,163 @@ def test_a_starter_upgrade_only_clears_at_a_ten_point_within_position_gap():
         return _roster_impact_note(roster, "WR", incoming, "dynasty")
 
     marginal = note(59.0)
-    assert "a marginal upgrade, 9 points" in marginal and "clears" not in marginal
+    assert "a marginal upgrade, 9 percentile pts" in marginal and "clears" not in marginal
 
     clears = note(60.0)
-    assert "clears your current starting WR" in clears and "10-point jump" in clears
+    assert "clears your current starting WR" in clears and "10-percentile-point jump" in clears
     assert "not a marginal swap" in clears
+
+    # A gap that rounds to zero is the same player twice, not an upgrade.
+    assert "no measurable gap within position" in note(50.4)
 
     # And it is honest the other way: worse than the weakest starter is depth.
     assert "slots in as depth behind" in note(40.0)
+
+
+# -- preferred_buyers / manager_labels: the buyer board and the league's own
+# transaction record, as thin hooks into pass 2 -----------------------------
+
+
+def _sell_high_two_buyer_scenario(names=("AlphaOwner", "BravoOwner")):
+    """One rising TE on my bench and two identical opponents who both need
+    TE and can both send back a matching QB. Pass 2's eligibility test is
+    satisfied by BOTH of them, so which one gets pitched is decided purely
+    by iteration order — exactly the case preferred_buyers exists for.
+    Nothing here is a buy-low candidate (no "down" trend anywhere), so pass
+    1 contributes nothing and pass 2 sees the full opponent list.
+    """
+    def pv(pos, pctl, value, trend="no change"):
+        return make_value(
+            position=pos, dynasty_value=value, dynasty_value_percentile=pctl,
+            dynasty_positional_percentile=pctl, redraft_ecr_percentile=pctl, trend=trend,
+        )
+
+    league = make_league_info(kind="dynasty")
+    mine = [
+        make_entry(player_id="my-rb1", position="RB", is_starter=True, value=pv("RB", 95, 9000)),
+        make_entry(player_id="my-wr1", position="WR", is_starter=True, value=pv("WR", 95, 9000)),
+        # No rosterable QB of my own, so any QB coming back is a real fit.
+        make_entry(player_id="my-qb-weak", position="QB", is_starter=True, value=pv("QB", 15, 500)),
+        make_entry(player_id="my-te-rising", name="Rising TE", position="TE", is_starter=False, value=pv("TE", 60, 5000, trend="rising")),
+    ]
+    rosters = {1: make_roster(roster_id=1, owner_id=MY_USER_ID, owner_username="me", team_name="My Team", league=league, entries=mine)}
+    for i, name in enumerate(names, start=2):
+        rosters[i] = make_roster(
+            roster_id=i, owner_id=f"opp{i}", owner_username=name, team_name=f"{name} Team", league=league,
+            entries=[
+                make_entry(player_id=f"{name}-rb1", position="RB", is_starter=True, value=pv("RB", 95, 9000)),
+                make_entry(player_id=f"{name}-wr1", position="WR", is_starter=True, value=pv("WR", 95, 9000)),
+                make_entry(player_id=f"{name}-qb2", name=f"{name} QB", position="QB", is_starter=False, value=pv("QB", 60, 5000)),
+            ],
+        )
+    return league, rosters
+
+
+def test_preferred_first_puts_the_board_order_in_front_and_keeps_the_rest():
+    from sleeper_tool.trade_engine import _preferred_first
+
+    a, b, c = (make_roster(roster_id=i, owner_username=n) for i, n in ((1, "a"), (2, "b"), (3, "c")))
+    assert _preferred_first([a, b, c], []) == [a, b, c]
+    assert _preferred_first([a, b, c], ["c", "b"]) == [c, b, a]
+    # A username that isn't in this league is skipped, not an error.
+    assert _preferred_first([a, b, c], ["ghost", "c"]) == [c, a, b]
+    # A repeated preference doesn't duplicate the roster.
+    assert _preferred_first([a, b, c], ["c", "c"]) == [c, a, b]
+
+
+def test_generate_trade_proposals_pitches_the_sell_high_to_the_preferred_buyer():
+    from sleeper_tool.trade_engine import generate_trade_proposals
+
+    league, rosters = _sell_high_two_buyer_scenario()
+    # Iteration order alone picks the first eligible roster...
+    default = generate_trade_proposals(league, rosters, max_proposals=3)
+    assert [p.target_username for p in default] == ["AlphaOwner"]
+
+    # ...and the buyer board's own order overrides it, without changing
+    # anything else about the proposal.
+    preferred = generate_trade_proposals(
+        league, rosters, max_proposals=3, preferred_buyers={"my-te-rising": ["BravoOwner"]}
+    )
+    assert [p.target_username for p in preferred] == ["BravoOwner"]
+    assert preferred[0].trade_type == "sell_high"
+    assert [e.player_id for e in preferred[0].give] == ["my-te-rising"]
+
+
+def test_preferred_buyers_never_relaxes_an_eligibility_test():
+    # A preferred buyer who has no use for the position is still skipped:
+    # the hook reorders who is asked first, it does not make anyone eligible.
+    from sleeper_tool.trade_engine import generate_trade_proposals
+
+    league, rosters = _sell_high_two_buyer_scenario()
+    # Give Bravo a strong TE, so TE is no longer one of their top-2 needs.
+    rosters[3].entries.append(
+        make_entry(player_id="BravoOwner-te1", position="TE", is_starter=True, value=make_value(
+            position="TE", dynasty_value=9500, dynasty_value_percentile=97,
+            dynasty_positional_percentile=97, redraft_ecr_percentile=97,
+        ))
+    )
+    proposals = generate_trade_proposals(
+        league, rosters, max_proposals=3, preferred_buyers={"my-te-rising": ["BravoOwner"]}
+    )
+    assert [p.target_username for p in proposals] == ["AlphaOwner"]
+
+
+def test_preferred_buyers_for_another_player_leaves_the_order_alone():
+    from sleeper_tool.trade_engine import generate_trade_proposals
+
+    league, rosters = _sell_high_two_buyer_scenario()
+    proposals = generate_trade_proposals(
+        league, rosters, max_proposals=3, preferred_buyers={"someone-else": ["BravoOwner"]}
+    )
+    assert [p.target_username for p in proposals] == ["AlphaOwner"]
+
+
+def test_inactive_trader_label_contradicting_the_owner_profile_becomes_a_caveat():
+    from sleeper_tool.league_economy import INACTIVE_TRADER
+    from sleeper_tool.owner_profiles import get_owner_profile
+    from sleeper_tool.trade_engine import generate_trade_proposals
+
+    # A real documented "trades often" owner — the only kind this can fire on.
+    assert get_owner_profile("thenotoriousDIP", "Test League").trades_often == "active"
+    league, rosters = _sell_high_two_buyer_scenario(names=("thenotoriousDIP", "BravoOwner"))
+    proposals = generate_trade_proposals(
+        league, rosters, max_proposals=3, manager_labels={"thenotoriousDIP": [INACTIVE_TRADER]}
+    )
+    p = proposals[0]
+    assert p.target_username == "thenotoriousDIP"
+    assert any("trades often" in r for r in p.acceptance_reasons)
+    contradiction = [c for c in p.caveats if INACTIVE_TRADER in c]
+    assert len(contradiction) == 1 and "trades often" in contradiction[0]
+    # A caveat, never a rating change: the same offer without the labels
+    # rates identically.
+    assert generate_trade_proposals(league, rosters, max_proposals=3)[0].acceptance_rating == p.acceptance_rating
+
+
+def test_no_contradiction_caveat_when_the_two_sources_agree_or_are_silent():
+    from sleeper_tool.league_economy import FREQUENT_TRADER, INACTIVE_TRADER
+    from sleeper_tool.trade_engine import generate_trade_proposals
+
+    league, rosters = _sell_high_two_buyer_scenario(names=("thenotoriousDIP", "BravoOwner"))
+
+    def caveats(manager_labels):
+        p = generate_trade_proposals(league, rosters, max_proposals=3, manager_labels=manager_labels)[0]
+        return [c for c in p.caveats if INACTIVE_TRADER in c]
+
+    assert caveats(None) == []
+    assert caveats({}) == []
+    assert caveats({"thenotoriousDIP": [FREQUENT_TRADER]}) == []  # both say active — no contradiction
+    assert caveats({"BravoOwner": [INACTIVE_TRADER]}) == []  # a label for someone we aren't trading with
+    assert len(caveats({"thenotoriousDIP": [INACTIVE_TRADER]})) == 1
+
+
+def test_no_contradiction_caveat_for_an_owner_with_no_trades_often_note():
+    # The undocumented owners (DEFAULT_PROFILE) are the common case: an
+    # Inactive Trader label contradicts nothing there, so it says nothing.
+    from sleeper_tool.league_economy import INACTIVE_TRADER
+    from sleeper_tool.trade_engine import generate_trade_proposals
+
+    league, rosters = _sell_high_two_buyer_scenario()
+    proposals = generate_trade_proposals(
+        league, rosters, max_proposals=3, manager_labels={"AlphaOwner": [INACTIVE_TRADER]}
+    )
+    assert not [c for c in proposals[0].caveats if INACTIVE_TRADER in c]

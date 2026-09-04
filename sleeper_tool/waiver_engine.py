@@ -22,12 +22,16 @@ from sleeper_tool.asset_value import (
 from sleeper_tool.config import LeagueInfo
 from sleeper_tool.formatting import ordinal, ordinal_pct
 from sleeper_tool.lineup_optimizer import LONG_TERM_INJURY_STATUSES, LONG_TERM_SLEEPER_STATUSES
+from sleeper_tool.role_trends import RISING as ROLE_RISING, SURGING as ROLE_SURGING
 from sleeper_tool.roster_analysis import SKILL_POSITIONS, RosterEntry, ValuedRoster, player_name
 from sleeper_tool.storage import Storage
 from sleeper_tool.trade_engine import identify_needs
 from sleeper_tool.valuation import PlayerValue, ValuationEngine
 
 EARLY_SEASON_WEEK_CUTOFF = 4  # below this week, trending-adds are hype-driven more than usage-driven
+# The exact sentence, so provenance can ask whether this run's reason
+# carries the early-season hedge instead of re-deriving the week.
+EARLY_SEASON_CLAUSE = "small early-season sample, treat as hype risk"
 
 # -- Priority tiers: how urgent is this add ----------------------------------
 MUST_ADD = "Must Add"
@@ -45,6 +49,12 @@ STREAMER = "Streamer"  # this-week/short-term only
 BREAKOUT_YEARS_EXP_THRESHOLD = 2  # years_exp <= this counts as a true breakout candidate, not just "young-ish"
 STASH_MIN_PERCENTILE = 40.0
 SEASON_STARTER_MIN_PERCENTILE = 60.0
+
+# The role clause carries the "Role:" prefix recommendation_provenance maps
+# to Role evidence, so a usage-driven tier is attributed to usage in the
+# card rather than folded into the waiver engine's own roster reasoning.
+ROLE_REASON_PREFIX = "Role:"
+_ROLE_CLAUSE_WORD = {ROLE_RISING: "rising", ROLE_SURGING: "surging"}
 
 TOP_TREND_RANK_CUTOFF = 15  # top-N-of-fetched-batch counts as "real buzz" for the Speculative tier -- rank, not a raw
 # count, since Sleeper's absolute add-counts drift week to week with the overall news cycle (a slow week's #1 trending
@@ -214,21 +224,63 @@ def _upgrades_starter(
     return new_pctl > weak_pctl
 
 
-def _priority_tier(fills_need: bool, pctl: float | None, trend_rank: int, upgrades_starter: bool | None = None) -> str:
+_TIER_RANK = {MUST_ADD: 0, STRONG_ADD: 1, MODERATE: 2, SPECULATIVE: 3, MONITOR: 4}
+
+
+def _role_tier_floor(role_label: str | None, pctl: float | None) -> str | None:
+    """A measured role breakout raises the FLOOR of the tier, never its
+    ceiling. Surging (a decision the team visibly made) on a rosterable
+    player is at least a Strong Add; Rising is at least Moderate. Neither
+    can reach Must Add on its own: Must Add still means "beats the weakest
+    starter he would replace", and usage is not that comparison. An
+    unrecognised label (Stable, Insufficient Role History, or anything a
+    future role module invents) is no signal at all, not a demotion.
+
+    A surging role below the rosterable bar takes the Rising floor rather
+    than nothing, so the stronger of the two labels can never produce the
+    weaker tier.
+    """
+    if role_label == ROLE_SURGING and (pctl or 0) >= MIN_ROSTERABLE_PERCENTILE:
+        return STRONG_ADD
+    if role_label in (ROLE_RISING, ROLE_SURGING):
+        return MODERATE
+    return None
+
+
+def _priority_tier(
+    fills_need: bool, pctl: float | None, trend_rank: int, upgrades_starter: bool | None = None,
+    role_label: str | None = None,
+) -> str:
     """`upgrades_starter` False demotes a would-be Must Add to Strong Add: a
     "need" is relative (the two weakest of four positions are always needs,
     even behind a 94th-percentile starter), so a player who is depth behind
-    the starter he'd supposedly replace is not a must."""
+    the starter he'd supposedly replace is not a must.
+
+    `role_label` is role_trends' label for the same player (see
+    _role_tier_floor) — it can only raise a tier the rules below already
+    settled."""
     p = pctl or 0
     if fills_need and p >= 70 and upgrades_starter is not False:
-        return MUST_ADD
-    if (fills_need and p >= 50) or (not fills_need and p >= 80):
-        return STRONG_ADD
-    if fills_need or p >= MIN_ROSTERABLE_PERCENTILE:
-        return MODERATE
-    if trend_rank < TOP_TREND_RANK_CUTOFF:
-        return SPECULATIVE
-    return MONITOR
+        tier = MUST_ADD
+    elif (fills_need and p >= 50) or (not fills_need and p >= 80):
+        tier = STRONG_ADD
+    elif fills_need or p >= MIN_ROSTERABLE_PERCENTILE:
+        tier = MODERATE
+    elif trend_rank < TOP_TREND_RANK_CUTOFF:
+        tier = SPECULATIVE
+    else:
+        tier = MONITOR
+    floor = _role_tier_floor(role_label, pctl)
+    if floor is not None and _TIER_RANK[floor] < _TIER_RANK[tier]:
+        return floor
+    return tier
+
+
+def _role_reason_clause(role_label: str | None) -> str | None:
+    """"Role: surging per usage data" — the same label the tier read, said
+    in the reason so the two can never disagree."""
+    word = _ROLE_CLAUSE_WORD.get(role_label or "")
+    return f"{ROLE_REASON_PREFIX} {word} per usage data" if word else None
 
 
 def _horizon(
@@ -285,13 +337,22 @@ def get_waiver_targets(
     clog_ids: Collection[str] = (),
     starter_ids: Collection[str] | None = None,
     protected_ids: Collection[str] = (),
+    role_labels: dict[str, str] | None = None,
 ) -> list[WaiverTarget]:
     """`clog_ids`: roster_clog's dead-weight players, preferred as the drop
     paired with each add (see find_drop_candidate). `starter_ids`: the
     optimizer's starters, so "your current starting X" and the
     beats-the-starter test read the real lineup rather than Sleeper's
     set-lineup flag. `protected_ids` (typically those same starters) are
-    never offered as the paired drop."""
+    never offered as the paired drop.
+
+    `role_labels` (Sleeper player_id -> role_trends label) is a thin hook,
+    not a second role model: a Role Surging rosterable player is at least a
+    Strong Add and a Role Rising one at least Moderate, because a role the
+    team has visibly handed over is the earliest evidence the ranking
+    sources haven't priced yet. It can never make a Must Add — that still
+    requires beating the weakest starter — and any label this module does
+    not recognise is simply no signal."""
     if not my_roster.entries:
         # No roster yet usually means the league hasn't drafted (redraft
         # leagues start empty) — nothing meaningful to recommend yet.
@@ -353,7 +414,7 @@ def get_waiver_targets(
             # Early-season trending is hype/name-recognition driven more than
             # usage-driven — there just isn't enough game data yet for adds
             # to reflect real opportunity share the way they will by week 4+.
-            reason_bits.append("small early-season sample, treat as hype risk")
+            reason_bits.append(EARLY_SEASON_CLAUSE)
         if current_week is not None and value.bye_week == current_week:
             reason_bits.append(f"on bye week {current_week} — add for future weeks, not an immediate starter")
         if pctl is not None:
@@ -365,8 +426,13 @@ def get_waiver_targets(
             qualifier = "within-position " if currency == DYNASTY_CURRENCY and value.dynasty_positional_percentile is not None else ""
             reason_bits.append(f"{ordinal_pct(pctl)} {qualifier}{value_label_for_currency(currency)}")
 
+        role_label = (role_labels or {}).get(pid)
+        role_clause = _role_reason_clause(role_label)
+        if role_clause:
+            reason_bits.append(role_clause)
+
         upgrades = _upgrades_starter(my_roster, position, pctl, currency, starter_ids)
-        tier = _priority_tier(fills_need, pctl, trend_rank, upgrades)
+        tier = _priority_tier(fills_need, pctl, trend_rank, upgrades, role_label)
         horizon = _horizon(value, pdata.get("years_exp"), currency, fills_need, pctl, upgrades)
         faab_pct = _suggested_faab_pct(tier, waiver_budget, my_roster.waiver_budget_used)
 
@@ -388,8 +454,7 @@ def get_waiver_targets(
             )
         )
 
-    _TIER_ORDER = {MUST_ADD: 0, STRONG_ADD: 1, MODERATE: 2, SPECULATIVE: 3, MONITOR: 4}
-    targets.sort(key=lambda t: (_TIER_ORDER.get(t.priority_tier, 9), -(_display_percentile(t.value, currency) or 0)))
+    targets.sort(key=lambda t: (_TIER_RANK.get(t.priority_tier, 9), -(_display_percentile(t.value, currency) or 0)))
     targets = targets[:top_n]
 
     # Assign drop candidates AFTER sorting into final priority order, not

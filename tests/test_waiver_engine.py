@@ -482,3 +482,122 @@ def test_a_drop_candidate_worse_than_the_add_is_still_paired():
     targets = get_waiver_targets(storage, engine, league, my_roster, current_week=6)
     assert targets[0].drop_candidate is not None
     assert targets[0].drop_candidate.player_id == "my-poor-wr"
+
+
+# -- role_labels: a measured role breakout raises the tier's floor ------------
+
+
+def test_role_surging_at_the_rosterable_boundary_is_at_least_a_strong_add():
+    from sleeper_tool.asset_value import MIN_ROSTERABLE_PERCENTILE
+    from sleeper_tool.role_trends import SURGING
+    from sleeper_tool.waiver_engine import _priority_tier
+
+    # Exactly at the bar the constant names, and one hair under it.
+    assert _priority_tier(False, MIN_ROSTERABLE_PERCENTILE, 20, role_label=SURGING) == STRONG_ADD
+    assert _priority_tier(False, MIN_ROSTERABLE_PERCENTILE - 0.1, 20, role_label=SURGING) == MODERATE
+    # Without the label the same player is only what the value rules say.
+    assert _priority_tier(False, MIN_ROSTERABLE_PERCENTILE, 20) == MODERATE
+    assert _priority_tier(False, MIN_ROSTERABLE_PERCENTILE - 0.1, 20) == MONITOR
+
+
+def test_role_rising_is_at_least_moderate_however_low_the_value():
+    from sleeper_tool.role_trends import RISING
+    from sleeper_tool.waiver_engine import _priority_tier
+
+    assert _priority_tier(False, 5.0, 40, role_label=RISING) == MODERATE  # would be MONITOR
+    assert _priority_tier(False, 5.0, 0, role_label=RISING) == MODERATE  # would be SPECULATIVE
+    assert _priority_tier(False, 5.0, 40) == MONITOR
+
+
+def test_a_role_label_never_produces_a_must_add_on_its_own():
+    from sleeper_tool.role_trends import RISING, SURGING
+    from sleeper_tool.waiver_engine import _priority_tier
+
+    # The Must Add bar is "beats the weakest starter he would replace";
+    # usage is not that comparison, so the strongest role signal on a
+    # 95th-percentile need still stops at Strong Add when he'd be depth.
+    for label in (RISING, SURGING):
+        assert _priority_tier(True, 95.0, 0, upgrades_starter=False, role_label=label) == STRONG_ADD
+    # And a floor never pulls a genuine Must Add back down.
+    assert _priority_tier(True, 95.0, 0, upgrades_starter=True, role_label=RISING) == MUST_ADD
+    assert _priority_tier(True, 95.0, 0, upgrades_starter=True, role_label=SURGING) == MUST_ADD
+
+
+def test_an_unrecognised_role_label_is_no_signal_at_all():
+    from sleeper_tool.role_trends import COLLAPSING, FALLING, INSUFFICIENT, STABLE
+    from sleeper_tool.waiver_engine import _priority_tier
+
+    for label in (STABLE, INSUFFICIENT, FALLING, COLLAPSING, "Role Sideways", "", None):
+        assert _priority_tier(False, 5.0, 40, role_label=label) == MONITOR, label
+        assert _priority_tier(False, 50.0, 40, role_label=label) == MODERATE, label
+
+
+def test_role_surging_non_need_horizon_is_a_dynasty_stash_and_a_redraft_streamer():
+    # The horizon rules are unchanged by the role hook — this pins what a
+    # Role Surging non-need add actually gets under them.
+    from sleeper_tool.asset_value import DYNASTY_CURRENCY, MIN_ROSTERABLE_PERCENTILE, REDRAFT_CURRENCY
+
+    value = make_value(position="WR", trend="no change")
+    assert _horizon(value, 6, DYNASTY_CURRENCY, False, MIN_ROSTERABLE_PERCENTILE) == STASH
+    assert _horizon(value, 6, REDRAFT_CURRENCY, False, MIN_ROSTERABLE_PERCENTILE) == STREAMER
+
+
+def test_role_clause_is_prefixed_so_provenance_reads_it_as_role_evidence():
+    from sleeper_tool.recommendation_provenance import ROLE, classify_annotation
+    from sleeper_tool.role_trends import RISING, STABLE, SURGING
+    from sleeper_tool.waiver_engine import ROLE_REASON_PREFIX, _role_reason_clause
+
+    assert _role_reason_clause(RISING) == f"{ROLE_REASON_PREFIX} rising per usage data"
+    assert _role_reason_clause(SURGING) == f"{ROLE_REASON_PREFIX} surging per usage data"
+    assert _role_reason_clause(STABLE) is None
+    assert _role_reason_clause(None) is None
+    category, source = classify_annotation(_role_reason_clause(SURGING), default=("Roster", "waiver_engine"))
+    assert (category, source) == (ROLE, "role_trends")
+
+
+def _role_label_roster():
+    """Every position covered so nothing defaults into a need, and the
+    trending player sits at a rosterable-but-unremarkable percentile."""
+    entries = [
+        make_entry(player_id="my-qb", position="QB", is_starter=True, value=make_value(position="QB", dynasty_value_percentile=90.0)),
+        make_entry(player_id="my-rb", position="RB", is_starter=True, value=make_value(position="RB", dynasty_value_percentile=88.0)),
+        make_entry(player_id="my-te", position="TE", is_starter=True, value=make_value(position="TE", dynasty_value_percentile=86.0)),
+        make_entry(player_id="my-wr", position="WR", is_starter=True, value=make_value(position="WR", dynasty_value_percentile=84.0)),
+        make_entry(player_id="my-bench-wr", position="WR", is_starter=False, value=make_value(position="WR", dynasty_value_percentile=20.0)),
+    ]
+    return make_league_info(kind="dynasty"), make_roster(entries=entries, league=make_league_info(kind="dynasty"))
+
+
+def test_get_waiver_targets_applies_the_role_floor_and_says_so_in_the_reason():
+    from sleeper_tool.role_trends import SURGING
+
+    league, my_roster = _role_label_roster()
+    players = {"new1": _player("new1", "Breakout Guy", "QB")}
+    trending = [{"player_id": "new1", "count": 40}]
+    storage = FakeStorage(players, trending)
+    engine = FakeEngine({"Breakout Guy": make_value(name="Breakout Guy", position="QB", dynasty_value_percentile=50.0)})
+
+    plain = get_waiver_targets(storage, engine, league, my_roster)[0]
+    assert plain.priority_tier == MODERATE
+    assert "Role:" not in plain.reason
+
+    surging = get_waiver_targets(storage, engine, league, my_roster, role_labels={"new1": SURGING})[0]
+    assert surging.priority_tier == STRONG_ADD
+    assert "Role: surging per usage data" in surging.reason
+    # The tier moved; the horizon rules did not.
+    assert surging.horizon == plain.horizon
+
+
+def test_get_waiver_targets_ignores_a_role_label_for_a_different_player():
+    from sleeper_tool.role_trends import SURGING
+
+    league, my_roster = _role_label_roster()
+    players = {"new1": _player("new1", "Breakout Guy", "QB")}
+    storage = FakeStorage(players, [{"player_id": "new1", "count": 40}])
+    engine = FakeEngine({"Breakout Guy": make_value(name="Breakout Guy", position="QB", dynasty_value_percentile=50.0)})
+
+    targets = get_waiver_targets(storage, engine, league, my_roster, role_labels={"someone-else": SURGING})
+    assert targets[0].priority_tier == MODERATE and "Role:" not in targets[0].reason
+    # An unrecognised string is the same as no label at all.
+    unknown = get_waiver_targets(storage, engine, league, my_roster, role_labels={"new1": "Role Wobbling"})
+    assert unknown[0].priority_tier == MODERATE and "Role:" not in unknown[0].reason
