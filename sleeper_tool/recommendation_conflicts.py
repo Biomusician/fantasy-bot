@@ -78,6 +78,16 @@ def _status_downgrade(impact) -> str | None:
     return f"drops this team from {before} to {after}"
 
 
+# The same sentences recommendation_provenance treats as context, so one
+# clause is not context on the card and evidence in the conflict block.
+# Imported lazily: provenance imports this module for TRADE/WAIVER.
+def _is_context_only(text: str) -> bool:
+    from sleeper_tool.recommendation_provenance import _CONTEXT_ONLY_MARKERS
+
+    lowered = text.lower()
+    return any(marker.lower() in lowered for marker in _CONTEXT_ONLY_MARKERS)
+
+
 def detect_conflicts(ld) -> list[Conflict]:
     """`ld` is a LeagueReportData (duck-typed; report_data imports this)."""
     out: list[Conflict] = []
@@ -116,7 +126,11 @@ def detect_conflicts(ld) -> list[Conflict]:
         if not against:
             continue
         reasons_for = [f"assets {econ.asset_economics.lower()}"] if econ is not None and econ.asset_economics == FAVORABLE else []
-        reasons_for += [_short(r) for r in p.rationale_for_me[:2]]
+        # The engine's rationale list carries context sentences too ("depth
+        # behind X, not an immediate upgrade"); the same marker list
+        # provenance uses keeps them off the For side here as well, so one
+        # sentence isn't context on the card and evidence in the conflict.
+        reasons_for += [_short(r) for r in p.rationale_for_me if not _is_context_only(r)][:2]
         out.append(Conflict(kind, key, p.summary_line(), reasons_for, against))
 
     # The tool's own drop list: a drop it independently recommends is not
