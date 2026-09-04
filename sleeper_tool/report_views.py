@@ -479,3 +479,12 @@ def pick_group_label(items) -> str:
     if len(values) == 1:
         return f"{head} (KTC {next(iter(values)):,} each)"
     return head
+
+
+def common_schedule_line(leagues) -> str:
+    """The schedule-window sentence when every drafted league's is the same
+    (the usual case — the NFL calendar is the NFL calendar), else "". A
+    fact printed once at the top is a fact; printed nine times it is
+    furniture."""
+    lines = {ld.windows.describe() for ld in leagues if getattr(ld, "windows", None) is not None}
+    return lines.pop() if len(lines) == 1 else ""

@@ -666,7 +666,9 @@ def test_a_fresh_schedule_fetch_feeds_windows_and_schedule_notes(lab):
     assert built.labels("nflverse_schedule") == {PARTIAL}
     assert "schedule_windows" not in built.report.suppressed
     assert built.ld.windows is not None and built.ld.windows.next_weeks == [3, 4, 5]
-    assert "Schedule windows" in built.md and "Schedule windows" in built.html_text
+    # One shared schedule line for the whole report (the NFL calendar is the
+    # same in every league), the per-league section only where it differs.
+    assert "Schedule: " in built.md and "Schedule windows" in built.html_text
     assert any(n.startswith("Schedule:") for t in built.ld.waiver_targets for n in t.notes)
 
 

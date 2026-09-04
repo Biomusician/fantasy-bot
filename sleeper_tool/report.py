@@ -28,6 +28,7 @@ from sleeper_tool.portfolio_exposure import PortfolioExposure
 from sleeper_tool.replacement_value import SCARCE, VERY_SCARCE, ReplacementMarket
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
 from sleeper_tool.report_views import (
+    common_schedule_line,
     grouped_picks,
     pick_group_label,
     ALL_SAME_PRIORITY_NOTE,
@@ -573,7 +574,7 @@ def _render_league_economy(economy: LeagueEconomy | None, my_roster_id: int) -> 
 CONTEXT_SUMMARY = "lineup, roster, clogs, replacement market, stash board, buyer board, schedule, draft capital, league economy"
 
 
-def _render_context(data: LeagueReportData) -> list[str]:
+def _render_context(data: LeagueReportData, shared_schedule: str = "") -> list[str]:
     """Everything that explains or qualifies the moves above, collapsed so
     that a dozen capabilities don't read as a dozen equal sections."""
     body: list[str] = []
@@ -606,7 +607,7 @@ def _render_context(data: LeagueReportData) -> list[str]:
             body.append(f"- **{b.candidate.name}** ({b.candidate.position or '?'}): {buyers}")
         body.append("")
 
-    if data.windows is not None:
+    if data.windows is not None and data.windows.describe() != shared_schedule:
         body.append(_heading("Schedule windows"))
         body.append("")
         body.append(data.windows.describe())
@@ -626,7 +627,7 @@ def _render_context(data: LeagueReportData) -> list[str]:
     return [*_summary("Roster context", CONTEXT_SUMMARY), *body, *_CLOSE_DETAILS]
 
 
-def render_league_section(data: LeagueReportData) -> list[str]:
+def render_league_section(data: LeagueReportData, shared_schedule: str = "") -> list[str]:
     lines = [f"## {data.league.name}", ""]
 
     if data.error:
@@ -729,7 +730,7 @@ def render_league_section(data: LeagueReportData) -> list[str]:
         lines.append("")
         lines.extend(body)
 
-    lines.extend(_render_context(data))
+    lines.extend(_render_context(data, shared_schedule))
     return lines
 
 
@@ -748,8 +749,11 @@ def render_weekly_report(report: WeeklyReportData) -> str:
     lines.extend(_render_portfolio_exposure(report.portfolio, report.asymmetries))
     lines.extend(_render_signal_health(report))
 
+    shared_schedule = common_schedule_line(report.leagues)
+    if shared_schedule:
+        lines.extend([f"_Schedule: {shared_schedule}_", ""])
     for league_data in report.leagues:
-        lines.extend(render_league_section(league_data))
+        lines.extend(render_league_section(league_data, shared_schedule))
         lines.append("---")
         lines.append("")
 
