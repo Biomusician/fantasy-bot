@@ -472,6 +472,7 @@ def _waiver_table(
     _CHIP_KIND = {"negative": "negative", "neutral": "neutral"}
     rows = []
     seen_leads: set = set()
+    table_notes: set[str] = set()
     for t in targets:  # already capped by the engine; insurance rows ride along after the cap
         tier_chip = _chip(t.priority_tier, _TIER_CHIP_KIND.get(t.priority_tier, "neutral"))
         drop = esc(t.drop_candidate.name) if t.drop_candidate else '<span class="muted">—</span>'
@@ -487,6 +488,7 @@ def _waiver_table(
         # click away instead of turning the cell into a 600-character wall.
         # Plus the two explanation rows provenance keeps off the capped
         # lists: what the paired drop is, and what would make this wrong.
+        table_notes.update(row.table_notes)
         prov = (provenance or {}).get((WAIVER, t.player_id))
         extras = [r.text for r in ((prov.why_drop, prov.invalidation) if prov is not None else ()) if r is not None]
         details = (
@@ -508,11 +510,16 @@ def _waiver_table(
             f'<td class="waiver-reason">{esc(row.lead)}{chips_html}{details}</td>'
             "</tr>"
         )
+    # Facts about the week rather than about a player: once, under the table.
+    footnote = (
+        f'<p class="muted">{esc("; ".join(sorted(table_notes)))} &mdash; true of every row this week, not of one player.</p>'
+        if table_notes else ""
+    )
     return (
         '<div class="table-scroll"><table class="waiver-table">'
         "<thead><tr><th>Priority</th><th>Player</th><th>Pos</th><th>Team</th><th>Drop</th>"
         "<th>Horizon</th><th>FAAB</th><th>Why</th></tr></thead>"
-        f"<tbody>{''.join(rows)}</tbody></table></div>"
+        f"<tbody>{''.join(rows)}</tbody></table></div>{footnote}"
     )
 
 

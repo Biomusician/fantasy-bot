@@ -47,7 +47,9 @@ class StashCandidate:
 
     def describe(self) -> str:
         spot = f"; cut {self.drop.name} for the spot" if self.drop else ""
-        return f"{self.entry.name} ({self.entry.position or '?'}, {self.entry.team or '-'}): {'; '.join(self.reasons)}{spot} — developmental hold, not lineup help"
+        # The section heading already says these are developmental holds;
+        # repeating it on every bullet is the heading, twice.
+        return f"{self.entry.name} ({self.entry.position or '?'}, {self.entry.team or '-'}): {'; '.join(self.reasons)}{spot}"
 
 
 def _is_developmental(entry: RosterEntry) -> bool:

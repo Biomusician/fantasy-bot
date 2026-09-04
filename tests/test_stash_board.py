@@ -34,7 +34,8 @@ def test_priority_and_watch_labels_and_exemptions():
     ]
     board = _board(pool)
     assert [(c.entry.player_id, c.label) for c in board] == [("rookie_wr", PRIORITY_STASH), ("second_year_rb", WATCH)]
-    assert board[0].describe().endswith("— developmental hold, not lineup help")
+    # The "developmental hold" framing lives in the section heading, not on every bullet.
+    assert "developmental hold" not in board[0].describe()
     assert "immediate lineup help" not in board[0].describe()
     assert "75th percentile dynasty value" in board[0].reasons and "rookie, age 22" in board[0].reasons
     assert "1 season(s) in, age 23" in board[1].reasons
@@ -48,7 +49,7 @@ def test_full_roster_needs_a_clog_to_cut_for_priority_status():
     clog = RosterClog(make_entry(player_id="clog", name="Clog"), ["dead"], 250.0)
     with_clog = _board(pool, open_spots=0, clogs=[clog])
     assert [(c.label, c.drop.player_id if c.drop else None) for c in with_clog] == [(PRIORITY_STASH, "clog"), (WATCH, None), (WATCH, None)]
-    assert with_clog[0].describe().endswith("cut Clog for the spot — developmental hold, not lineup help")
+    assert with_clog[0].describe().endswith("cut Clog for the spot")
 
 
 def test_redraft_and_pre_draft_are_suppressed_and_the_board_is_capped():

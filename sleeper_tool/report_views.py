@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from sleeper_tool.waiver_engine import EARLY_SEASON_CLAUSE
 from sleeper_tool.lineup_optimizer import slot_label
 from sleeper_tool.action_priority import IMMEDIATE, MAJOR, MEANINGFUL, THIS_WEEK, PriorityKey, priority_line  # noqa: F401  (PriorityKey re-exported for renderers)
 from sleeper_tool.recommendation_conflicts import CONFLICTED
@@ -312,6 +313,10 @@ class WaiverRow:
     lead: str
     chips: list[tuple[str, str]] = field(default_factory=list)  # (text, chip kind)
     details: list[str] = field(default_factory=list)
+    table_notes: list[str] = field(default_factory=list)  # facts about the week, printed once under the table
+
+
+_TABLE_LEVEL_CLAUSES = frozenset({_flat(EARLY_SEASON_CLAUSE)})
 
 
 def waiver_row_view(target, *, impact=None, conflict=None, faab_detail: str | None = None, seen_leads: set | None = None) -> WaiverRow:
@@ -321,6 +326,11 @@ def waiver_row_view(target, *, impact=None, conflict=None, faab_detail: str | No
     showed word for word steps aside for the row's next clause, so a column
     of eight identical sentences becomes a column of what differs."""
     parts = clauses(target.reason or "")
+    # A clause that is true of the WEEK rather than of this player belongs
+    # under the table once, not in fifty rows (the engine writes it per row
+    # because that is where it knows the week).
+    table_notes = [c for c in parts if _flat(c) in _TABLE_LEVEL_CLAUSES]
+    parts = [c for c in parts if _flat(c) not in _TABLE_LEVEL_CLAUSES]
     lead, rest = split_visible(parts, WAIVER_LEAD_CLAUSES)
     if seen_leads is not None and parts:
         # Clause by clause: "depth behind your starting QB, X" repeats on
@@ -352,6 +362,7 @@ def waiver_row_view(target, *, impact=None, conflict=None, faab_detail: str | No
     if faab_detail:
         details.append("FAAB: " + faab_detail)
     row.details = without_repeats(details, seen)
+    row.table_notes = table_notes
     return row
 
 

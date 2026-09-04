@@ -456,6 +456,7 @@ def _render_waiver_targets(
     lines = ["| Priority | Player | Pos | Team | Drop | Horizon | FAAB | Why |", "|---|---|---|---|---|---|---|---|"]
     details: list[str] = []
     seen_leads: set = set()
+    table_notes: set[str] = set()
     for t in targets:  # already capped by the engine; insurance rows ride along after the cap
         mark = _TIER_MARK.get(t.priority_tier, "")
         drop = t.drop_candidate.name if t.drop_candidate else "—"
@@ -474,11 +475,15 @@ def _render_waiver_targets(
         # make this read wrong.
         prov = (provenance or {}).get((WAIVER, t.player_id))
         extras = [r.text for r in ((prov.why_drop, prov.invalidation) if prov is not None else ()) if r is not None]
+        table_notes.update(row.table_notes)
         if row.details or extras:
             details.append(f"**{t.name}**")
             details.extend(f"- {d}" for d in row.details)
             details.extend(f"- {d}" for d in extras)
             details.append("")
+    if table_notes:
+        lines.append("")
+        lines.append("_" + "; ".join(sorted(table_notes)) + " — true of every row this week, not of one player._")
     if details:
         lines.append("")
         lines.extend(_summary("Waiver details", "notes, impact, FAAB sizing, source and schedule notes"))
