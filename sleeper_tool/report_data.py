@@ -490,6 +490,7 @@ def build_league_report_data(
             if replacement is not None else None
         ),
         current_week=current_week,
+        my_starter_ids=lineup.starter_ids if lineup is not None else (),
     )
     # Exclude anyone already used as a give-piece in a live trade proposal
     # this run -- otherwise the same player could be told to both trade

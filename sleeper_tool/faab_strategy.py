@@ -337,7 +337,12 @@ def _dollars_for_posture(ctx: FaabContext, facts: TargetFacts, posture: str, pct
     base = min(round(budget * pct / 100), ctx.remaining)
     low, high = _tier_bounds(facts.tier, budget)
     if posture == PRESERVE:
-        dollars = min(base, low)
+        # Preserve is a decision to NOT pay this tier's price, so it must
+        # not inherit this tier's floor: a Strong Add's low bound is 8% of
+        # budget, which is how three "preserve budget" rows each bid eight
+        # times the league's largest winning bid to date.
+        preserve_low, _ = _tier_bounds(SPECULATIVE, budget)
+        dollars = min(base, low, preserve_low) if preserve_low else min(base, low)
     elif posture == AGGRESSIVE:
         dollars = high
     elif posture == PRIORITY_SPEND:

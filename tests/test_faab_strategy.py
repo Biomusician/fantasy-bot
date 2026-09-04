@@ -180,9 +180,13 @@ def test_a_priority_spend_survives_a_low_remaining_budget():
 # -- bid adjustment ------------------------------------------------------------
 
 
-def test_preserve_bids_no_more_than_the_tier_low_bound():
-    advice = advise(ctx(), facts(tier=MODERATE, horizon=STREAMER, substitutes=MANY_SUBSTITUTES, suggested_pct=10))
-    assert advice.suggested_dollars == 3  # MODERATE's low bound is 3% of a 100 budget
+def test_preserve_bids_the_speculative_floor_not_the_tiers_own_low_bound():
+    """Preserve is a decision not to pay this tier's price, so it must not
+    inherit this tier's floor — a Strong Add's low bound is 8% of budget."""
+    moderate = advise(ctx(), facts(tier=MODERATE, horizon=STREAMER, substitutes=MANY_SUBSTITUTES, suggested_pct=10))
+    assert moderate.suggested_dollars == 1  # SPECULATIVE's low bound on a $100 budget
+    strong = advise(ctx(), facts(tier=STRONG_ADD, horizon=STREAMER, substitutes=MANY_SUBSTITUTES, suggested_pct=8))
+    assert strong.posture == PRESERVE and strong.suggested_dollars == 1
 
 
 def test_aggressive_bids_the_tier_high_bound():

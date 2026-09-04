@@ -1282,6 +1282,7 @@ def generate_trade_proposals(
     status_result: TeamStatusResult | None = None,
     preferred_buyers: dict[str, list[str]] | None = None,
     waiver_floor: dict[str, float] | None = None,
+    my_starter_ids: Collection[str] = (),
     current_week: int | None = None,
     manager_labels: dict[str, list[str]] | None = None,
 ) -> list[TradeProposal]:
@@ -1504,6 +1505,15 @@ def generate_trade_proposals(
                 if fitting is None:
                     continue  # nothing they'd send back would actually help my roster either
                 offer_players, offer_picks, my_side_fit_notes, _my_side_all_fit = fitting
+                # Selling a player the optimizer starts is only a trade if
+                # something coming back can start. Otherwise it is a lineup
+                # hole bought with a bench piece — the shape that had a
+                # contender shipping its RB2 in a Scarce market for a third
+                # QB, with every fact on the card arguing against it.
+                if sell_entry.player_id in set(my_starter_ids) and not any(
+                    piece_fits(my_roster, e, currency) for e in offer_players
+                ):
+                    continue
                 # would_upgrade_their_roster is about THEM, not me — `fitting`'s
                 # all_fit describes whether their return package fits MY
                 # roster (a separate, legitimate check kept above so I'm not
