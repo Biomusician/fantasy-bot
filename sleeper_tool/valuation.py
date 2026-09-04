@@ -192,22 +192,38 @@ class PlayerValue:
 
 
 def _projection_for_format(rb_player: dict, fmt: LeagueFormat, position: str | None) -> float | None:
-    """RotoBaller publishes a full-PPR and a standard season total (and a
-    TE-premium column that, in every cached file so far, simply equals the
-    PPR one). A league's projection is the point on the line between the
-    two at its own PPR value — half PPR is halfway, not "standard" — and
-    the TE-premium column is used only for a TE, and only when it actually
-    differs from the PPR column, so it never silently promotes a
-    half-PPR league to full PPR for every position."""
+    """RotoBaller publishes a full-PPR and a standard season total. The gap
+    between them is that player's projected receptions, because the PPR
+    column is exactly one point per catch more than the standard one — which
+    is what makes every other scoring setting computable rather than looked
+    up: the projection is `standard + (points per reception) x receptions`.
+
+    Half PPR is halfway, not "standard". A TE premium is additional points
+    per catch, so it adds to the league's own PPR rather than replacing it.
+
+    The TE-premium column is deliberately NOT read. It was equal to the PPR
+    column when this function was written, so the branch that returned it
+    was a no-op; the source has since started publishing a real value, and
+    it is full PPR plus 0.5/catch (verified: the median of
+    `(te_prem - ppr) / receptions` across all 68 cached TEs is exactly
+    0.500). Returning it gave every TE in a 0.5-PPR TE-premium league a
+    full-PPR projection plus a premium that may not be the league's own —
+    about +20% in the one live league that is scored that way, enough to
+    make a mid TE out-project a good WR and take a FLEX slot he should not
+    have. That is the same defect as reading the standard column for a
+    half-PPR league, one branch further down."""
     ppr = rb_player.get("proj_points_ppr")
     standard = rb_player.get("proj_points_standard")
-    te_prem = rb_player.get("proj_points_te_premium")
-    if fmt.te_premium_bonus > 0 and position == "TE" and te_prem is not None and te_prem != ppr:
-        return te_prem
     if ppr is None or standard is None:
         return ppr if ppr is not None and fmt.ppr >= 0.5 else (standard if standard is not None else ppr)
-    weight = min(max(fmt.ppr, 0.0), 1.0)
-    return standard + weight * (ppr - standard)
+    receptions = ppr - standard
+    # Points per catch this league actually awards this player. Not clamped
+    # at 1.0: a league scoring 1.5/catch is arithmetic, not extrapolation,
+    # because receptions are known. Negative PPR is not a thing.
+    per_catch = max(fmt.ppr, 0.0)
+    if position == "TE" and fmt.te_premium_bonus > 0:
+        per_catch += fmt.te_premium_bonus
+    return standard + per_catch * receptions
 
 
 def games_remaining(current_week: int | None) -> int:
