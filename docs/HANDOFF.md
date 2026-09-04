@@ -30,8 +30,10 @@ that used to appear. Read, in `data/weekly_report.md` or the dashboard:
    Against; confirm the status call is right before trusting it.
 5. **Draft capital in a dynasty league** — pick tiers now vary (Early / Mid / Late).
    Spot-check one pick against the original owner's actual standing.
-6. **`data/calibration_report.md`** — "Drop protection" flags International AWACKOS as a
-   roster with nobody droppable (1 of 23). That is a real over-protection signal.
+6. **`data/calibration_report.md`** — "Drop protection" no longer flags any league
+   (the monitor was counting trade-only and watchlist protections as if the drop path
+   enforced them). The tightest roster is 3 droppable of 23; confirm that reads right
+   for International AWACKOS and Handsome Ross Durham before trusting the column.
 7. Run `scripts/daily_run.py` once and confirm 9/9 leagues, then rerun and confirm the
    second run adds no ledger entries (same-day idempotence).
 
@@ -149,6 +151,11 @@ pay off:
 
 - Week 1 with no 2026 usage rows: every role line is suppressed, velocity needs three
   daily snapshots, no NFL byes yet, so no defensive adds and all streamers Hold.
+- **The role labels are annotation-only** (`waiver_engine.ROLE_TIER_FLOOR_ENABLED = False`).
+  They no longer raise a waiver tier, no longer open a Priority Spend bid, and are
+  Context rather than For/Against on a card. Re-enabling means redesigning the role
+  heuristic and re-running `scripts/backtest_report.py` against a season the thresholds
+  were not built on — see the replay finding below.
 - **The 2025 replay says the role labels behave backwards on that season.**
   `data/backtest_report.md`: Role Surging preceded a 6-point share LOSS 13% of the time
   against Stable's 3%, and Role Collapsing preceded a share RISE 11% of the time. The

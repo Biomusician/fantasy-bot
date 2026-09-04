@@ -92,6 +92,34 @@ from the diffs.
 - **Offers the engine itself rates Very Low are not printed** unless they are
   all a league has. The engine expecting a refusal is the answer.
 
+### The two pre-push gates (2026-09-04, Jonathan)
+
+- **The role signal is annotation-only until the heuristic is redesigned.**
+  Measured before deciding: injecting `Role Surging` on every real waiver
+  candidate moved 22 tiers (10 of them Moderate → Strong Add), flipped 5 FAAB
+  postures to Priority Spend, and took five bids from $10 to $60 — 60% of the
+  remaining budget — on a label the 2025 replay says preceded a LOSS of
+  opportunity share more often than Stable did. A signal that behaves
+  backwards on the only season we can measure does not get to move a
+  recommendation. Removed: the tier floor (`waiver_engine.ROLE_TIER_FLOOR_ENABLED`,
+  kept as a flag so the rule survives for when the signal is trusted again),
+  the FAAB priority-spend clause, and the For/Against direction on role
+  reasons in provenance (they are Context, so they cannot reach the evidence
+  dimension that orders Best Moves either). The label is still printed: "usage
+  rose" is a true observation and the reader can weigh it.
+- **The drop-protection monitor was over-reporting immunity.** It unioned
+  every rule that protects a player ANYWHERE — including the trade engine's
+  untouchables, an active watchlist thesis and a scarce position, none of
+  which the drop path consults — and reported International AWACKOS as a
+  roster with 1 droppable player of 23. The behavioural check says otherwise:
+  in all eight drafted leagues `find_drop_candidate` returns a cut at every
+  position, and every league has a 2-7 name proactive drop list. The monitor
+  now counts only what the drop path enforces (optimized starter, bench
+  surplus, developmental exemption, live trade piece) and reports the rest as
+  "advisory only". No league is flagged; the tightest is 3 of 23. A
+  diagnostic that cries wolf is worse than no diagnostic: the next session
+  would have loosened protections that were never binding.
+
 ### Presentation rules that came out of the persona reviews
 
 - **Best moves is two lists.** Time-boxed or materially lineup-changing moves

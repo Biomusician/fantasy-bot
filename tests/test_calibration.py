@@ -767,13 +767,18 @@ def test_drop_protection_counts_every_reason_and_the_droppable_remainder(monkeyp
     )
     watchlist = _watchlist(("1", "watched", STILL_WATCHING), ("1", "free1", RESOLVED), ("2", "free2", STILL_WATCHING))
     [d] = cal.drop_protection(_report([ld], watchlist=watchlist))
-    assert (d.rostered, d.protected, d.droppable) == (9, 7, 2)
+    # Only the four rules the drop path enforces make a player undroppable;
+    # the watchlist, scarcity and trade-untouchable rules are about other
+    # decisions and are counted separately, or the monitor reports an
+    # immunity the engine does not actually have.
+    assert (d.rostered, d.protected, d.droppable, d.advisory_only) == (9, 4, 5, 3)
     assert d.by_reason == {
         cal.PROTECT_STARTER: 1, cal.PROTECT_SURPLUS: 1, cal.PROTECT_DEVELOPMENTAL: 1, cal.PROTECT_WATCHLIST: 1,
         cal.PROTECT_VERY_SCARCE: 1, cal.PROTECT_UNTOUCHABLE: 1, cal.PROTECT_TRADE_PIECE: 1,
     }
-    assert d.droppable_names == ["free1", "free2"]  # a resolved thesis and another league's thesis protect nobody
-    assert d.flagged is False  # exactly MIN_DROPPABLE
+    # A resolved thesis and another league's thesis protect nobody either way.
+    assert d.droppable_names == ["watched", "scarce", "u", "free1", "free2"]
+    assert d.flagged is False
 
 
 def test_drop_protection_flags_a_roster_below_min_droppable(monkeypatch):

@@ -310,11 +310,12 @@ class DropProtection:
     protected by something has no legal drop for any add."""
     league: str
     rostered: int
-    protected: int
+    protected: int  # by an ENFORCED_PROTECTIONS rule: the drop path really refuses these
     droppable: int
     by_reason: dict[str, int]  # reason -> players protected by it (a player can be counted under several)
     droppable_names: list[str]
     flagged: bool  # droppable < MIN_DROPPABLE
+    advisory_only: int = 0  # protected solely by a rule about some OTHER decision
 
 
 @dataclass
@@ -1897,6 +1898,17 @@ PROTECTION_REASONS: tuple[str, ...] = (
     PROTECT_STARTER, PROTECT_SURPLUS, PROTECT_DEVELOPMENTAL, PROTECT_WATCHLIST,
     PROTECT_VERY_SCARCE, PROTECT_UNTOUCHABLE, PROTECT_TRADE_PIECE,
 )
+# Only these are actually consulted when something has to be cut:
+# report_data excludes optimized starters, bench surplus and live trade
+# pieces from the proactive drop list, and waiver_engine.find_drop_candidate
+# refuses an optimized starter or a developmental hold. The rest are real
+# rules about OTHER decisions — the trade engine's untouchables, an active
+# watchlist thesis, a scarce position — and unioning them made a roster look
+# immune to a drop it can in fact make. Both numbers are reported; the flag
+# reads the enforced one.
+ENFORCED_PROTECTIONS: tuple[str, ...] = (
+    PROTECT_STARTER, PROTECT_SURPLUS, PROTECT_DEVELOPMENTAL, PROTECT_TRADE_PIECE,
+)
 
 
 def _active_watch_ids(report, league_id: str | None) -> set[str]:
@@ -1944,16 +1956,18 @@ def drop_protection(report) -> list[DropProtection]:
             PROTECT_TRADE_PIECE: {_get(e, "player_id") for p in _proposals(ld) for e in (_get(p, "give", []) or [])},
         }
         ids = {e.player_id for e in entries}
-        protected = set().union(*protected_by.values()) & ids
-        droppable = [e for e in entries if e.player_id not in protected]
+        enforced = set().union(*(protected_by[r] for r in ENFORCED_PROTECTIONS)) & ids
+        all_protected = set().union(*protected_by.values()) & ids
+        droppable = [e for e in entries if e.player_id not in enforced]
         out.append(DropProtection(
             league=_league_name(ld),
             rostered=len(entries),
-            protected=len(protected),
+            protected=len(enforced),
             droppable=len(droppable),
             by_reason={reason: len(protected_by[reason] & ids) for reason in PROTECTION_REASONS},
             droppable_names=[e.name for e in droppable],
             flagged=len(droppable) < MIN_DROPPABLE,
+            advisory_only=len(all_protected - enforced),
         ))
     return out
 
@@ -2150,18 +2164,20 @@ def render_calibration_markdown(result: CalibrationResult) -> str:
         lines.append("")
 
     lines += ["## Drop protection", "",
-              f"_Per league: rostered players some rule protects from being the drop, and who is left. A league with fewer "
-              f"than MIN_DROPPABLE={MIN_DROPPABLE} droppable players is a roster with nobody droppable._", ""]
+              f"_Per league: rostered players the drop path actually refuses to cut, and who is left. Only "
+              f"{', '.join(ENFORCED_PROTECTIONS)} are enforced when something has to be dropped; the other columns are "
+              f"rules about other decisions (trades, the watchlist, scarcity) and are counted under 'advisory only'. "
+              f"A league with fewer than MIN_DROPPABLE={MIN_DROPPABLE} droppable players is a roster with nobody droppable._", ""]
     if not result.drop_protection:
         lines += ["No rosters to assess.", ""]
     else:
         header = " | ".join(PROTECTION_REASONS)
-        lines += [f"| League | Rostered | Protected | Droppable | {header} | Flag |",
-                  "| --- | ---: | ---: | ---: | " + " | ".join("---:" for _ in PROTECTION_REASONS) + " | --- |"]
+        lines += [f"| League | Rostered | Protected | Droppable | Advisory only | {header} | Flag |",
+                  "| --- | ---: | ---: | ---: | ---: | " + " | ".join("---:" for _ in PROTECTION_REASONS) + " | --- |"]
         for d in result.drop_protection:
             counts = " | ".join(str(d.by_reason.get(reason, 0)) for reason in PROTECTION_REASONS)
             flag = "**roster with nobody droppable**" if d.flagged else "—"
-            lines.append(f"| {d.league} | {d.rostered} | {d.protected} | {d.droppable} | {counts} | {flag} |")
+            lines.append(f"| {d.league} | {d.rostered} | {d.protected} | {d.droppable} | {d.advisory_only} | {counts} | {flag} |")
         lines.append("")
         for d in result.drop_protection:
             names = ", ".join(d.droppable_names[:8]) + (" …" if len(d.droppable_names) > 8 else "")
