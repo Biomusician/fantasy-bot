@@ -53,6 +53,7 @@ SEASON_STARTER_MIN_PERCENTILE = 60.0
 # The role clause carries the "Role:" prefix recommendation_provenance maps
 # to Role evidence, so a usage-driven tier is attributed to usage in the
 # card rather than folded into the waiver engine's own roster reasoning.
+ABUNDANT_MARKET = "Abundant"  # replacement_value.ABUNDANT, without importing the decision layer into the engine
 ROLE_REASON_PREFIX = "Role:"
 _ROLE_CLAUSE_WORD = {ROLE_RISING: "rising", ROLE_SURGING: "surging"}
 
@@ -249,7 +250,7 @@ def _role_tier_floor(role_label: str | None, pctl: float | None) -> str | None:
 
 def _priority_tier(
     fills_need: bool, pctl: float | None, trend_rank: int | None, upgrades_starter: bool | None = None,
-    role_label: str | None = None,
+    role_label: str | None = None, scarcity: str | None = None,
 ) -> str:
     """`upgrades_starter` False demotes a would-be Must Add to Strong Add: a
     "need" is relative (the two weakest of four positions are always needs,
@@ -272,7 +273,14 @@ def _priority_tier(
         tier = MONITOR
     floor = _role_tier_floor(role_label, pctl)
     if floor is not None and _TIER_RANK[floor] < _TIER_RANK[tier]:
-        return floor
+        tier = floor
+    # An Abundant market means comparable production is sitting on the wire
+    # every week. An add that doesn't beat a current starter into an
+    # Abundant market is depth by definition, however good his rank is —
+    # three backup QBs at 8% of budget each in a 1QB league was this rule
+    # missing.
+    if scarcity == ABUNDANT_MARKET and upgrades_starter is not True and _TIER_RANK[tier] < _TIER_RANK[MODERATE]:
+        return MODERATE
     return tier
 
 
@@ -339,6 +347,7 @@ def get_waiver_targets(
     protected_ids: Collection[str] = (),
     role_labels: dict[str, str] | None = None,
     extra_candidates: Collection[RosterEntry] = (),
+    scarcity_by_position: dict[str, str] | None = None,
 ) -> list[WaiverTarget]:
     """`clog_ids`: roster_clog's dead-weight players, preferred as the drop
     paired with each add (see find_drop_candidate). `starter_ids`: the
@@ -448,7 +457,7 @@ def get_waiver_targets(
             reason_bits.append(role_clause)
 
         upgrades = _upgrades_starter(my_roster, position, pctl, currency, starter_ids)
-        tier = _priority_tier(fills_need, pctl, trend_rank, upgrades, role_label)
+        tier = _priority_tier(fills_need, pctl, trend_rank, upgrades, role_label, (scarcity_by_position or {}).get(position))
         horizon = _horizon(value, pdata.get("years_exp"), currency, fills_need, pctl, upgrades)
         faab_pct = _suggested_faab_pct(tier, waiver_budget, my_roster.waiver_budget_used)
 
@@ -484,10 +493,15 @@ def get_waiver_targets(
         drop_candidate = find_drop_candidate(
             my_roster, t.position, needs_ranked[:2], currency, exclude_ids=recommended_drop_ids, preferred_ids=clog_ids
         )
-        # Never cut a same-position player who is better than the add: a
-        # worse QB for a better one is a loss whatever the trending count
-        # says (and in a Very Scarce market it is an unrecoverable one).
-        if drop_candidate is not None and drop_candidate.position == t.position:
+        # Never cut a player who is better than the add. Same position is
+        # the obvious case (a worse QB for a better one is a loss whatever
+        # the trending count says); across positions it is the one that
+        # actually kept happening — once the same-position bench bodies
+        # were taken by earlier rows, the fallback reached for whoever was
+        # cheapest at a non-need position, which is how a 6th-percentile QB
+        # came paired with dropping a 76th-percentile TE. Percentiles are
+        # comparable here because both sides use the same currency's scale.
+        if drop_candidate is not None:
             drop_pctl = _display_percentile(drop_candidate.value, currency)
             add_pctl = _display_percentile(t.value, currency)
             if drop_pctl is not None and add_pctl is not None and drop_pctl > add_pctl:

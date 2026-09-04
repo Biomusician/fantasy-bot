@@ -189,3 +189,39 @@ def test_a_projection_found_free_agent_is_a_candidate_without_a_trend_count():
     assert free_agent_id not in without
     row = next(t for t in rows if t.player_id == free_agent_id)
     assert row.trend_count == 0 and "found by projection" in row.reason
+
+
+def test_an_abundant_market_add_that_beats_no_starter_is_capped_at_moderate():
+    from sleeper_tool.waiver_engine import MODERATE, MUST_ADD, STRONG_ADD, _priority_tier
+
+    # Same inputs, three markets: the tier only changes because the wire does.
+    assert _priority_tier(True, 85.0, 0, upgrades_starter=None) == MUST_ADD
+    assert _priority_tier(True, 85.0, 0, upgrades_starter=None, scarcity="Abundant") == MODERATE
+    assert _priority_tier(True, 85.0, 0, upgrades_starter=None, scarcity="Scarce") == MUST_ADD
+    # Beating a starter is exactly the case an Abundant market does not cap.
+    assert _priority_tier(True, 85.0, 0, upgrades_starter=True, scarcity="Abundant") == MUST_ADD
+    assert _priority_tier(False, 82.0, 0, upgrades_starter=False, scarcity="Abundant") == MODERATE
+    assert _priority_tier(False, 82.0, 0, upgrades_starter=False) == STRONG_ADD
+
+
+def test_a_waiver_drop_is_never_a_better_player_than_the_add_even_across_positions():
+    from conftest import make_entry, make_value
+    from fake_storage import make_engine, make_storage, make_synthetic_league
+
+    from sleeper_tool.asset_value import value_currency
+    from sleeper_tool.roster_analysis import build_all_valued_rosters
+    from sleeper_tool.waiver_engine import _display_percentile, get_waiver_targets
+
+    synth = make_synthetic_league()
+    storage = make_storage(synth)
+    engine = make_engine(synth.players)
+    rosters = build_all_valued_rosters(storage, engine, synth.info)
+    mine = rosters[synth.my_roster["roster_id"]]
+    currency = value_currency(mine)
+    for t in get_waiver_targets(storage, engine, synth.info, mine, top_n=50):
+        if t.drop_candidate is None:
+            continue
+        drop = _display_percentile(t.drop_candidate.value, currency)
+        add = _display_percentile(t.value, currency)
+        if drop is not None and add is not None:
+            assert drop <= add, f"{t.name} ({add}) paired with dropping {t.drop_candidate.name} ({drop})"

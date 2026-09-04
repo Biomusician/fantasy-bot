@@ -558,6 +558,9 @@ def build_league_report_data(
             protected_ids=lineup.starter_ids if lineup is not None else (),
             role_labels=candidate_roles or None,
             extra_candidates=projection_finds,
+            scarcity_by_position=(
+                {pos: m.scarcity for pos, m in replacement.positions.items()} if replacement is not None else None
+            ),
         )
     insurance: list[InsuranceRecommendation] = []
     if status_result.status == CONTENDER and lineup is not None and not pre_draft:
