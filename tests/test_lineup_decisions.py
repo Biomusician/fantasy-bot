@@ -293,7 +293,7 @@ def test_flex_explanation_at_and_below_the_surprise_ratio():
     item = d.items[0]
     assert item.slot == "SUPER_FLEX" and [p.player_id for p in item.players] == ["wr2", "qb2"]
     assert item.delta == pytest.approx(25.0)
-    assert item.summary == "wr2 (WR) occupies SUPER_FLEX because moving qb2 (QB) there would reduce the lineup by 25.0/wk"
+    assert item.summary == "wr2 (WR) occupies Superflex because moving qb2 (QB) there would reduce the lineup by 25.0/wk"
     assert _build(_sf_roster(100 * SURPRISE_RATIO - 0.1)) is None
 
 

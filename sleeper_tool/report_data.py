@@ -31,7 +31,7 @@ from sleeper_tool.faab_strategy import status_note as faab_status_note
 from sleeper_tool.league_economy import LeagueEconomy, build_league_economy
 from sleeper_tool.lineup_decisions import LineupDecisions, build_lineup_decisions
 from sleeper_tool.lineup_leverage import LineupLeverage, build_lineup_leverage
-from sleeper_tool.lineup_optimizer import LineupResult, UnsupportedSlotError, optimize_lineup
+from sleeper_tool.lineup_optimizer import LineupResult, UnsupportedSlotError, optimize_lineup, slot_label
 from sleeper_tool.market_velocity import Velocity, annotate_league, build_velocities
 from sleeper_tool.matchup_leverage import MatchupLeverage, build_matchup_leverage
 from sleeper_tool.move_impact import (
@@ -981,7 +981,7 @@ def _annotate_proposals_with_bench_surplus(proposals: list[TradeProposal], lever
                 continue
             p.rationale_for_me.append(
                 f"Converts bench surplus: {e.name} projects at {s.ratio:.0%} of your weakest eligible starter "
-                f"({s.displaced_starter.name}, {s.displaced_slot}) but can't crack the lineup, so moving him "
+                f"({s.displaced_starter.name}, {slot_label(s.displaced_slot)}) but can't crack the lineup, so moving him "
                 "costs you no starting production."
             )
 

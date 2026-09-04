@@ -166,7 +166,7 @@ def _set_lineup_mismatches(
             items.append(
                 LineupDecision(
                     SET_LINEUP_MISMATCH, a.slot, [entrant], [entrant_weekly], entrant_weekly,
-                    f"{entrant.name} is benched on Sleeper but the optimizer starts him at {a.slot} ({entrant_weekly:.1f}/wk)",
+                    f"{entrant.name} is benched on Sleeper but the optimizer starts him at {slot_label(a.slot)} ({entrant_weekly:.1f}/wk)",
                 )
             )
             continue
@@ -178,12 +178,12 @@ def _set_lineup_mismatches(
             continue  # a tie-break flip, not a decision
         if blocked:
             summary = (
-                f"{partner.name} is set to start at {a.slot} but is {blocked}; "
+                f"{partner.name} is set to start at {slot_label(a.slot)} but is {blocked}; "
                 f"{entrant.name} projects {entrant_weekly:.1f}/wk in his place (+{delta:.1f}/wk)"
             )
         else:
             summary = (
-                f"{partner.name} is set to start but {entrant.name} projects higher this week at {a.slot} "
+                f"{partner.name} is set to start but {entrant.name} projects higher this week at {slot_label(a.slot)} "
                 f"({entrant_weekly:.1f} vs {partner_weekly:.1f}, +{delta:.1f}/wk)"
             )
         items.append(LineupDecision(SET_LINEUP_MISMATCH, a.slot, [partner, entrant], [partner_weekly, entrant_weekly], delta, summary))
@@ -300,12 +300,12 @@ def _injury_risks(
         entrant_id = _entrant(week, rerun)
         starter_weekly = _weekly(a.projection, games_left)
         if entrant_id is None:
-            summary = f"{a.slot}: {starter.name} is {starter.injury_status} and no rostered player can legally fill the slot if he sits (-{loss:.1f}/wk)"
+            summary = f"{slot_label(a.slot)}: {starter.name} is {starter.injury_status} and no rostered player can legally fill the slot if he sits (-{loss:.1f}/wk)"
             players, projections = [starter], [starter_weekly]
         else:
             entrant = by_id[entrant_id]
             entrant_weekly = _weekly(projection_of(entrant), games_left)
-            summary = f"{a.slot}: {starter.name} is {starter.injury_status} — next man up is {entrant.name} ({entrant_weekly:.1f}/wk, -{loss:.1f}/wk)"
+            summary = f"{slot_label(a.slot)}: {starter.name} is {starter.injury_status} — next man up is {entrant.name} ({entrant_weekly:.1f}/wk, -{loss:.1f}/wk)"
             players, projections = [starter, entrant], [starter_weekly, entrant_weekly]
         items.append(LineupDecision(INJURY_RISK, a.slot, players, projections, loss, summary))
     return items
@@ -439,7 +439,7 @@ def _flex_explanations(
         items.append(
             LineupDecision(
                 FLEX_EXPLANATION, a.slot, [occupant, alt], [occupant_weekly, alt_weekly], reduction,
-                f"{occupant.name} ({occupant.position}) occupies {a.slot} because moving {alt.name} ({alt.position}) there "
+                f"{occupant.name} ({occupant.position}) occupies {slot_label(a.slot)} because moving {alt.name} ({alt.position}) there "
                 f"would reduce the lineup by {reduction:.1f}/wk",
             )
         )

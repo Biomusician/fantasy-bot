@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sleeper_tool.lineup_optimizer import DEDICATED_POSITIONS, LineupResult, SlotAssignment, optimize_lineup
+from sleeper_tool.lineup_optimizer import DEDICATED_POSITIONS, LineupResult, SlotAssignment, optimize_lineup, slot_label
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
 from sleeper_tool.valuation import NFL_REGULAR_SEASON_WEEKS
 
@@ -94,10 +94,10 @@ def describe_bye_collision(plan: ByeCollision) -> str:
     bits = []
     for h in plan.holes:
         if h.replacement is None:
-            bits.append(f"{h.slot}: {h.normal_starter.name} on bye and no legal fill on the roster")
+            bits.append(f"{slot_label(h.slot)}: {h.normal_starter.name} on bye and no legal fill on the roster")
         else:
             bits.append(
-                f"{h.slot}: {h.normal_starter.name} on bye, best fill is {h.replacement.name} at {h.ratio:.0%} of his projection"
+                f"{slot_label(h.slot)}: {h.normal_starter.name} on bye, best fill is {h.replacement.name} at {h.ratio:.0%} of his projection"
             )
     on_bye = len(plan.starters_on_bye)
     lead = f"{on_bye} starter{'s' if on_bye != 1 else ''} on bye"

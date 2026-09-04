@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from sleeper_tool.lineup_optimizer import slot_label
 from sleeper_tool.action_priority import PriorityKey, priority_line  # noqa: F401  (re-exported for renderers)
 from sleeper_tool.recommendation_conflicts import CONFLICTED
 from sleeper_tool.signal_health import DEGRADED_LABELS
@@ -373,10 +374,10 @@ def lineup_lines(lineup, games_left: int | None = None) -> list[tuple[str, str, 
         return []
     divisor = games_left or 1
     rows = [
-        (a.slot, f"{a.name} ({a.position or '?'})", f"{a.projection / divisor:.1f}")
+        (slot_label(a.slot), f"{a.name} ({a.position or '?'})", f"{a.projection / divisor:.1f}")
         for a in sorted(lineup.assignments, key=lambda a: a.slot_index)
     ]
-    rows.extend((slot, "— empty —", "0.0") for slot in lineup.unfilled_slots)
+    rows.extend((slot_label(slot), "— empty —", "0.0") for slot in lineup.unfilled_slots)
     return rows
 
 
