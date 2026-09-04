@@ -981,7 +981,15 @@ def _delta_section(delta: DecisionDelta | None) -> str:
     """
 
 
-def _portfolio_section(portfolio: PortfolioExposure | None) -> str:
+def _asymmetry_list(asymmetries) -> str:
+    if not asymmetries:
+        return ""
+    items = "".join(f"<li>{esc(a.describe())}</li>" for a in asymmetries)
+    return ('<p class="muted">Where the same player is cheapest to move (an Abundant/Normal market and a small edge over the wire) versus costliest &mdash; a fact for the trade engine, not a sell signal:</p>'
+            f'<ul class="alert-list">{items}</ul>')
+
+
+def _portfolio_section(portfolio: PortfolioExposure | None, asymmetries=()) -> str:
     if portfolio is None or not portfolio.players:
         return ""
     rows = []
@@ -1009,7 +1017,8 @@ def _portfolio_section(portfolio: PortfolioExposure | None) -> str:
         <thead><tr><th>Player</th><th>Pos</th><th>Team</th><th>Leagues</th><th>Starting in</th><th>Flag</th></tr></thead>
         <tbody>{"".join(rows)}</tbody>
       </table></div>
-    </section>
+    {_asymmetry_list(asymmetries)}
+      </section>
     """
 
 
@@ -1115,7 +1124,7 @@ def _overview_panel(report: WeeklyReportData) -> str:
         <h3>Leagues</h3>
         <div class="overview-grid">{rows}</div>
       </section>
-      {_portfolio_section(report.portfolio)}
+      {_portfolio_section(report.portfolio, report.asymmetries)}
       {_signal_health_section(report)}
       {_diagnostics_section(report)}
     </div>

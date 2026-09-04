@@ -14,6 +14,7 @@ from sleeper_tool.asset_value import percentile_for_currency, value_currency
 from sleeper_tool.buyer_board import BuyerBoard, annotate_sell_high_proposals, build_buyer_boards, sell_high_candidates
 from sleeper_tool.bye_collision import ByeCollision, describe_bye_collision, plan_bye_collisions, positions_covering
 from sleeper_tool.config import LEAGUES, LeagueInfo, MY_USER_ID
+from sleeper_tool.cross_league_asymmetry import Asymmetry, build_asymmetries
 from sleeper_tool.contender_insurance import (
     InsuranceRecommendation,
     free_agent_candidates,
@@ -197,6 +198,7 @@ class WeeklyReportData:
     leagues: list[LeagueReportData]
     priority_actions: list[PriorityAction] = field(default_factory=list)
     portfolio: PortfolioExposure | None = None  # cross-league player concentration
+    asymmetries: list[Asymmetry] = field(default_factory=list)  # widely-held players with a league where moving them is cheap
     delta: DecisionDelta | None = None  # vs the last complete run's snapshot; None on a first run
     snapshot: dict | None = None  # this run's decision snapshot, for daily_run to persist after a complete run
     health: SignalHealthReport | None = None  # every input graded Fresh/Usable/Partial/Stale/Unavailable
@@ -1008,6 +1010,7 @@ def build_weekly_report_data(
         (ld.league.name, ld.roster, ld.lineup) for ld in league_data if ld.drafted and ld.roster is not None
     )
     _annotate_recommendations_with_exposure(league_data, portfolio)
+    asymmetries = build_asymmetries(portfolio, league_data)
     # Market velocity reads the snapshot history (today's own file is
     # replaced by this run's values, so a same-day re-run counts once).
     today = now.date().isoformat()
@@ -1045,6 +1048,7 @@ def build_weekly_report_data(
         ff_status=ff_dynasty_status(),
         leagues=league_data,
         portfolio=portfolio,
+        asymmetries=asymmetries,
         health=health,
         suppressed=suppressed,
         freshness_lines=freshness_lines(health),

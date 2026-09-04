@@ -149,7 +149,7 @@ def _render_delta(delta: DecisionDelta | None) -> list[str]:
     return lines
 
 
-def _render_portfolio_exposure(portfolio: PortfolioExposure | None) -> list[str]:
+def _render_portfolio_exposure(portfolio: PortfolioExposure | None, asymmetries=()) -> list[str]:
     if portfolio is None or not portfolio.players:
         return []
     lines = [f"## Portfolio exposure (across {portfolio.total_leagues} leagues)", ""]
@@ -160,6 +160,10 @@ def _render_portfolio_exposure(portfolio: PortfolioExposure | None) -> list[str]
         flag_str = f" — **{', '.join(flags)}**" if flags else ""
         started = f", starting in {len(p.started_in)}" if p.started_in else ""
         lines.append(f"- **{p.name}** ({p.position or '?'}, {p.team or '-'}) — {p.count} of {portfolio.total_leagues} leagues{started}{flag_str}")
+    if asymmetries:
+        lines.append("")
+        lines.append("Where the same player is cheapest to move (an Abundant/Normal market and a small edge over the wire) versus costliest — a fact for the trade engine to use, not a sell signal:")
+        lines.extend(f"- {a.describe()}" for a in asymmetries)
     lines.append("")
     return lines
 
@@ -674,7 +678,7 @@ def render_weekly_report(report: WeeklyReportData) -> str:
         lines.extend([f"> ⚠️ **{banner.text}** Details in Signal health below.", ""])
     lines.extend(_render_priority_actions(report.priority_actions))
     lines.extend(_render_delta(report.delta))
-    lines.extend(_render_portfolio_exposure(report.portfolio))
+    lines.extend(_render_portfolio_exposure(report.portfolio, report.asymmetries))
     lines.extend(_render_signal_health(report))
 
     for league_data in report.leagues:
