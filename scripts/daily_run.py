@@ -73,7 +73,10 @@ def main() -> None:
     else:
         print("SKIP: decision ledger not saved (run was not complete)", file=sys.stderr)
     if complete and report_data.watchlist is not None:
-        print(f"OK: saved watchlist ({len(report_data.watchlist_new)} new triggers) {save_watchlist(report_data.watchlist)}")
+        print(
+            f"OK: saved watchlist ({len(report_data.watchlist_new)} with a change to report) "
+            f"{save_watchlist(report_data.watchlist)}"
+        )
     else:
         print("SKIP: watchlist not saved (run was not complete)", file=sys.stderr)
     # The calibration report is an engineering diagnostic over this run's
