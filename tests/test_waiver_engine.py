@@ -487,26 +487,34 @@ def test_a_drop_candidate_worse_than_the_add_is_still_paired():
 # -- role_labels: a measured role breakout raises the tier's floor ------------
 
 
-def test_role_surging_at_the_rosterable_boundary_is_at_least_a_strong_add():
+def test_a_role_label_does_not_move_a_tier_while_the_floor_is_disabled():
+    """The role labels are annotation-only: the 2025 replay showed the
+    rising ones preceding a LOSS of opportunity share more often than
+    Stable did, so they no longer raise a tier. The floors themselves are
+    kept behind ROLE_TIER_FLOOR_ENABLED for when the heuristic is redone."""
     from sleeper_tool.asset_value import MIN_ROSTERABLE_PERCENTILE
-    from sleeper_tool.role_trends import SURGING
+    from sleeper_tool.role_trends import RISING, SURGING
+    from sleeper_tool import waiver_engine as we
     from sleeper_tool.waiver_engine import _priority_tier
 
-    # Exactly at the bar the constant names, and one hair under it.
+    assert we.ROLE_TIER_FLOOR_ENABLED is False
+    assert _priority_tier(False, MIN_ROSTERABLE_PERCENTILE, 20, role_label=SURGING) == MODERATE
+    assert _priority_tier(False, 5.0, 40, role_label=RISING) == MONITOR
+    assert _priority_tier(False, 5.0, 0, role_label=RISING) == SPECULATIVE
+    # Identical to the same call with no label at all.
+    assert _priority_tier(False, 5.0, 40, role_label=RISING) == _priority_tier(False, 5.0, 40)
+
+
+def test_the_role_floors_are_still_there_for_when_the_signal_is_trusted_again(monkeypatch):
+    from sleeper_tool.asset_value import MIN_ROSTERABLE_PERCENTILE
+    from sleeper_tool.role_trends import RISING, SURGING
+    from sleeper_tool import waiver_engine as we
+    from sleeper_tool.waiver_engine import _priority_tier
+
+    monkeypatch.setattr(we, "ROLE_TIER_FLOOR_ENABLED", True)
     assert _priority_tier(False, MIN_ROSTERABLE_PERCENTILE, 20, role_label=SURGING) == STRONG_ADD
     assert _priority_tier(False, MIN_ROSTERABLE_PERCENTILE - 0.1, 20, role_label=SURGING) == MODERATE
-    # Without the label the same player is only what the value rules say.
-    assert _priority_tier(False, MIN_ROSTERABLE_PERCENTILE, 20) == MODERATE
-    assert _priority_tier(False, MIN_ROSTERABLE_PERCENTILE - 0.1, 20) == MONITOR
-
-
-def test_role_rising_is_at_least_moderate_however_low_the_value():
-    from sleeper_tool.role_trends import RISING
-    from sleeper_tool.waiver_engine import _priority_tier
-
-    assert _priority_tier(False, 5.0, 40, role_label=RISING) == MODERATE  # would be MONITOR
-    assert _priority_tier(False, 5.0, 0, role_label=RISING) == MODERATE  # would be SPECULATIVE
-    assert _priority_tier(False, 5.0, 40) == MONITOR
+    assert _priority_tier(False, 5.0, 40, role_label=RISING) == MODERATE
 
 
 def test_a_role_label_never_produces_a_must_add_on_its_own():
@@ -568,7 +576,7 @@ def _role_label_roster():
     return make_league_info(kind="dynasty"), make_roster(entries=entries, league=make_league_info(kind="dynasty"))
 
 
-def test_get_waiver_targets_applies_the_role_floor_and_says_so_in_the_reason():
+def test_get_waiver_targets_says_the_role_label_out_loud_and_changes_nothing_else():
     from sleeper_tool.role_trends import SURGING
 
     league, my_roster = _role_label_roster()
@@ -582,10 +590,11 @@ def test_get_waiver_targets_applies_the_role_floor_and_says_so_in_the_reason():
     assert "Role:" not in plain.reason
 
     surging = get_waiver_targets(storage, engine, league, my_roster, role_labels={"new1": SURGING})[0]
-    assert surging.priority_tier == STRONG_ADD
+    # The label is said out loud and changes nothing else: annotation only.
     assert "Role: surging per usage data" in surging.reason
-    # The tier moved; the horizon rules did not.
+    assert surging.priority_tier == plain.priority_tier
     assert surging.horizon == plain.horizon
+    assert surging.suggested_faab_pct == plain.suggested_faab_pct
 
 
 def test_get_waiver_targets_ignores_a_role_label_for_a_different_player():

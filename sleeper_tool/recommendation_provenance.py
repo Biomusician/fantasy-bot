@@ -378,18 +378,16 @@ def _piece_role_reasons(card: _Card, ld, entry, *, incoming: bool) -> None:
     pieces want a rising role; outgoing pieces are better sold falling."""
     trends = getattr(ld, "role_trends", None) or {}
     markets = getattr(ld, "role_market", None) or {}
+    # Context, not For/Against: the role labels are annotation-only until the
+    # heuristic is redesigned (see waiver_engine.ROLE_TIER_FLOOR_ENABLED).
+    # Counting one as evidence also fed action_priority's evidence dimension,
+    # which is how a suspect label could reorder Best Moves.
     trend = trends.get(entry.player_id)
-    if trend is not None:
-        d = _role_direction(getattr(trend, "label", None))
-        if d:
-            wants_up = incoming
-            direction = FOR if (d > 0) == wants_up else AGAINST
-            card.add(ROLE, direction, f"{entry.name}: {_role_text(trend)}", "role_trends", fact=("role", entry.player_id))
+    if trend is not None and _role_direction(getattr(trend, "label", None)):
+        card.add(ROLE, CONTEXT, f"{entry.name}: {_role_text(trend)}", "role_trends", fact=("role", entry.player_id))
     label = markets.get(entry.player_id)
     if label in (ROLE_AHEAD_OF_MARKET, MARKET_AHEAD_OF_ROLE):
-        ahead = label == ROLE_AHEAD_OF_MARKET
-        direction = FOR if ahead == incoming else AGAINST
-        card.add(ROLE, direction, f"{entry.name}: {label}", "role_trends", fact=("role_market", entry.player_id), priority=1)
+        card.add(ROLE, CONTEXT, f"{entry.name}: {label}", "role_trends", fact=("role_market", entry.player_id), priority=1)
 
 
 def _piece_schedule_reason(card: _Card, ld, entry, schedule) -> None:

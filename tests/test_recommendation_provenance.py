@@ -328,20 +328,24 @@ def test_role_trends_and_role_market_are_used_when_the_orchestrator_supplies_the
     }
     ld.role_market = {"in": "Role Ahead of Market", "out": "Market Ahead of Role"}
     prov = build_provenance(ld, _report())[(TRADE, "0")]
-    role_for = [r for r in prov.reasons_for if r.category == ROLE]
-    # No trailing slice: a `[: len(role_for)]` would let an empty list — or
-    # any prefix of the expected reasons — pass silently.
-    assert _texts(role_for) == [
+    # Context, never For/Against: the labels are annotation-only until the
+    # role heuristic is redesigned, so they must not reach the evidence
+    # dimension that orders Best Moves either.
+    role_context = [r for r in prov.context if r.category == ROLE]
+    # Context is capped like any other side, so the role facts now compete
+    # for those slots rather than occupying a For slot each.
+    assert _texts(role_context) == [
         "in: Role Rising — routes run up +8 per game",
         "out: Role Collapsing — snap share halved",
-        "in: Role Ahead of Market",
     ]
-    assert all(r.source == "role_trends" for r in role_for)
-    # A falling incoming role would argue against instead.
+    assert all(r.source == "role_trends" for r in role_context)
+    assert not [r for r in (*prov.reasons_for, *prov.reasons_against) if r.category == ROLE]
+    # A falling incoming role is context too, not an argument against.
     ld.role_trends = {"in": _Trend("Role Falling", note="down to 40% of snaps")}
     ld.role_market = {}
     prov = build_provenance(ld, _report())[(TRADE, "0")]
-    assert [r.category for r in prov.reasons_against] == [ROLE]
+    assert ROLE not in [r.category for r in prov.reasons_against]
+    assert ROLE in [r.category for r in prov.context]
 
 
 def test_faab_posture_replaces_the_plain_suggested_bid_when_present():

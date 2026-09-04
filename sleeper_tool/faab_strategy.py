@@ -282,9 +282,17 @@ def _is_scarce(scarcity: str | None) -> bool:
 
 
 def _is_priority_spend(facts: TargetFacts) -> bool:
-    if facts.tier == MUST_ADD and _is_scarce(facts.scarcity) and facts.substitutes <= FEW_SUBSTITUTES:
-        return True
-    return facts.role_label == ROLE_SURGING and _is_scarce(facts.scarcity)
+    """A Priority Spend can reach 60% of the remaining budget, so the bar is
+    the tier's own comparison: he beats the weakest starter he would replace,
+    in a market that can't replace him, with few substitutes.
+
+    A Role Surging label used to qualify on its own. It no longer does
+    (2026-09-04): on the 2025 replay the rising labels preceded a LOSS of
+    opportunity share more often than Stable did, and this rule was turning
+    that into a 6x bid — $10 to $60 on five real rows. Role stays on the
+    card as an observation; it does not spend the budget.
+    """
+    return facts.tier == MUST_ADD and _is_scarce(facts.scarcity) and facts.substitutes <= FEW_SUBSTITUTES
 
 
 def _is_aggressive(facts: TargetFacts) -> bool:

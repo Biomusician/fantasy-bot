@@ -101,9 +101,15 @@ def test_one_substitute_past_the_boundary_is_only_aggressive():
     assert advice.posture == AGGRESSIVE
 
 
-def test_surging_role_in_a_scarce_market_is_a_priority_spend():
+def test_a_surging_role_no_longer_buys_a_priority_spend():
+    """A Priority Spend can reach 60% of the remaining budget. The role
+    labels are annotation-only (the 2025 replay showed them preceding a
+    LOSS of share more often than Stable), so the tier's own comparison is
+    the only thing that opens the budget."""
     advice = advise(ctx(), facts(tier=MODERATE, role_label=ROLE_SURGING, scarcity=SCARCE, substitutes=9))
-    assert advice.posture == PRIORITY_SPEND
+    assert advice.posture != PRIORITY_SPEND
+    without = advise(ctx(), facts(tier=MODERATE, scarcity=SCARCE, substitutes=9))
+    assert advice.posture == without.posture and advice.suggested_dollars == without.suggested_dollars
 
 
 def test_aggressive_at_the_some_substitutes_boundary():

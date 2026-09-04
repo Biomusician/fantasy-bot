@@ -228,19 +228,25 @@ def _upgrades_starter(
 _TIER_RANK = {MUST_ADD: 0, STRONG_ADD: 1, MODERATE: 2, SPECULATIVE: 3, MONITOR: 4}
 
 
-def _role_tier_floor(role_label: str | None, pctl: float | None) -> str | None:
-    """A measured role breakout raises the FLOOR of the tier, never its
-    ceiling. Surging (a decision the team visibly made) on a rosterable
-    player is at least a Strong Add; Rising is at least Moderate. Neither
-    can reach Must Add on its own: Must Add still means "beats the weakest
-    starter he would replace", and usage is not that comparison. An
-    unrecognised label (Stable, Insufficient Role History, or anything a
-    future role module invents) is no signal at all, not a demotion.
+# The role label is ANNOTATION ONLY (2026-09-04). It used to raise the tier
+# floor — Surging to Strong Add, Rising to Moderate — until the 2025 replay
+# (data/backtest_report.md) showed the rising labels preceded a LOSS of
+# opportunity share three to four times more often than Stable did. A signal
+# that behaves backwards on the only season we can measure does not get to
+# move a recommendation; it still gets to be printed, because "usage rose"
+# is a true observation and the reader can weigh it.
+#
+# To re-enable after the role heuristic is redesigned: restore the floors
+# below and the FAAB priority-spend clause in faab_strategy._is_priority_spend,
+# and re-run scripts/backtest_report.py against a season the thresholds were
+# not built on.
+ROLE_TIER_FLOOR_ENABLED = False
 
-    A surging role below the rosterable bar takes the Rising floor rather
-    than nothing, so the stronger of the two labels can never produce the
-    weaker tier.
-    """
+
+def _role_tier_floor(role_label: str | None, pctl: float | None) -> str | None:
+    """None, always, while ROLE_TIER_FLOOR_ENABLED is False (see above)."""
+    if not ROLE_TIER_FLOOR_ENABLED:
+        return None
     if role_label == ROLE_SURGING and (pctl or 0) >= MIN_ROSTERABLE_PERCENTILE:
         return STRONG_ADD
     if role_label in (ROLE_RISING, ROLE_SURGING):
