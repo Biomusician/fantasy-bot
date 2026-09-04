@@ -13,6 +13,7 @@ from sleeper_tool.trade_types import OpponentFit
 from sleeper_tool.valuation import PlayerValue
 
 ACCEPTANCE_TIERS = ("Very Low", "Low", "Moderate", "Good", "High")
+VERY_LOW_ACCEPTANCE = ACCEPTANCE_TIERS[0]
 
 
 def rate_acceptance(

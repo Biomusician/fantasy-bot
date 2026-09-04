@@ -54,6 +54,7 @@ from sleeper_tool.formatting import article, ordinal_pct
 from sleeper_tool.league_economy import INACTIVE_TRADER
 from sleeper_tool.owner_profiles import get_owner_profile
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
+from sleeper_tool.lineup_optimizer import LONG_TERM_INJURY_STATUSES
 from sleeper_tool.roster_assets import (
     POSITION_ORDER,
     UNTOUCHABLE_COUNT,
@@ -73,7 +74,8 @@ from sleeper_tool.team_status import (
 )
 from sleeper_tool.trade_fit import piece_fits, recipient_need_fit, status_fit, weakest_rosterable_percentile
 from sleeper_tool.trade_messages import generate_trade_message
-from sleeper_tool.trade_rating import ACCEPTANCE_TIERS, proposal_confidence, rate_acceptance
+from sleeper_tool.valuation import weekly_projection
+from sleeper_tool.trade_rating import ACCEPTANCE_TIERS, VERY_LOW_ACCEPTANCE, proposal_confidence, rate_acceptance
 from sleeper_tool.trade_types import DropCandidate, OpponentFit, TradeProposal
 
 SELL_HIGH_TREND = "rising"
@@ -83,6 +85,7 @@ CLEAR_STARTER_MIN_GAP = 10
 BUY_LOW_TREND = "down"
 VALUE_TOLERANCE = 0.20  # accept offers where value ratio is within +/-20%
 ELITE_ASSET_PERCENTILE = 90.0  # bypass age filtering for a clear top-tier asset regardless of team timeline
+BUY_LOW_MIN_EXPERIENCE = 2  # NFL seasons; below this a dynasty-over-redraft gap is youth, not a dip
 DECLINE_CONFIRMATION_GAP = 10.0  # dynasty_pctl - redraft_pctl must clear this to call a dip a buy-low, not a real decline
 MAX_CANDIDATES_PER_OPPONENT = 3  # how many buy-low candidates to try matching per opponent before giving up on them
 
@@ -155,7 +158,8 @@ def identify_sell_high(roster: ValuedRoster, exclude_top: int = UNTOUCHABLE_COUN
 
 
 def identify_buy_low(
-    roster: ValuedRoster, my_status: str = CONTENDER, exclude_top: int = UNTOUCHABLE_COUNT
+    roster: ValuedRoster, my_status: str = CONTENDER, exclude_top: int = UNTOUCHABLE_COUNT,
+    *, waiver_floor: dict[str, float] | None = None, current_week: int | None = None,
 ) -> list[RosterEntry]:
     """Buy-low candidates on someone else's roster. `my_status` is MY team's
     status (contender/middling/rebuild), not theirs — a middling or
@@ -192,10 +196,32 @@ def identify_buy_low(
         """
         if currency != DYNASTY_CURRENCY:
             return True
+        # A first- or second-year player carries a dynasty premium over his
+        # redraft rank as a matter of course — that gap is his age, not the
+        # market overreacting to recent form, and reading it as a buy-low
+        # signal made every young player a "dip".
+        if e.years_exp is not None and e.years_exp < BUY_LOW_MIN_EXPERIENCE:
+            return False
         dyn_pctl, rd_pctl = e.value.dynasty_value_percentile, e.value.redraft_ecr_percentile
         if dyn_pctl is None or rd_pctl is None:
             return True
         return (dyn_pctl - rd_pctl) >= DECLINE_CONFIRMATION_GAP
+
+    def _beats_the_wire(e: RosterEntry) -> bool:
+        """Redraft only: value IS weekly production there, so paying for a
+        player the league's own wire already out-projects is never a trade.
+        Dynasty keeps its developmental buys — a rookie's price is his
+        future, not this week's points."""
+        if currency != REDRAFT_CURRENCY:
+            return True
+        # In redraft a player parked on IR/PUP has no season left to buy.
+        if e.is_reserve or (e.injury_status or "") in LONG_TERM_INJURY_STATUSES:
+            return False
+        if not waiver_floor:
+            return True
+        floor = waiver_floor.get(e.position or "")
+        proj = weekly_projection(e.value, current_week)
+        return floor is None or proj is None or proj >= floor
 
     return sorted(
         (
@@ -206,6 +232,7 @@ def identify_buy_low(
             and (need_percentile(e.value, currency) or 0) >= MIN_ROSTERABLE_PERCENTILE
             and _age_ok(e)
             and _not_just_a_slump(e)
+            and _beats_the_wire(e)
         ),
         # WITHIN-POSITION percentile (need_percentile), not pool-wide — the
         # same apples-to-oranges problem need_percentile's own docstring
@@ -1242,6 +1269,8 @@ def generate_trade_proposals(
     engine=None,
     status_result: TeamStatusResult | None = None,
     preferred_buyers: dict[str, list[str]] | None = None,
+    waiver_floor: dict[str, float] | None = None,
+    current_week: int | None = None,
     manager_labels: dict[str, list[str]] | None = None,
 ) -> list[TradeProposal]:
     """`storage`/`engine` are optional — when provided (and `status_result`
@@ -1303,7 +1332,7 @@ def generate_trade_proposals(
     for their_roster in other_rosters:
         if not their_roster.entries:
             continue
-        buy_low = identify_buy_low(their_roster, my_status)
+        buy_low = identify_buy_low(their_roster, my_status, waiver_floor=waiver_floor, current_week=current_week)
         need_candidates = [e for e in buy_low if e.position in target_positions][:MAX_CANDIDATES_PER_OPPONENT]
         if not need_candidates:
             continue
@@ -1564,4 +1593,9 @@ def generate_trade_proposals(
         if contradiction:
             p.caveats.append(contradiction)
 
-    return proposals
+    # An offer the engine itself rates Very Low is one it expects to be
+    # ignored; printing it spends the reader's attention on a move that
+    # will not happen. Dropped unless it is all this league has, in which
+    # case an unlikely idea still beats an empty section.
+    likely = [p for p in proposals if p.acceptance_rating != VERY_LOW_ACCEPTANCE]
+    return likely or proposals

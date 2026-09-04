@@ -87,6 +87,7 @@ from sleeper_tool.streamer_planner import StreamPlan, plan_streams
 from sleeper_tool.team_status import CONTENDER, TeamStatusResult, classify_team_status, get_valued_picks_by_roster
 from sleeper_tool.trade_engine import generate_trade_proposals, identify_drop_candidates
 from sleeper_tool.trade_opportunity_cost import MAJOR_LINEUP_COST, TradeEconomics, analyze_trade
+from sleeper_tool.trade_rating import VERY_LOW_ACCEPTANCE
 from sleeper_tool.trade_types import DropCandidate, TradeProposal
 from sleeper_tool.valuation import LeagueFormat, ValuationEngine, games_remaining
 from sleeper_tool.waiver_engine import INSURANCE, MUST_ADD, STRONG_ADD, TimeSensitiveNote, WaiverTarget, get_time_sensitive_notes, get_waiver_targets
@@ -483,6 +484,12 @@ def build_league_report_data(
         league, rosters, status_result=status_result, storage=storage, engine=engine,
         preferred_buyers={b.candidate.player_id: [f.username for f in b.buyers if f.username] for b in pre_boards},
         manager_labels={m.username: m.labels for m in league_economy.managers.values() if m.username},
+        waiver_floor=(
+            {pos: m.waiver_replacement_projection for pos, m in replacement.positions.items()
+             if m.waiver_replacement_projection is not None}
+            if replacement is not None else None
+        ),
+        current_week=current_week,
     )
     # Exclude anyone already used as a give-piece in a live trade proposal
     # this run -- otherwise the same player could be told to both trade
@@ -501,6 +508,10 @@ def build_league_report_data(
         if not pre_draft
         else []
     )
+    # Consolidations are proposals like any other, including the rule that an
+    # offer the engine itself expects to be refused isn't worth the reader's
+    # attention (the engine applies this to its own passes before returning).
+    consolidations = [c for c in consolidations if c.proposal.acceptance_rating != VERY_LOW_ACCEPTANCE]
     proposals.extend(c.proposal for c in consolidations)
     proposed_give_ids = frozenset(e.player_id for p in proposals for e in p.give)
     roster_clogs = (

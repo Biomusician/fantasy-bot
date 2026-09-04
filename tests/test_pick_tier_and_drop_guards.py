@@ -65,3 +65,73 @@ def test_pre_draft_league_has_no_bye_alert_and_no_drop_list(report):
     assert ld.bye_collision is None
     assert ld.drop_candidates == []
     assert not [n for n in ld.time_sensitive if "bye hole" in n.player_name.lower()]
+
+
+def test_a_kicker_a_defense_and_a_reserve_player_are_never_give_pieces():
+    """A K/DEF give manufactures an empty required slot the optimizer then
+    prices as a Major Lineup Cost; an IR/PUP player is not a package piece."""
+    from conftest import make_entry, make_roster, make_value
+
+    from sleeper_tool.roster_assets import tradeable_pool
+
+    def entry(pid, pos, **kw):
+        return make_entry(player_id=pid, name=pid, position=pos,
+                          value=make_value(position=pos, dynasty_value=3000, dynasty_value_percentile=60.0), **kw)
+
+    roster = make_roster(entries=[
+        entry("wr1", "WR"), entry("wr2", "WR"), entry("wr3", "WR"),
+        entry("k1", "K"), entry("def1", "DEF"),
+        entry("hurt", "RB", injury_status="PUP"), entry("stashed", "RB", is_reserve=True),
+    ])
+    ids = {e.player_id for e in tradeable_pool(roster)}
+    assert "k1" not in ids and "def1" not in ids
+    assert "hurt" not in ids and "stashed" not in ids
+    assert ids & {"wr1", "wr2", "wr3"}
+
+
+def test_a_first_year_players_dynasty_premium_is_not_a_buy_low_dip():
+    from conftest import make_entry, make_roster, make_value
+
+    from sleeper_tool.trade_engine import identify_buy_low
+
+    def rookie(pid, exp):
+        return make_entry(
+            player_id=pid, name=pid, position="WR", years_exp=exp, age=23,
+            value=make_value(position="WR", trend="down", dynasty_value=4000,
+                             dynasty_value_percentile=70.0, dynasty_positional_percentile=70.0,
+                             redraft_ecr_percentile=45.0),
+        )
+
+    roster = make_roster(entries=[
+        rookie("rookie", 0), rookie("sophomore", 1), rookie("veteran", 4),
+        *[make_entry(player_id=f"f{i}", name=f"f{i}", position="RB",
+                     value=make_value(position="RB", dynasty_value=9000, dynasty_value_percentile=95.0,
+                                      dynasty_positional_percentile=95.0)) for i in range(3)],
+    ])
+    names = {e.player_id for e in identify_buy_low(roster)}
+    assert "veteran" in names
+    assert "rookie" not in names and "sophomore" not in names
+
+
+def test_redraft_buy_low_must_beat_this_leagues_wire():
+    from conftest import make_entry, make_league_info, make_roster, make_value
+
+    from sleeper_tool.trade_engine import identify_buy_low
+
+    def wr(pid, proj):
+        return make_entry(player_id=pid, name=pid, position="WR", years_exp=5,
+                          value=make_value(position="WR", trend="down", proj_points=proj * 17,
+                                           redraft_ecr_percentile=70.0))
+
+    # Two cornerstones so the buy-low pair isn't protected as untouchable.
+    stars = [
+        make_entry(player_id=f"star{i}", name=f"star{i}", position="RB", years_exp=5,
+                   value=make_value(position="RB", proj_points=20 * 17, redraft_ecr_percentile=99.0))
+        for i in range(2)
+    ]
+    roster = make_roster(entries=[*stars, wr("better", 12.0), wr("worse", 4.0)], league=make_league_info(kind="redraft"))
+    floor = {"WR": 8.0}
+    names = {e.player_id for e in identify_buy_low(roster, waiver_floor=floor, current_week=1)}
+    assert names == {"better"}
+    # Without a market to compare against, the gate never fires.
+    assert {e.player_id for e in identify_buy_low(roster)} == {"better", "worse"}

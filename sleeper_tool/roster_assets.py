@@ -17,6 +17,7 @@ from sleeper_tool.asset_value import (
     value_currency,
     value_for_currency,
 )
+from sleeper_tool.lineup_optimizer import LONG_TERM_INJURY_STATUSES
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
 from sleeper_tool.team_status import CONTENDER, MIDDLING, REBUILD, veteran_min_age
 
@@ -91,6 +92,20 @@ def untouchable_ids(roster: ValuedRoster, currency: str, exclude_top: int) -> se
     return ids
 
 
+# A kicker or defense is a slot to fill, not an asset: nobody trades for
+# one, and offering the roster's only K manufactures an empty required slot
+# the optimizer then prices as a "Major Lineup Cost". A player parked on IR
+# or PUP is a give-side embarrassment in redraft and a caveat in dynasty —
+# neither belongs in a value-matched package.
+UNGIVEABLE_POSITIONS = frozenset({"K", "DEF", "DST"})
+
+
+def _is_giveable(entry: RosterEntry) -> bool:
+    if (entry.position or "").upper() in UNGIVEABLE_POSITIONS:
+        return False
+    return (entry.injury_status or "") not in LONG_TERM_INJURY_STATUSES and not entry.is_reserve
+
+
 def tradeable_pool(
     roster: ValuedRoster, my_status: str = CONTENDER, exclude_top: int = UNTOUCHABLE_COUNT
 ) -> list[RosterEntry]:
@@ -102,7 +117,10 @@ def tradeable_pool(
     """
     currency = value_currency(roster)
     protected = untouchable_ids(roster, currency, exclude_top)
-    pool = [e for e in roster.entries if corroborated(e, currency) and e.player_id not in protected]
+    pool = [
+        e for e in roster.entries
+        if corroborated(e, currency) and e.player_id not in protected and _is_giveable(e)
+    ]
 
     if my_status in (MIDDLING, REBUILD):
         return sorted(
