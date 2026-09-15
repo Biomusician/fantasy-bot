@@ -626,6 +626,7 @@ def build_league_report_data(
     time_sensitive = get_time_sensitive_notes(
         storage, my_roster, current_week=current_week,
         reserve_slots=int((league_data.get("settings") or {}).get("reserve_slots") or 0),
+        league_settings=league_data.get("settings") or {},
     )
     urgent_add_ids: set[str] = set()  # waiver targets that answer a bye hole (FAAB posture reads this)
     note_directions: dict[tuple[str, str], str] = {}  # (player_id, note) -> the side the note argues for

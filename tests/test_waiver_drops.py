@@ -89,14 +89,17 @@ def test_an_open_ir_slot_protects_an_ir_eligible_player_instead_of_dropping_him(
 
 
 def test_a_healthy_player_is_never_ir_protected():
+    # Questionable is not an IR designation in any league.
     board = board_for([player("fit", "WR", 2, injury_status="Questionable")], reserve_slots=ONE_IR_SLOT)
+    assert "fit" not in board.protected
+    assert [o.entry.player_id for o in board.options] == ["fit"]
 
 
 def test_without_ir_capacity_an_injured_bench_player_is_droppable():
     """A league whose settings report no reserve slots cannot stash him."""
     board = board_for([player("hurt", "WR", 2, injury_status="Out"), player("plain", "WR", 1)])
     assert "hurt" not in board.protected
-    assert "fit" not in board.protected
+    assert {o.entry.player_id for o in board.options} == {"hurt", "plain"}
 
 
 def test_a_claim_week_starter_is_protected_even_though_he_is_not_a_structural_starter():
@@ -250,3 +253,49 @@ def test_option_for_an_unknown_or_protected_player_is_none():
     board = board_for([player("plain", "WR", 1)])
     assert board.option_for("qb_s") is None
     assert board.option_for("nobody") is None
+
+
+# -- which designations an IR slot accepts is a league setting ------------------------------------
+
+
+def test_ir_eligibility_is_read_from_the_leagues_own_settings():
+    from sleeper_tool.waiver_drops import BASE_IR_STATUSES, ir_eligible_statuses
+
+    # Disco: two IR slots, but Out and Doubtful are not accepted.
+    disco = {"reserve_slots": 2, "reserve_allow_out": 0, "reserve_allow_doubtful": 0,
+             "reserve_allow_na": 0, "reserve_allow_sus": 0, "reserve_allow_dnr": 1, "reserve_allow_cov": 1}
+    assert ir_eligible_statuses(disco) == BASE_IR_STATUSES | {"DNR", "COV"}
+    assert "Out" not in ir_eligible_statuses(disco)
+
+    # The Surfeit does accept Out.
+    surfeit = {"reserve_slots": 1, "reserve_allow_out": 1, "reserve_allow_cov": 0}
+    assert "Out" in ir_eligible_statuses(surfeit)
+
+    # An IR-designated player is eligible everywhere; Sleeper has no flag for him.
+    for settings in (disco, surfeit, {}, None):
+        assert BASE_IR_STATUSES <= ir_eligible_statuses(settings)
+
+
+def test_an_open_ir_slot_does_not_protect_a_status_this_league_cannot_reserve():
+    # "Move him to IR instead" is advice the manager cannot take, and it was
+    # also protecting him from a drop for a reason that does not exist.
+    forbids_out = {"reserve_allow_out": 0, "reserve_allow_doubtful": 0}
+    board = board_for(
+        [player("hurt", "WR", 2, injury_status="Out"), player("plain", "WR", 1)],
+        reserve_slots=ONE_IR_SLOT, league_settings=forbids_out,
+    )
+    assert "hurt" not in board.protected
+    assert {o.entry.player_id for o in board.options} == {"hurt", "plain"}
+
+    allows_out = {"reserve_allow_out": 1}
+    board = board_for(
+        [player("hurt", "WR", 2, injury_status="Out"), player("plain", "WR", 1)],
+        reserve_slots=ONE_IR_SLOT, league_settings=allows_out,
+    )
+    assert board.protected["hurt"] == PROTECT_IR_ELIGIBLE
+
+
+def test_with_no_settings_supplied_every_designation_is_still_treated_as_ir_eligible():
+    """A caller with no settings must not silently protect nobody."""
+    board = board_for([player("hurt", "WR", 2, injury_status="Sus"), player("plain", "WR", 1)], reserve_slots=ONE_IR_SLOT)
+    assert board.protected["hurt"] == PROTECT_IR_ELIGIBLE

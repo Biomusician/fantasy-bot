@@ -11,6 +11,7 @@ from sleeper_tool.waiver_evidence import (
     BALLERS_SPLIT,
     BROAD_CONVICTION,
     DEEPER_LEAGUES_ONLY,
+    DEPTH_FIT,
     EXPERTS_AGREE,
     FANTASYPROS_HIGHER,
     REPLACEABLE_POSITION,
@@ -57,11 +58,11 @@ def sources_with(*, fp=None, ballers=None, roto=None, boone=None):
     return src
 
 
-def ev(*, proj=170.0, num_teams=12, present=ALL_SOURCES, entry=None, **kw):
+def ev(*, proj=170.0, num_teams=12, effective_size=None, present=ALL_SOURCES, entry=None, **kw):
     return build_evidence(
         entry if entry is not None else player(PID, "WR", proj),
-        sources=sources_with(**kw), ppr=1.0, num_teams=num_teams, startable=STARTABLE,
-        current_week=WEEK, sources_present=present,
+        sources=sources_with(**kw), ppr=1.0, num_teams=num_teams, effective_size=effective_size,
+        startable=STARTABLE, current_week=WEEK, sources_present=present,
         scarcity=kw.pop("scarcity", None) if False else None,
     )
 
@@ -220,6 +221,106 @@ def test_a_tag_at_this_leagues_own_size_is_not_a_deeper_league_warning():
     e = ev(roto=roto_row(5, note="12+ Team PPR Leagues", min_size=12), num_teams=12)
     assert DEEPER_LEAGUES_ONLY not in e.labels
     assert e.for_lines[-1] == "RotoBaller #5, 12+ Team PPR Leagues"
+
+
+# -- league size is roster depth, not team count -----------------------------------------------
+
+# The four real leagues, as (team count, effective size): a board's size tag
+# is a proxy for how many players are off the board, and these leagues do
+# not roster like their team counts.
+PRIMO = (8, 145 / 14)  # 10.4 — an 8-team keeper with deep rosters
+SUCKS = (12, 127 / 14)  # 9.1 — a 12-team redraft with shallow ones
+DISCO = (12, 228 / 14)  # 16.3
+SURFEIT = (10, 129 / 14)  # 9.2
+
+
+@pytest.mark.parametrize(
+    "league,teams,effective,demotes",
+    [
+        ("Primo Veterans", *PRIMO, False),
+        ("This League Sucks", *SUCKS, True),
+        ("Disco", *DISCO, False),
+        ("The Surfeit", *SURFEIT, True),
+    ],
+)
+def test_a_ten_plus_tag_is_read_against_roster_depth_not_the_team_count(league, teams, effective, demotes):
+    e = ev(roto=roto_row(6, note="10+ Team Leagues", min_size=10), num_teams=teams, effective_size=effective)
+    assert (DEEPER_LEAGUES_ONLY in e.labels) is demotes, league
+    assert (DEPTH_FIT in e.labels) is not demotes, league
+
+
+def test_the_tag_boundary_is_strict_so_a_league_at_exactly_the_tagged_size_is_not_demoted():
+    at = ev(roto=roto_row(6, note="10+ Team Leagues", min_size=10), num_teams=10, effective_size=10.0)
+    just_under = ev(roto=roto_row(6, note="10+ Team Leagues", min_size=10), num_teams=10, effective_size=9.99)
+    assert DEEPER_LEAGUES_ONLY not in at.labels and DEPTH_FIT in at.labels
+    assert DEEPER_LEAGUES_ONLY in just_under.labels and DEPTH_FIT not in just_under.labels
+
+
+def test_a_tag_this_league_reaches_is_a_for_line_naming_the_roster_depth_that_makes_it_fit():
+    e = ev(roto=roto_row(38, note="14+ Team PPR Leagues", min_size=14), num_teams=12, effective_size=DISCO[1])
+    assert DEPTH_FIT in e.labels
+    assert e.for_lines[-1] == (
+        "RotoBaller #38, 14+ Team PPR Leagues — matches this league's roster depth "
+        "(12 teams rostering like a 16-team league)"
+    )
+    assert not any("RotoBaller" in line for line in e.risk_lines)
+
+
+def test_a_tag_deeper_than_this_league_names_the_roster_depth_rather_than_the_team_count():
+    e = ev(roto=roto_row(5, note="14+ Team PPR Leagues", min_size=14), num_teams=12, effective_size=SUCKS[1])
+    assert e.risk_lines[0] == (
+        "RotoBaller #5, 14+ Team PPR Leagues — deeper than this league's roster depth "
+        "(12 teams rostering like a 9-team league)"
+    )
+
+
+def test_the_depth_sentence_stays_a_plain_team_count_when_the_two_agree():
+    e = ev(roto=roto_row(5, note="14+ Team PPR Leagues", min_size=14), num_teams=12, effective_size=12.2)
+    assert e.risk_lines[0] == "RotoBaller #5, 14+ Team PPR Leagues — deeper than this 12-team league"
+    fits = ev(roto=roto_row(5, note="12+ Team Leagues", min_size=12), num_teams=12, effective_size=12.2)
+    assert fits.for_lines[-1] == "RotoBaller #5, 12+ Team Leagues"  # nothing to explain
+
+
+def test_a_fitting_tag_never_outranks_the_support_levels_it_only_annotates():
+    e = ev(roto=roto_row(38, note="14+ Team PPR Leagues", min_size=14), num_teams=12, effective_size=DISCO[1])
+    assert DEPTH_FIT in e.labels
+    assert e.support == SUPPORT_NONE  # a #38 row is still not a waiver-board recommendation
+
+
+# -- what counts as listed by a waiver board -----------------------------------------------------
+
+
+def test_a_board_row_tagged_for_a_depth_this_league_reaches_is_listed_at_any_rank():
+    deep = ev(roto=roto_row(38, note="14+ Team PPR Leagues", min_size=14), num_teams=12, effective_size=DISCO[1])
+    shallow = ev(roto=roto_row(38, note="14+ Team PPR Leagues", min_size=14), num_teams=12, effective_size=SUCKS[1])
+    assert deep.expert_listed is True
+    assert shallow.expert_listed is False  # the same row, in a league the board is not talking to
+
+
+def test_an_untagged_row_past_waiver_listed_is_still_not_listed_however_deep_the_league_is():
+    e = ev(roto=roto_row(WAIVER_LISTED + 1), num_teams=12, effective_size=DISCO[1])
+    assert e.depth_tag_fits is False and e.expert_listed is False
+
+
+def test_fantasypros_higher_does_not_fire_when_a_fitting_tag_lists_him_on_a_waiver_board():
+    listed = ev(fp=30, roto=roto_row(38, note="14+ Team Leagues", min_size=14), num_teams=12, effective_size=DISCO[1])
+    not_listed = ev(fp=30, roto=roto_row(38, note="14+ Team Leagues", min_size=14), num_teams=12, effective_size=SUCKS[1])
+    assert FANTASYPROS_HIGHER not in listed.labels
+    assert FANTASYPROS_HIGHER in not_listed.labels
+
+
+def test_a_league_whose_roster_depth_matches_its_team_count_behaves_exactly_as_before():
+    for size in (None, 12.0):
+        deeper = ev(roto=roto_row(5, note="14+ Team PPR Leagues", min_size=14), num_teams=12, effective_size=size)
+        assert DEEPER_LEAGUES_ONLY in deeper.labels
+        assert deeper.risk_lines[0] == "RotoBaller #5, 14+ Team PPR Leagues — deeper than this 12-team league"
+
+        same = ev(roto=roto_row(5, note="12+ Team PPR Leagues", min_size=12), num_teams=12, effective_size=size)
+        assert DEEPER_LEAGUES_ONLY not in same.labels
+        assert same.for_lines[-1] == "RotoBaller #5, 12+ Team PPR Leagues"
+
+        assert ev(roto=roto_row(WAIVER_LISTED + 1), num_teams=12, effective_size=size).expert_listed is False
+        assert ev(roto=roto_row(WAIVER_LISTED), num_teams=12, effective_size=size).expert_listed is True
 
 
 # -- support levels ----------------------------------------------------------------------------

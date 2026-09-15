@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 
 from sleeper_tool.faab_strategy import FAAB_WAIVER_TYPE, FaabContext
 from sleeper_tool.faab_window import FaabWindow, WindowFacts, build_window
+from sleeper_tool.league_depth import effective_league_size
 from sleeper_tool.lineup_optimizer import LineupResult, optimize_lineup
 from sleeper_tool.replacement_value import ReplacementMarket
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster, player_name
@@ -136,6 +137,10 @@ def build_command_center(
     open_spots: int = 0,
 ) -> WaiverCommandCenter:
     num_teams = len([r for r in rosters.values()]) or 1
+    # How many standard teams' worth of players are actually off the wire.
+    # Hoisted: it counts every roster entry in the league, and the evidence
+    # comprehension below runs once per candidate.
+    effective_size = effective_league_size(rosters.values())
     # The claim-week lineup is a THIS-WEEK lineup, so a player Sleeper has
     # ruled Out does not fill a slot in it. Leaving him in is how a FLEX the
     # roster cannot actually field reads as "already covered", which hides
@@ -159,6 +164,7 @@ def build_command_center(
         roster, lineup=lineup, week_lineup=week_lineup, num_teams=num_teams, ros_pos_rank=ros_pos_rank,
         trade_piece_ids=trade_piece_ids, current_week=current_week, open_spots=open_spots,
         reserve_slots=int((league_data.get("settings") or {}).get("reserve_slots") or 0),
+        league_settings=league_data.get("settings") or {},
     )
     extras = _expert_entries(sources, rostered_ids, {fa.player_id for fa in free_agents}, all_players, engine, roster)
     pool = skill_fas + extras
@@ -181,7 +187,8 @@ def build_command_center(
     startable = startable_depth(roster, num_teams)
     evidence: dict[str, WaiverEvidence] = {
         c.player_id: build_evidence(
-            c, sources=sources, ppr=roster.fmt.ppr, num_teams=num_teams, startable=startable, current_week=current_week,
+            c, sources=sources, ppr=roster.fmt.ppr, num_teams=num_teams, effective_size=effective_size,
+            startable=startable, current_week=current_week,
             scarcity=market.scarcity_of(c.position) if market is not None else None,
             role_label=(role_labels or {}).get(c.player_id), role_market=(role_market or {}).get(c.player_id),
             sources_present=present,

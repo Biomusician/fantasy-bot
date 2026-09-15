@@ -55,7 +55,35 @@ PROTECT_RESERVE = "in an IR/reserve or taxi slot (dropping him frees no bench sp
 PROTECT_TRADE_PIECE = "live trade give-piece"
 PROTECT_DEVELOPMENTAL = "dynasty developmental hold"
 PROTECT_IR_ELIGIBLE = "IR-eligible with an open IR slot — move him there instead of dropping"
-IR_ELIGIBLE_STATUSES = frozenset({"IR", "PUP", "Out", "Doubtful", "Sus", "NA"})
+# Which designations an IR slot accepts is a LEAGUE SETTING, not a league of
+# the game. Disco carries two IR slots and reserve_allow_out = 0, so "move him
+# to IR instead" about an Out player is advice the manager cannot take — and
+# worse, it protects him from a drop for a reason that does not exist. IR and
+# PUP are the baseline (Sleeper has no flag for them); everything else is a
+# flag the API reports per league.
+BASE_IR_STATUSES = frozenset({"IR", "PUP"})
+RESERVE_ALLOW_FLAGS = {
+    "Out": "reserve_allow_out",
+    "Doubtful": "reserve_allow_doubtful",
+    "NA": "reserve_allow_na",
+    "Sus": "reserve_allow_sus",
+    "DNR": "reserve_allow_dnr",
+    "COV": "reserve_allow_cov",
+}
+# Every designation any league could allow — the default when no settings are
+# supplied, which keeps a caller that has none from silently protecting nobody.
+IR_ELIGIBLE_STATUSES = BASE_IR_STATUSES | frozenset(RESERVE_ALLOW_FLAGS)
+
+
+def ir_eligible_statuses(settings: dict | None) -> frozenset[str]:
+    """The injury designations THIS league's IR slots accept."""
+    if not settings:
+        return IR_ELIGIBLE_STATUSES
+    allowed = set(BASE_IR_STATUSES)
+    for status, flag in RESERVE_ALLOW_FLAGS.items():
+        if settings.get(flag):
+            allowed.add(status)
+    return frozenset(allowed)
 
 
 @dataclass
@@ -116,14 +144,18 @@ def build_drop_board(
     current_week: int | None = None,
     open_spots: int = 0,
     reserve_slots: int = 0,
+    league_settings: dict | None = None,
 ) -> DropBoard:
     """`reserve_slots` is the league's IR capacity — Sleeper reports it as
-    `settings.reserve_slots`, never as an IR entry in roster_positions."""
+    `settings.reserve_slots`, never as an IR entry in roster_positions.
+    `league_settings` is that same settings dict, read for which injury
+    designations this league's IR slots actually accept."""
     per_week = games_remaining(current_week)
     currency = value_currency(my_roster)
     depth = startable_depth(my_roster, num_teams)
     starters = set(lineup.starter_ids)
     open_ir = max(0, reserve_slots - sum(1 for e in my_roster.entries if e.is_reserve))
+    ir_statuses = ir_eligible_statuses(league_settings)
     week_starters = set(week_lineup.starter_ids) if week_lineup is not None else set()
     trade_pieces = set(trade_piece_ids)
 
@@ -140,7 +172,7 @@ def build_drop_board(
             protected[e.player_id] = PROTECT_TRADE_PIECE
         elif is_dynasty_developmental(e, currency):
             protected[e.player_id] = PROTECT_DEVELOPMENTAL
-        elif open_ir and e.injury_status in IR_ELIGIBLE_STATUSES:
+        elif open_ir and e.injury_status in ir_statuses:
             protected[e.player_id] = PROTECT_IR_ELIGIBLE
         else:
             pool.append(e)
