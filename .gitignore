@@ -11,6 +11,8 @@ data/weekly_report.md
 data/dashboard.html
 data/run_snapshots/
 data/ff_dynasty_pass.csv
+data/manual/*
+!data/manual/README.md
 data/yahoo_token.json
 !data/ff_dynasty_pass.example.csv
 

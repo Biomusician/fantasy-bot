@@ -42,6 +42,12 @@ SOURCE_WINDOWS: dict[str, tuple[dt.timedelta, dt.timedelta, dt.timedelta]] = {
     # The Dynasty Pass CSV is a manual export; ff_dynasty_pass.py already
     # refuses to read one over a week old, so usable and ceiling coincide.
     "ff_dynasty_pass": (2 * _D, 7 * _D, 7 * _D),
+    # Waiver-specific boards are about ONE week's wire. A Tuesday board is
+    # current through that week's claims; by the next Tuesday it describes a
+    # wire that has already been picked over, so the ceiling is a week.
+    "ballers_waivers": (2 * _D, 6 * _D, 7 * _D),
+    "rotoballer_waivers": (20 * _H, 3 * _D, 7 * _D),
+    "boone_weekly": (20 * _H, 4 * _D, 7 * _D),
 }
 
 # family -> minimum row count below which the source is only Partial. These
