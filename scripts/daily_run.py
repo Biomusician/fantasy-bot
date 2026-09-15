@@ -17,6 +17,7 @@ from sleeper_tool.client import SleeperClient
 from sleeper_tool.config import LEAGUES
 from sleeper_tool.console import ensure_utf8_stdout
 from sleeper_tool.calibration import calibrate, render_calibration_markdown
+from sleeper_tool import waiver_calibration
 from sleeper_tool.decision_delta import is_complete_run, save_snapshot
 from sleeper_tool.decision_ledger import save_ledger
 from sleeper_tool.watchlist import save_watchlist
@@ -84,7 +85,11 @@ def main() -> None:
     try:
         calibration_path = DATA_DIR / "calibration_report.md"
         role_labels = {pid: t.label for ld in report_data.leagues for pid, t in ld.role_trends.items()}
-        calibration_path.write_text(render_calibration_markdown(calibrate(report_data, role_labels=role_labels)), encoding="utf-8")
+        text = render_calibration_markdown(calibrate(report_data, role_labels=role_labels))
+        # The waiver bid dataset is a separate diagnostic over the ledger, not
+        # a rule: recommended vs clearing bids, top-claim outcomes, misses.
+        text += "\n" + waiver_calibration.section(report_data.ledger)
+        calibration_path.write_text(text, encoding="utf-8")
         print(f"OK: wrote {calibration_path}")
     except Exception as exc:  # a diagnostic must never fail the run
         print(f"WARNING: calibration report skipped: {exc}", file=sys.stderr)

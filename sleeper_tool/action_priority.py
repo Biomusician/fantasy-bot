@@ -209,6 +209,11 @@ def classify_urgency(kind: str, subject, ld, report) -> str:
             return IMMEDIATE
         if _covers_next_week_bye(subject, ld, report):
             return IMMEDIATE
+        # On a waiver day every planned claim is decided tonight: the
+        # league's first claim is the decision, the rest of the plan rides
+        # on it. Off a waiver day the tier alone decides, as before.
+        if _is_waiver_day(report):
+            return IMMEDIATE if _is_top_claim(subject, ld) else THIS_WEEK
         return THIS_WEEK if subject.priority_tier in _URGENT_WAIVER_TIERS else MONITOR
     if kind in (DEFENSIVE_ADD, STREAMER):
         return THIS_WEEK
@@ -218,6 +223,17 @@ def classify_urgency(kind: str, subject, ld, report) -> str:
     if kind == STASH:
         return LONG_HORIZON
     return MONITOR
+
+
+def _is_waiver_day(report) -> bool:
+    mode = getattr(report, "waiver_mode", None) if report is not None else None
+    return bool(mode is not None and getattr(mode, "active", False))
+
+
+def _is_top_claim(target, ld) -> bool:
+    center = getattr(ld, "waiver_center", None)
+    top = center.plan.top_claim if center is not None else None
+    return top is not None and top.call.player_id == target.player_id
 
 
 def _covers_next_week_bye(target, ld, report) -> bool:

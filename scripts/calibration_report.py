@@ -17,6 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sleeper_tool.calibration import calibrate, render_calibration_markdown
+from sleeper_tool import waiver_calibration
 from sleeper_tool.console import ensure_utf8_stdout
 from sleeper_tool.report_data import build_weekly_report_data
 from sleeper_tool.storage import Storage
@@ -39,7 +40,8 @@ def main() -> None:
         report = build_weekly_report_data(storage, engine, with_nfl_schedule=with_nfl_schedule)
 
     result = calibrate(report)
-    output_path.write_text(render_calibration_markdown(result), encoding="utf-8")
+    text = render_calibration_markdown(result) + "\n" + waiver_calibration.section(report.ledger)
+    output_path.write_text(text, encoding="utf-8")
     flagged = result.flagged()
     print(f"Wrote calibration report to {output_path}")
     print(f"{len(result.rules)} rules over {len(result.leagues)} leagues; {len(flagged)} flagged")
