@@ -3,6 +3,143 @@
 Consequential choices and why. Newest first. The module docstrings carry the
 mechanics; this file carries the reasoning that isn't obvious from the code.
 
+## 2026-09-15 — The Waiver Command Center (redraft and keeper)
+
+The Tuesday report used to answer "here are some interesting free agents".
+It now answers "here is the exact plan I would submit tonight". What
+follows is the reasoning behind the parts that are not obvious from the
+code.
+
+### Four questions, four modules
+
+Acquire / drop / spend / sequence were one tangle inside `waiver_engine`,
+which is why a 6th-percentile QB could come paired with cutting a
+starting-calibre TE. They are now four modules with one owner each
+(`waiver_acquisition`, `waiver_drops`, `faab_window`, `waiver_plan`),
+assembled per league by `waiver_command_center`. `waiver_engine` is
+untouched and still owns dynasty leagues: dynasty waivers are a different
+decision (long-term asset value, taxi stashes), and rewriting both at once
+would have made the diff unreviewable.
+
+### The lineup decides what a player is, not his rank
+
+Every candidate is added to the roster and the shared optimizer is re-run
+twice: the structural lineup (the season's shape) and the lineup for the
+week being claimed for (that week's byes and long-term injuries). The
+difference in points per week is what sorts him into Immediate Starter /
+Injury-Bye Cover / Streamer / Depth Upgrade / Upside Bench Add /
+Speculative Stash. A rank never decides a class, because the same rank
+means different things on different rosters — which is the entire product
+goal: the Ballers' #1 is a Strong Add worth $12 in The Surfeit (he enters
+the FLEX) and a $2 depth claim in This League Sucks (he does not).
+
+`_connected_floor` skips the optimizer when a player cannot possibly help
+(his projection is at or below every starter reachable by a chain of slot
+swaps, and no slot is empty). That is exact rather than a heuristic: adding
+a vertex to a maximum-weight matching can only help by displacing someone
+reachable. It turned ~25ms per candidate into ~0 for most of them.
+
+### The claim week is not Sleeper's current week
+
+On a Tuesday Sleeper still reports the week whose games just finished.
+Claims are for the next one. `waiver_mode.claim_week_for` takes the
+earliest regular-season week whose last game is today or later from the
+NFL schedule, and falls back to current+1 on Tuesday/Wednesday only.
+The same fact suppresses the start/sit section for a week that is over:
+"X is set to start" is history once the games are played, and printing it
+next to claims for the following week was the most confusing thing on the
+Tuesday page.
+
+### Needs are read off the lineup, never off roster counts
+
+`roster_needs` compares my weakest starter in each group against the
+league's own median weakest starter and against the replacement level
+(`replacement_value`), and asks what the claim week does to it. A roster
+with five bad WRs is not strong at WR. A SUPER_FLEX slot belongs to the QB
+group (the same reading `valuation.derive_league_format` uses): a Superflex
+roster starting a WR there has a QB problem. Thresholds: Critical under
+0.75 of the replacement level or an unfilled slot or a claim-week cover
+under half the starter; Weak under 0.92 of replacement or 0.85 of the
+league median; Strong at 1.10 of the median with cover; Surplus with two
+covering bench players. A Weak group the wire cannot fix stays Weak and
+simply produces no claim — relabelling it Adequate would hide the hole.
+
+### Drops are ranked for the whole roster, then vetoed per pairing
+
+The drop board orders every droppable player by ROS starter calibre, then
+emergency cover value, then projection. The pairing guardrail then refuses:
+a stash taking anything but a dead roster spot; dropping ROS starter
+calibre for anyone but a better-ranked same-position add; dropping real
+cover (1.5+ pts/wk of it) for an add that gains less than that cover; and
+any drop who would still start after the add. Every refusal is recorded on
+the call, so "why not him" is answerable.
+
+Protections are deliberately narrow — optimizer starters, claim-week
+starters, IR/taxi, live trade pieces, dynasty developmental holds, and a
+player the league has an open IR slot for (the move there is IR, not a
+drop). The 2026-09-04 drop-protection gate is the reason: protections that
+accumulate quietly are how a roster ends up with nothing droppable.
+
+### A FAAB window, not a price forecast
+
+`faab_window` builds a band as a share of REMAINING budget from the
+acquisition strength, applies named multiplicative shifts, widens (never
+shifts) the band when sources disagree, applies the existing posture
+guardrails, and picks a point inside it by need — 0.80 through for a
+Critical Need or an Immediate Starter, 0.65 for Weak, 0.50 neutral, 0.33
+for upside. Remaining budget, not season budget: $16 of $40 left and $16 of
+$100 left are different decisions. The only market facts used are this
+league's own winning bids to date and how many managers still hold more
+than the recommendation — nothing here models what anyone else will bid,
+and the report says so.
+
+**The role signal still does not move money.** `ROLE_MOVES_FAAB = False`
+sits next to the shift it would enable, for the same reason the 2026-09-04
+gate demoted it: on the only season we can replay, the rising labels
+preceded a loss of opportunity share more often than Stable did. Role stays
+on the card as an observation.
+
+### The chain enforces itself through the drop
+
+Sleeper has no "if this fails, try that". Two claims that share one drop do
+have that property: once either clears, the other has nothing left to drop
+and cannot process. So a group's backups inherit the first choice's drop,
+and their recommended bids are cut to sit below it (on a bid-ordered waiver
+run, the first choice has to be reached first). At the league's minimum bid
+the two can only tie, and the note says the tiebreak is the league's, not
+the plan's. Adds are grouped by the starter they would displace rather than
+by position: an RB entering at RB can slide the RB2 into the FLEX and bench
+exactly the WR a WR add would, so those two claims are substitutes.
+
+### Sources keep their identity
+
+`waiver_evidence` never averages. Broad Analyst Conviction requires BOTH
+waiver-specific boards inside their first twelve plus rest-of-season or
+Boone support; two rest-of-season lists agreeing is not waiver conviction.
+Depth thresholds are league-aware (teams x starting demand), so WR41 is a
+starter in a four-flex 14-team league and a waiver body in a 10-team
+two-flex one. Historical accuracy (Boone first, RotoBaller's Calandro third
+in FantasyPros' 2025 in-season accuracy) is why these sources are in the
+set and is recorded here — it is not a coefficient anywhere in the runtime.
+
+### One vocabulary per claim
+
+In a command-center league the plan's claims ARE the league's
+`WaiverTarget`s, mapped onto the engine's tier vocabulary so Best Moves,
+the previews, provenance and the ledger keep reading one truth; the cards
+print the acquisition strength the command center assigned. A Pass never
+becomes a target — it appears in Do Not Spend with the reason, which is
+where "good player, poor claim for this roster" gets said out loud.
+
+### Recorded, never tuned
+
+Every waiver recommendation now carries its sources, need, class, window
+and recommended bid into the decision ledger, and observation records the
+bid that actually took the player plus the highest failed bid visible on
+him. `waiver_calibration` reports recommended-vs-clearing, top-claim
+outcomes, losses below the clearing bid and wins above the next visible
+bid. Nothing feeds back into a threshold; a sample under five says so.
+
 ## 2026-09-04 — Night build: replay, thesis tracking, lineup decisions, and a red-team pass
 
 Ten reviewer agents read the real report end to end (three "would a skilled

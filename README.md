@@ -48,7 +48,40 @@ notes are hardcoded, not configurable via a UI.
   (Must Add → Monitor), a horizon (breakout/stash/streamer), and a FAAB
   bid suggestion where the league tracks a budget — not just a bare name.
   Also flags injuries and starter byes, both on your own roster and on
-  waiver targets themselves.
+  waiver targets themselves. This is what **dynasty** leagues use.
+- **Waiver Command Center** (redraft and keeper leagues): the whole waiver
+  decision for one league, in submission order. Four separate questions,
+  four modules:
+  1. *Should I acquire him?* Every candidate is simulated with the shared
+     lineup optimizer against both the structural lineup and the lineup for
+     the week being claimed for, which sorts him into Immediate Starter /
+     Injury-Bye Cover / Streamer / Depth Upgrade / Upside Bench Add /
+     Speculative Stash and then Priority Add → Pass.
+  2. *Who do I drop?* One drop board per roster, ordered by what each bench
+     player is worth to it (rest-of-season starter calibre, emergency cover,
+     projection), with an opportunity-cost guardrail that refuses a pairing
+     where the drop costs more than the add repairs.
+  3. *How much do I bid?* A FAAB **window** and a recommended bid inside it,
+     built from a share of the budget you still have and named shifts
+     (Critical Need, scarcity, how many comparable free agents exist,
+     upside-only, late season). Never a prediction of the clearing bid.
+  4. *What claim sequence do I submit?* Adds that fix the same roster problem
+     become an ordered chain sharing one drop (so once one clears the rest
+     cannot process), with `IF PREVIOUS FAILS`, `STOP AFTER SUCCESS` and
+     `ONLY IF DROP STILL AVAILABLE` dependencies, and backup bids kept under
+     the first choice's.
+  On Tuesday and Wednesday the report leads with it; a league whose waivers
+  have already run switches from "what should I claim" to what happened —
+  won, lost, the winning bids Sleeper shows, and what it cost.
+- **Waiver evidence**: four outside opinions, each kept in its own units —
+  FantasyPros rest-of-season consensus, the Fantasy Footballers' weekly
+  waiver board (three hosts, with their internal spread), RotoBaller's weekly
+  waiver board (including the league sizes it says an add is for), and Justin
+  Boone's weekly positional ranks. Nothing is averaged into a score: the
+  labels say what the comparison shows (Broad Analyst Conviction, Waiver
+  Experts Agree, Ballers Split, Waiver Specialists Higher, FantasyPros
+  Higher, Deeper Leagues Only), and the tool is allowed to say "good player,
+  poor claim for this roster".
 - **Reports**: one consolidated Markdown file, or a dark-mode HTML
   dashboard you can open locally or publish as a Claude Artifact. Both
   lead with a cross-league "best moves right now" summary — the tool's
@@ -210,6 +243,36 @@ python -m venv .venv
 No API keys needed for the Sleeper/KTC/FantasyPros/RotoBaller data — all
 four are scraped from public, unauthenticated endpoints.
 
+### Weekly: the Fantasy Footballers waiver CSV (redraft/keeper leagues)
+
+The Ballers' weekly waiver board is free; the export is a CSV.
+
+```text
+1. Download the Fantasy Footballers weekly waiver rankings CSV.
+2. Drop it in data/manual/ — do not rename it.
+3. Run the report.
+4. The Waiver Command Center consumes the current week's file automatically.
+```
+
+No config edit, ever. The week comes from the filename; a board for a
+different week is never used and the report says so. The `FAAB` and matchup
+columns in the free export are FootClan-only placeholders and are never
+parsed or worked around. See `data/manual/README.md`.
+
+**What each source is for**
+
+| Source | Role |
+| --- | --- |
+| FantasyPros ECR | broad consensus, rest of season (the foundation) |
+| Fantasy Footballers | waiver-specific expert judgment, three hosts + their spread |
+| RotoBaller waivers | an independent acquisition-priority board, with league-size tags |
+| Justin Boone | one analyst's weekly positional ranks, as a cross-check |
+| Fantasy Bot | the roster-specific synthesis: lineup simulation, needs, drops, bids |
+
+Historical accuracy (Boone first and RotoBaller's Jamie Calandro third in
+FantasyPros' 2025 in-season accuracy) is why these sources are in the set. It
+is deliberately **not** a weight anywhere in the runtime.
+
 ### Optional: Fantasy Footballers Dynasty Pass
 
 Their rankings are paywalled and can't be scraped. If you have a
@@ -297,6 +360,18 @@ sleeper_tool/
   trade_messages.py               Chat-message assembly from pre-computed clauses
   trade_engine.py                  Buy-low/sell-high + trade proposal generation
   waiver_engine.py                   Trending-add waiver targeting + alerts
+  waiver_sources.py                   Outside waiver boards, loaded and id-matched once a run
+  waiver_evidence.py                   One row per candidate, each source in its own units
+  roster_needs.py                       Critical Need → Surplus per position group
+  waiver_drops.py                        The drop board and its protections
+  waiver_alternatives.py                  How many close substitutes a target has
+  waiver_acquisition.py                    Should I acquire him, for THIS roster?
+  faab_window.py                            The bid window and the recommended point in it
+  waiver_plan.py                             The ordered, dependency-aware claim chain
+  waiver_command_center.py                    Per-league assembly of all of the above
+  waiver_mode.py                               Tuesday/Wednesday, and which week claims are for
+  waiver_review.py                              What the claims actually did, once waivers ran
+  waiver_calibration.py                          Recommended vs clearing bids (a diagnostic)
   draft_picks.py                       Traded-pick ownership + KTC pick valuation
   lineup_optimizer.py                   Best legal lineup for the league's real slot list (shared)
   lineup_leverage.py                     Start/sit closeness + bench surplus
@@ -368,6 +443,26 @@ and usage tests use inline CSV fixtures and a temp cache), so the suite
 is fast and deterministic.
 
 ## Known limitations
+
+- **A FAAB window is not a price forecast.** It says what an add is worth to
+  your roster out of the budget you still have, with every shift named. It
+  cannot know what anyone else will bid; the only market facts it uses are
+  this league's own winning bids to date and how many managers still hold
+  more than the recommendation.
+- **The Ballers board is manual by design.** No CSV in `data/manual/` for the
+  week being claimed for means that source is simply absent — the plan still
+  builds from the other three. The gated FAAB and matchup columns are never
+  read.
+- **RotoBaller's league-size tag is taken at face value.** A "12+ Team
+  Leagues" tag in a 10-team league demotes an upside add. Bench depth is not
+  part of that judgment yet.
+- **Priority-waiver leagues are built but not live.** The analytical path
+  (Use / Consider / Hold Priority) and the renderer exist and are used the
+  moment a league reports a waiver order; Yahoo leagues are still blocked on
+  the Yahoo API access above, so no priority position is ever guessed.
+- **Kickers and defenses are streamed, not claimed.** The command center's
+  candidate universe is QB/RB/WR/TE; K and DEF stay with the streamer planner
+  and the defensive-add block.
 
 - **KTC's TE-premium modeling** is three fixed tiers (+0.5/+1.0/+1.5 per
   TE reception) regardless of your league's exact PPR type — a
