@@ -242,8 +242,36 @@ def test_at_the_league_minimum_the_two_claims_can_only_tie_and_the_note_says_so(
     backup = plan.claims()[1]
     assert (backup.window.low, backup.window.high, backup.window.recommended) == (1, 3, 1)
     assert backup.notes == [
-        "both claims sit at the $1 minimum — which processes first is the league's tiebreak (waiver order), not this plan"
+        "both claims sit at $1 — which processes first is the league's tiebreak (waiver order), not this plan"
     ]
+
+
+def test_a_fallback_claim_is_never_walked_down_to_a_dollarless_bid():
+    # These leagues report a $0 minimum, but a $0 claim on a player worth
+    # something loses to anyone who bids a dollar: that is not a cheap
+    # fallback, it is a fallback that cannot win.
+    calls = [call("a", drop=drop_option("d1")), call("b", drop=drop_option("d2")), call("c", drop=drop_option("d3"))]
+    plan = build_plan(
+        calls,
+        window_for=windows_for({"a": window(1, 5, 2), "b": window(1, 5, 2), "c": window(1, 5, 2)}),
+        bid_min=0,
+    )
+    bids = [c.window.recommended for c in plan.claims()]
+    assert min(bids) >= 1
+    # Strictly descending, so the preferred claim still processes first.
+    assert bids == sorted(bids, reverse=True) and len(set(bids)) == len(bids)
+
+
+def test_room_for_the_backups_is_made_under_the_lead_not_taken_off_the_bottom():
+    calls = [call("a", drop=drop_option("d1")), call("b", drop=drop_option("d2")), call("c", drop=drop_option("d3"))]
+    plan = build_plan(
+        calls,
+        window_for=windows_for({"a": window(1, 8, 2), "b": window(1, 8, 2), "c": window(1, 8, 2)}),
+        bid_min=0,
+    )
+    lead = plan.claims()[0]
+    assert lead.window.recommended == 3  # floor of $1 plus one dollar per backup
+    assert lead.window.high == 8  # the window itself is untouched
 
 
 def test_independent_bids_over_the_remaining_budget_get_a_note_not_a_re_pricing():

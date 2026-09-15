@@ -299,3 +299,21 @@ def test_with_no_settings_supplied_every_designation_is_still_treated_as_ir_elig
     """A caller with no settings must not silently protect nobody."""
     board = board_for([player("hurt", "WR", 2, injury_status="Sus"), player("plain", "WR", 1)], reserve_slots=ONE_IR_SLOT)
     assert board.protected["hurt"] == PROTECT_IR_ELIGIBLE
+
+
+def test_a_missing_projection_with_a_real_ros_rank_is_a_gap_not_a_judgement():
+    # Kenny Gainwell sorted as the cheapest drop in Primo purely because the
+    # projection feed does not carry him, while rest-of-season had him at 127
+    # overall. A board ordered on projection reads that blank as "worthless".
+    bench = [player("gap", "RB", None), player("weak", "RB", 1.5)]
+    board = board_for(bench, ranks={"gap": 40, "weak": 900})
+    assert [o.entry.player_id for o in board.options] == ["weak", "gap"]
+    caution = board.option_for("gap").status_caution
+    assert caution and "missing number, not a low one" in caution
+
+
+def test_a_missing_projection_with_no_rank_anywhere_is_still_the_cheapest_drop():
+    bench = [player("nobody", "RB", None), player("weak", "RB", 1.5)]
+    board = board_for(bench, ranks={"weak": 900})
+    assert [o.entry.player_id for o in board.options] == ["nobody", "weak"]
+    assert board.option_for("nobody").status_caution is None

@@ -193,13 +193,15 @@ def build_plan(
             first.priority_call = priority_call(lead)
         group = ClaimGroup(problem=lead.problem, claims=[first])
 
-        # A chain needs room under the first claim for every backup, or the
-        # fallbacks are priced at nothing and cannot win.
+        # A chain needs room UNDER the first claim for every backup. Without
+        # it the descending bids walk straight down to the floor and the
+        # fallbacks are priced at nothing — which is not a cheap claim, it is
+        # a claim that loses to anyone who bids a dollar.
         backups_wanted = min(MAX_BACKUPS, max(0, len(members) - 1))
         if first.window is not None and backups_wanted:
-            headroom = bid_min + backups_wanted
+            headroom = _chain_floor(first.window, bid_min) + backups_wanted
             if first.window.recommended < headroom:
-                first.window.recommended = min(max(first.window.recommended, headroom), first.window.high, max(first.window.high, headroom))
+                first.window.recommended = min(headroom, first.window.high)
         previous = first
         for backup in members[1:1 + MAX_BACKUPS]:
             # A backup inherits the first choice's drop so that only one of
@@ -237,19 +239,28 @@ def build_plan(
     return plan
 
 
+def _chain_floor(window: FaabWindow, bid_min: int) -> int:
+    """The least a claim in a chain may be priced at. Most of these leagues
+    report a $0 minimum, but a $0 claim on a player worth something loses to
+    anyone who bids a dollar, so a window that starts above zero is not
+    walked below a dollar to make room for the claim ahead of it."""
+    return max(bid_min, 1) if window.low > 0 else bid_min
+
+
 def _keep_bid_below(claim: Claim, previous: Claim, bid_min: int) -> None:
-    """A backup bids under the claim ahead of it. At the league minimum the
-    two can only tie, and the note says so rather than implying an order the
-    league's tiebreak (waiver priority) decides."""
+    """A backup bids under the claim ahead of it. At the floor the two can
+    only tie, and the note says so rather than implying an order the league's
+    tiebreak (waiver priority) decides."""
     if claim.window is None or previous.window is None:
         return
     ceiling = previous.window.recommended - 1
     if claim.window.recommended <= ceiling:
         return
-    if ceiling < bid_min:
-        claim.window.recommended = bid_min
+    floor = _chain_floor(claim.window, bid_min)
+    if ceiling < floor:
+        claim.window.recommended = floor
         claim.notes.append(
-            f"both claims sit at the ${bid_min} minimum — which processes first is the league's tiebreak (waiver order), not this plan"
+            f"both claims sit at ${floor} — which processes first is the league's tiebreak (waiver order), not this plan"
         )
         return
     was = claim.window.recommended

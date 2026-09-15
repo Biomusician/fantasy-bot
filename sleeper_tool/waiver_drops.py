@@ -94,7 +94,11 @@ class DropOption:
     ros_pos_rank: int | None
     ros_starter_calibre: bool
     reasons: list[str] = field(default_factory=list)  # why he is cheap (or not) to drop, in order
-    status_caution: str | None = None  # his projection is missing because Sleeper says he is unavailable
+    # Set whenever his projection is MISSING rather than low — because he is
+    # unavailable, or because the projection source simply doesn't carry him
+    # while a ranking source still does. Either way the blank is a data gap,
+    # and a board ordered on projection would otherwise call him free.
+    status_caution: str | None = None
 
     @property
     def is_dead_spot(self) -> bool:
@@ -206,15 +210,25 @@ def build_drop_board(
                 f"no projection in this league's sources (Sleeper: {status}) — confirm he isn't returning soon"
                 if status else "no projection in this league's sources"
             )
-        caution = (
-            f"no projection because Sleeper has him {_unavailable_status(e)} — confirm he isn't returning before you cut him"
-            if pw is None and _unavailable_status(e) else None
-        )
+        caution = None
+        if pw is None and _unavailable_status(e):
+            caution = (
+                f"no projection because Sleeper has him {_unavailable_status(e)} — "
+                "confirm he isn't returning before you cut him"
+            )
+        elif pw is None and rank is not None:
+            # No availability designation explains the blank, and a ranking
+            # source still ranks him: the projection feed just doesn't carry
+            # him. Cutting him first would be reading a gap as a judgement.
+            caution = (
+                f"no projection in this league's sources, but rest-of-season has him "
+                f"{e.position}{rank} — the blank is a missing number, not a low one"
+            )
         options.append(DropOption(e, pw, round(cover, 2), rank, calibre, reasons, caution))
 
     options.sort(key=lambda o: (
         o.ros_starter_calibre,
-        o.status_caution is not None,  # a blank projection an injury explains is the LAST thing to cut
+        o.status_caution is not None,  # a blank projection is a data gap, so he is the LAST thing to cut
         o.cover_value >= MATERIAL_COVER_POINTS,
         o.weekly_projection if o.weekly_projection is not None else -1.0,
         -(o.ros_pos_rank or 10_000),
