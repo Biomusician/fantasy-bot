@@ -162,6 +162,18 @@ class FaabAdvice:
     notes: list[str] = field(default_factory=list)
     name: str = ""
     tier: str = ""  # carried so budget_plan can find the Must/Strong Add rows
+    # Set by faab_window when the bid came from a window; suggested_dollars
+    # is then the recommended point inside it.
+    window_low: int | None = None
+    window_high: int | None = None
+    window_reasons: list[str] = field(default_factory=list)
+
+    @property
+    def window_text(self) -> str | None:
+        if self.window_low is None or self.window_high is None:
+            return None
+        span = f"${self.window_low}" if self.window_low == self.window_high else f"${self.window_low}–{self.window_high}"
+        return f"{span} · recommend ${self.suggested_dollars}"
 
     def describe(self) -> str:
         bits = [f"{self.posture}: bid ${self.suggested_dollars} (${self.remaining} left)"]
@@ -435,7 +447,8 @@ def bid_cell(advice: FaabAdvice | None, raw_pct: int | None) -> str:
     league is FAAB and the target got advice, else the engine's raw
     percentage of the total budget, else a dash."""
     if advice is not None:
-        return f"${advice.suggested_dollars} · {advice.posture}"
+        window = advice.window_text
+        return f"{window} · {advice.posture}" if window else f"${advice.suggested_dollars} · {advice.posture}"
     return f"{raw_pct}%" if raw_pct is not None else "—"
 
 

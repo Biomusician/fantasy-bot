@@ -26,6 +26,7 @@ from sleeper_tool.decision_ledger import Ledger, build_entries, load_ledger, mer
 from sleeper_tool.decision_ledger import summary as ledger_summary
 from sleeper_tool.decision_outcomes import OutcomeFact, build_outcome_facts
 from sleeper_tool.faab_strategy import FaabAdvice, FaabContext, TargetFacts, budget_plan, context_from_sleeper, count_substitutes
+from sleeper_tool.faab_window import advice_from_window
 from sleeper_tool.faab_strategy import advise as faab_advise
 from sleeper_tool.faab_strategy import status_note as faab_status_note
 from sleeper_tool.league_economy import LeagueEconomy, build_league_economy
@@ -90,8 +91,11 @@ from sleeper_tool.trade_opportunity_cost import MAJOR_LINEUP_COST, TradeEconomic
 from sleeper_tool.trade_rating import VERY_LOW_ACCEPTANCE
 from sleeper_tool.trade_types import DropCandidate, TradeProposal
 from sleeper_tool.valuation import LeagueFormat, ValuationEngine, games_remaining, weekly_projection
-from sleeper_tool.waiver_engine import INSURANCE, MUST_ADD, STRONG_ADD, TimeSensitiveNote, WaiverTarget, get_time_sensitive_notes, get_waiver_targets
+from sleeper_tool.waiver_engine import INSURANCE, MUST_ADD, STRONG_ADD, TimeSensitiveNote, WaiverTarget, get_rostered_player_ids, get_time_sensitive_notes, get_waiver_targets
 from sleeper_tool.watchlist import Watchlist, load_watchlist
+from sleeper_tool.waiver_command_center import COMMAND_CENTER_KINDS, WaiverCommandCenter, build_command_center, targets_from_command_center
+from sleeper_tool.waiver_mode import WaiverMode, waiver_mode_for
+from sleeper_tool.waiver_sources import WaiverSources, load_waiver_sources
 from sleeper_tool.watchlist import candidates as watch_candidates
 from sleeper_tool.watchlist import render_lines as watchlist_lines
 from sleeper_tool.watchlist import render_sections as watchlist_sections
@@ -170,6 +174,7 @@ class LeagueReportData:
     provenance: dict[tuple[str, str], Provenance] = field(default_factory=dict)  # by (kind, key): the For/Against/Context evidence per recommendation
     note_directions: dict[tuple[str, str], str] = field(default_factory=dict)  # (player_id, note text) -> FOR/AGAINST/CONTEXT, stated by the annotator that wrote the note
     priorities: dict[tuple[str, str], PriorityKey] = field(default_factory=dict)  # by (kind, key): the six-dimension priority key
+    waiver_center: WaiverCommandCenter | None = None  # redraft/keeper leagues: needs, drops, evidence, claim plan
     error: str | None = None
 
 
@@ -218,6 +223,8 @@ class WeeklyReportData:
     ledger_new: int = 0  # recommendations first recorded this run
     ledger_summary: dict[str, dict[str, int]] = field(default_factory=dict)
     outcome_facts: list[OutcomeFact] = field(default_factory=list)
+    waiver_mode: WaiverMode | None = None  # Tuesday/Wednesday hierarchy and the week claims are for
+    waiver_sources: WaiverSources | None = None  # the outside waiver boards this run loaded
 
 
 _CONFIDENCE_SORT_RANK = {"High": 0, "Medium": 1, "Low": 2}  # ascending = best first (trade_rating's own dict counts the other way)
@@ -388,7 +395,7 @@ def _entry_from_target(t: WaiverTarget, all_players: dict) -> RosterEntry:
 def build_league_report_data(
     storage: Storage, engine: ValuationEngine, league: LeagueInfo, current_week: int | None,
     schedule: Schedule | None = None, *, usage: UsageData | None = None, crosswalk: dict[str, PlayerIds] | None = None,
-    suppressed: dict[str, str] | None = None,
+    suppressed: dict[str, str] | None = None, waiver_sources: WaiverSources | None = None, claim_week: int | None = None,
 ) -> LeagueReportData:
     """`usage`/`crosswalk` are the season's nflverse rows and the Sleeper->
     gsis id map, loaded once per run by build_weekly_report_data (None
@@ -532,8 +539,11 @@ def build_league_report_data(
         # publishes usage rows, like every other role reading.
         candidate_roles: dict[str, str] = {}
         if usage is not None and crosswalk and "role_trends" not in suppressed:
+            role_ids = set(trending_add_ids)
+            if waiver_sources is not None:
+                role_ids |= set(waiver_sources.ballers_by_id) | set(waiver_sources.rotoballer_by_id)
             candidate_roles = {
-                pid: t.label for pid, t in trends_for(usage, crosswalk, sorted(trending_add_ids)).items()
+                pid: t.label for pid, t in trends_for(usage, crosswalk, sorted(role_ids)).items()
             }
         # The free agents worth a look regardless of what Sleeper is
         # trending: at each position, the best projected free agent when he
@@ -563,6 +573,31 @@ def build_league_report_data(
                 {pos: m.scarcity for pos, m in replacement.positions.items()} if replacement is not None else None
             ),
         )
+    faab_ctx = context_from_sleeper(
+        league_data, storage.get_rosters(league.league_id), storage.get_all_transactions(league.league_id),
+        my_roster.roster_id, current_week=current_week, pre_draft=pre_draft,
+    )
+    waiver_center: WaiverCommandCenter | None = None
+    if not pre_draft and lineup is not None and league.kind in COMMAND_CENTER_KINDS and "waiver_engine" not in suppressed:
+        try:
+            waiver_center = build_command_center(
+                roster=my_roster, rosters=rosters, lineup=lineup, lineups=lineups, market=replacement,
+                free_agents=free_agents, all_players=all_players, rostered_ids=get_rostered_player_ids(storage, league),
+                engine=engine, sources=waiver_sources if waiver_sources is not None else WaiverSources(claim_week=claim_week),
+                faab_ctx=faab_ctx, league_data=league_data,
+                my_raw_roster=next((r for r in storage.get_rosters(league.league_id) if r.get("roster_id") == my_roster.roster_id), None),
+                current_week=current_week, claim_week=claim_week, trending_ids=[row["player_id"] for row in storage.get_trending("add")],
+                role_labels=candidate_roles, trade_piece_ids=proposed_give_ids, open_spots=open_roster_spots(my_roster),
+            )
+        except Exception:  # the command center must never cost a league its report
+            logger.exception("Waiver command center skipped for %s", league.name)
+        if waiver_center is not None:
+            # One truth for the waiver list: in a command-center league the
+            # plan's claims ARE the waiver targets every downstream consumer
+            # (Best Moves, provenance, the ledger, previews) reads.
+            waiver_targets = targets_from_command_center(
+                waiver_center, {row["player_id"]: row.get("count", 0) for row in storage.get_trending("add")},
+            )
     insurance: list[InsuranceRecommendation] = []
     if status_result.status == CONTENDER and lineup is not None and not pre_draft:
         skill_free_agents = [fa for fa in free_agents if fa.position in SKILL_POSITIONS]
@@ -744,11 +779,9 @@ def build_league_report_data(
         if lineup is not None else None
     )
 
-    faab_ctx = context_from_sleeper(
-        league_data, storage.get_rosters(league.league_id), storage.get_all_transactions(league.league_id),
-        my_roster.roster_id, current_week=current_week, pre_draft=pre_draft,
+    faab = _build_faab_advice(
+        faab_ctx, waiver_targets, free_agents, replacement, currency, role_trends, urgent_add_ids, waiver_center=waiver_center,
     )
-    faab = _build_faab_advice(faab_ctx, waiver_targets, free_agents, replacement, currency, role_trends, urgent_add_ids)
 
     return LeagueReportData(
         league=league,
@@ -790,12 +823,13 @@ def build_league_report_data(
         faab=faab,
         faab_note=faab_status_note(faab_ctx),
         faab_context=faab_ctx,
+        waiver_center=waiver_center,
     )
 
 
 def _build_faab_advice(
     ctx: FaabContext, targets: list[WaiverTarget], free_agents: list[RosterEntry], market: ReplacementMarket | None,
-    currency: str, role_trends: dict[str, RoleTrend], urgent_ids: set[str],
+    currency: str, role_trends: dict[str, RoleTrend], urgent_ids: set[str], *, waiver_center: WaiverCommandCenter | None = None,
 ) -> dict[str, FaabAdvice]:
     """One FaabAdvice per waiver target from facts the report already
     holds: tier, horizon, the position's replacement scarcity, his role
@@ -804,6 +838,19 @@ def _build_faab_advice(
     row, a bye-hole cover). Then the table-level affordability pass."""
     if not targets:
         return {}
+    if waiver_center is not None:
+        # The command center already sized every claim as a window; the
+        # advice is that window, so the table, Best Moves and the ledger all
+        # read the recommended bid. Rows it did not size (insurance) fall
+        # through to the tier-based advice below.
+        out = {
+            t.player_id: advice_from_window(ctx, waiver_center.windows[t.player_id], player_id=t.player_id, name=t.name, tier=t.priority_tier)
+            for t in targets if t.player_id in waiver_center.windows and ctx.is_faab and not ctx.pre_draft
+        }
+        rest = [t for t in targets if t.player_id not in out]
+        if rest:
+            out.update(_build_faab_advice(ctx, rest, free_agents, market, currency, role_trends, urgent_ids))
+        return out
 
     def pctl_of(e) -> float | None:
         return percentile_for_currency(e.value, currency) if getattr(e, "value", None) is not None else None
@@ -1054,11 +1101,19 @@ def _season_of(storage: Storage, leagues: list[LeagueInfo]) -> int | None:
 def build_weekly_report_data(
     storage: Storage, engine: ValuationEngine, leagues: list[LeagueInfo] = LEAGUES, *,
     with_nfl_schedule: bool = True, with_usage: bool | None = None,
+    with_waiver_sources: bool | None = None, waiver_mode: WaiverMode | None = None, now: dt.datetime | None = None,
 ) -> WeeklyReportData:
     """`with_nfl_schedule=False` skips every non-ranking external asset
     (the schedule and, unless `with_usage` says otherwise, the nflverse
-    usage layer) — the test suite's no-network path."""
-    now = dt.datetime.now(dt.timezone.utc)
+    usage layer) — the test suite's no-network path. `with_waiver_sources`
+    (default: follows the schedule flag) loads the outside waiver boards; an
+    offline run reads none of them, so a test never sees the user's manual
+    CSV. `waiver_mode` pins the Tuesday/Wednesday hierarchy; when omitted, a
+    live run computes it from the clock and an offline run is never in
+    waiver mode."""
+    now = now or dt.datetime.now(dt.timezone.utc)
+    if with_waiver_sources is None:
+        with_waiver_sources = with_nfl_schedule
     current_week_raw = storage.get_meta("current_week")
     current_week = int(current_week_raw) if current_week_raw else None
     if with_usage is None:
@@ -1084,9 +1139,24 @@ def build_weekly_report_data(
     for feature, why in suppressed.items():
         logger.warning("%s suppressed this run: %s", feature, why)
 
+    if waiver_mode is None:
+        waiver_mode = waiver_mode_for(now, schedule=schedule, current_week=current_week)
+        if not with_nfl_schedule:
+            waiver_mode = WaiverMode(active=False, local_date=waiver_mode.local_date, weekday=waiver_mode.weekday, claim_week=waiver_mode.claim_week)
+    waiver_sources = WaiverSources(claim_week=waiver_mode.claim_week)
+    if with_waiver_sources and any(l.kind in COMMAND_CENTER_KINDS for l in leagues):
+        try:
+            waiver_sources = load_waiver_sources(
+                storage.get_all_players(), engine, claim_week=waiver_mode.claim_week, now=now,
+                scoring_needed=_boone_scorings(storage, leagues),
+            )
+        except Exception:  # an outside board must never cost the run
+            logger.exception("Waiver sources skipped")
+
     league_data = [
         _safe_build_league_report_data(
-            storage, engine, league, current_week, schedule, usage=usage, crosswalk=crosswalk, suppressed=suppressed
+            storage, engine, league, current_week, schedule, usage=usage, crosswalk=crosswalk, suppressed=suppressed,
+            waiver_sources=waiver_sources, claim_week=waiver_mode.claim_week,
         )
         for league in leagues
     ]
@@ -1139,6 +1209,8 @@ def build_weekly_report_data(
         # The health block already says the feed isn't published yet; don't say it twice.
         usage_note=usage_note if not any(s.family == "nflverse_usage" and s.expected_absent for s in health.signals) else None,
         crosswalk_note=crosswalk_note,
+        waiver_mode=waiver_mode,
+        waiver_sources=waiver_sources,
     )
     # Provenance reads every annotation above (conflicts and exposure
     # included) and the priority key reads provenance; both need the
@@ -1163,6 +1235,22 @@ def build_weekly_report_data(
     _attach_watchlist(report, now)
     _attach_ledger(report, storage, now)
     return report
+
+
+def _boone_scorings(storage: Storage, leagues: list[LeagueInfo]) -> set[str]:
+    """The Boone scoring variants the command-center leagues actually use,
+    read off each league's own scoring settings (never hardcoded)."""
+    from sleeper_tool.rankings.boone import scoring_for_ppr
+
+    out: set[str] = set()
+    for league in leagues:
+        if league.kind not in COMMAND_CENTER_KINDS:
+            continue
+        rec = ((storage.get_league(league.league_id) or {}).get("scoring_settings") or {}).get("rec")
+        scoring = scoring_for_ppr(float(rec or 0))
+        if scoring:
+            out.add(scoring)
+    return out
 
 
 def _load_usage_layer(
