@@ -1,8 +1,12 @@
 """KeepTradeCut dynasty trade value scraper.
 
-KTC's dynasty-rankings page embeds the full player dataset as a JS variable
-(`playersArray`) — no headless browser needed, just pull the page and
-regex out the JSON. Each player carries separate 1QB and Superflex values,
+KTC's dynasty-rankings page embeds the full player dataset in the HTML — no
+headless browser needed, just pull the page and regex out the JSON. Since
+September 2026 it lives in a `<script type="application/json" id="ktc-players">`
+tag (the page's JS then does `playersArray = JSON.parse(...)` on it); before
+that it was an inline `var playersArray = [...]` literal. Both shapes carry
+the same per-player records, so we try the script tag first and fall back to
+the literal in case KTC reverts. Each player carries separate 1QB and Superflex values,
 plus three TE-premium variants (tep/tepp/teppp = +0.5/+1/+1.5 per reception
 to TEs) for each. That's exactly the axis our leagues vary on, so this is
 the primary dynasty valuation source.
@@ -30,7 +34,11 @@ _BROWSER_HEADERS = {
     )
 }
 
+_PLAYERS_SCRIPT_RE = re.compile(
+    r"""<script\b[^>]*\bid=["']ktc-players["'][^>]*>(.*?)</script>""", re.DOTALL | re.IGNORECASE
+)
 _PLAYERS_ARRAY_RE = re.compile(r"var playersArray = (\[.*?\]);", re.DOTALL)
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.DOTALL | re.IGNORECASE)
 
 
 class KTCFetchError(RuntimeError):
@@ -98,14 +106,33 @@ def fetch_ktc_html() -> str:
     return resp.text
 
 
-def parse_ktc_players(html: str) -> list[dict]:
+def _extract_players_json(html: str) -> tuple[str, str]:
+    """(label, raw JSON text) for whichever embedding the page uses."""
+    match = _PLAYERS_SCRIPT_RE.search(html)
+    if match and match.group(1).strip():
+        return "ktc-players script tag", match.group(1)
     match = _PLAYERS_ARRAY_RE.search(html)
-    if not match:
-        raise KTCFetchError("Could not find playersArray in KTC page — site layout may have changed")
+    if match:
+        return "playersArray literal", match.group(1)
+    # Say what was actually served so a bot wall or a redesign is
+    # distinguishable from the log line alone.
+    title = _TITLE_RE.search(html)
+    title_text = " ".join(title.group(1).split())[:80] if title else "no <title>"
+    raise KTCFetchError(
+        "Could not find player data in KTC page (neither the ktc-players script tag nor "
+        f"var playersArray; served {len(html)} chars, title {title_text!r}) — "
+        "site layout may have changed"
+    )
+
+
+def parse_ktc_players(html: str) -> list[dict]:
+    label, raw_json = _extract_players_json(html)
     try:
-        raw_players = json.loads(match.group(1))
+        raw_players = json.loads(raw_json)
     except json.JSONDecodeError as exc:
-        raise KTCFetchError(f"Failed to parse KTC playersArray JSON: {exc}") from exc
+        raise KTCFetchError(f"Failed to parse KTC {label} JSON: {exc}") from exc
+    if not isinstance(raw_players, list):
+        raise KTCFetchError(f"KTC {label} is not a JSON array — site layout may have changed")
 
     players = []
     for raw in raw_players:
