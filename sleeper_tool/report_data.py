@@ -96,6 +96,7 @@ from sleeper_tool.watchlist import Watchlist, load_watchlist
 from sleeper_tool.waiver_command_center import COMMAND_CENTER_KINDS, WaiverCommandCenter, build_command_center, targets_from_command_center
 from sleeper_tool.waiver_mode import WaiverMode, waiver_mode_for
 from sleeper_tool.waiver_sources import WaiverSources, load_waiver_sources
+from sleeper_tool.waiver_review import WaiverReview, build_review, claim_window_opened
 from sleeper_tool.watchlist import candidates as watch_candidates
 from sleeper_tool.watchlist import render_lines as watchlist_lines
 from sleeper_tool.watchlist import render_sections as watchlist_sections
@@ -175,6 +176,8 @@ class LeagueReportData:
     note_directions: dict[tuple[str, str], str] = field(default_factory=dict)  # (player_id, note text) -> FOR/AGAINST/CONTEXT, stated by the annotator that wrote the note
     priorities: dict[tuple[str, str], PriorityKey] = field(default_factory=dict)  # by (kind, key): the six-dimension priority key
     waiver_center: WaiverCommandCenter | None = None  # redraft/keeper leagues: needs, drops, evidence, claim plan
+    waiver_review: WaiverReview | None = None  # what this week's claims actually did, once the league's waivers ran
+    week_complete: bool = False  # the week Sleeper still calls current has finished its games; claims are for the next one
     error: str | None = None
 
 
@@ -282,8 +285,15 @@ def build_priority_actions(
                     ld, report, TRADE, str(i), headline=p.summary_line(), detail=detail,
                     rank=tier_rank * 10 + _CONFIDENCE_SORT_RANK.get(p.confidence, 2),
                 ))
+        # On a waiver day the league's top claim belongs in Best Moves even
+        # when it is a Strong Add: it locks before anything else on the page.
+        waiver_day = report is not None and report.waiver_mode is not None and report.waiver_mode.active
+        top_claim_id = (
+            ld.waiver_center.plan.top_claim.call.player_id
+            if waiver_day and ld.waiver_center is not None and ld.waiver_center.plan.top_claim is not None else None
+        )
         for t in ld.waiver_targets:
-            if t.priority_tier in (MUST_ADD, INSURANCE):
+            if t.priority_tier in (MUST_ADD, INSURANCE) or t.player_id == top_claim_id:
                 drop_note = f", drop {t.drop_candidate.name}" if t.drop_candidate else ""
                 pctl = (t.value.dynasty_value_percentile or t.value.redraft_ecr_percentile) if t.value else None
                 impact = ld.waiver_impacts.get(t.player_id)
@@ -769,6 +779,10 @@ def build_league_report_data(
 
     # This week's lineup decisions read the week lineup the matchup already
     # solved (byes and game-day outs applied), so nothing is re-optimized.
+    # Once that week's games are played (Sleeper still calls it the current
+    # week through Tuesday), its start/sit calls describe a finished week:
+    # "X is set to start" is no longer a decision, it is history.
+    week_complete = bool(claim_week and current_week and claim_week > current_week)
     lineup_decisions = (
         build_lineup_decisions(
             my_roster, structural_lineup=lineup, week_lineup=matchup.my_lineup if matchup is not None else None,
@@ -776,7 +790,7 @@ def build_league_report_data(
             schedule=schedule, free_agents=[fa for fa in free_agents if fa.value.proj_points is not None],
             context_lines={pid: [t.describe()] for pid, t in role_trends.items()} or None,
         )
-        if lineup is not None else None
+        if lineup is not None and not week_complete else None
     )
 
     faab = _build_faab_advice(
@@ -824,6 +838,7 @@ def build_league_report_data(
         faab_note=faab_status_note(faab_ctx),
         faab_context=faab_ctx,
         waiver_center=waiver_center,
+        week_complete=week_complete,
     )
 
 
@@ -1234,6 +1249,7 @@ def build_weekly_report_data(
     report.delta = compute_delta(load_latest_snapshot(before_date=now.date().isoformat()), report.snapshot)
     _attach_watchlist(report, now)
     _attach_ledger(report, storage, now)
+    _attach_waiver_reviews(report, storage, schedule)
     return report
 
 
@@ -1251,6 +1267,42 @@ def _boone_scorings(storage: Storage, leagues: list[LeagueInfo]) -> set[str]:
         if scoring:
             out.add(scoring)
     return out
+
+
+def _attach_waiver_reviews(report: WeeklyReportData, storage: Storage, schedule: Schedule | None) -> None:
+    """Once a league's waivers have run for the claim week, the command
+    center answers "what happened?" instead of "what should I claim?".
+    Recommended players come from the ledger entries recorded since the
+    claim window opened, with the window each was recommended at."""
+    opened = claim_window_opened(schedule, report.waiver_mode.claim_week if report.waiver_mode else None)
+    if opened is None:
+        return
+    ledger = report.ledger
+    for ld in report.leagues:
+        if ld.error or ld.waiver_center is None or ld.roster is None:
+            continue
+        try:
+            recommended: dict[str, dict] = {}
+            if ledger is not None:
+                for entry in ledger.entries.values():
+                    if entry.action != "waiver" or entry.league_id != ld.league.league_id or not entry.player_ids:
+                        continue
+                    stamped = entry.run_id or ""
+                    if stamped and stamped < opened.isoformat():
+                        continue
+                    recommended[entry.player_ids[0]] = {
+                        "name": entry.player_names[0] if entry.player_names else entry.player_ids[0],
+                        "recommended_bid": entry.recommended_bid,
+                        "window": tuple(entry.faab_window) if entry.faab_window else None,
+                    }
+            ld.waiver_review = build_review(
+                storage.get_all_transactions(ld.league.league_id), my_roster_id=ld.roster.roster_id, window_opened=opened,
+                recommended=recommended,
+                names={c.player_id: c.entry.name for c in ld.waiver_center.calls},
+                rostered_ids=set(get_rostered_player_ids(storage, ld.league)),
+            )
+        except Exception:  # a review must never cost a league its report
+            logger.exception("Waiver review skipped for %s", ld.league.name)
 
 
 def _load_usage_layer(

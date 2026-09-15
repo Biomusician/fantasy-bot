@@ -44,13 +44,13 @@ class WaiverMode:
 
     @property
     def subheader(self) -> str:
-        """"Tuesday — claims pending" / "Wednesday — final waiver review".
+        """"Tuesday · claims pending" / "Wednesday · final waiver review".
         A league whose waivers already processed says so itself
         (waiver_review); this is the run-level default."""
         if self.weekday == TUESDAY:
-            return f"{self.day_name} — {CLAIMS_PENDING}"
+            return f"{self.day_name} · {CLAIMS_PENDING}"
         if self.weekday == WEDNESDAY:
-            return f"{self.day_name} — {FINAL_REVIEW}"
+            return f"{self.day_name} · {FINAL_REVIEW}"
         return self.day_name
 
 

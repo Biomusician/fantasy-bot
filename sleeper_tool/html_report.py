@@ -28,6 +28,13 @@ from sleeper_tool.replacement_value import ABUNDANT, NORMAL, SCARCE, VERY_SCARCE
 from sleeper_tool.team_status import CONTENDER, MIDDLING, REBUILD
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
 from sleeper_tool.report_views import (
+    MATRIX_COLUMNS,
+    NO_CLAIMS_NOTE,
+    claim_view,
+    command_center_subtitle,
+    do_not_spend_lines,
+    matrix_row,
+    needs_line,
     common_schedule_line,
     grouped_picks,
     pick_group_label,
@@ -66,7 +73,9 @@ from sleeper_tool.trade_opportunity_cost import (
     TradeEconomics,
 )
 from sleeper_tool.trade_types import DropCandidate, TradeProposal
+from sleeper_tool.waiver_command_center import COMMAND_CENTER_KINDS
 from sleeper_tool.waiver_engine import TimeSensitiveNote, WaiverTarget
+from sleeper_tool.waiver_review import WON
 
 TREND_META = {
     "rising": ("&#8593;", "positive", "Trending up"),
@@ -450,6 +459,128 @@ def _trade_card(
     """
 
 
+_STRENGTH_CHIP_KIND = {
+    "Priority Add": "positive", "Strong Add": "accent", "Depth Add": "neutral",
+    "Speculative Add": "neutral", "Pass": "caution",
+}
+_NEED_CHIP_KIND = {"Critical Need": "negative", "Weak": "caution", "Adequate": "neutral", "Strong": "positive", "Surplus": "positive"}
+
+
+def _claim_card(view, *, lead: bool) -> str:
+    why = "".join(f"<li>{esc(w)}</li>" for w in view.why)
+    risks = "".join(f"<li>{esc(r)}</li>" for r in view.risks)
+    notes = "".join(f'<div class="muted">{esc(n)}</div>' for n in view.notes)
+    backups = "".join(f'<div class="claim-backup">If lost &rarr; {esc(b)}</div>' for b in view.backups)
+    dependency = f'{_chip(view.dependency, "neutral")}' if view.dependency else ""
+    head = (
+        f'<h4 class="claim-title">TOP CLAIM &middot; {esc(view.name)} <span class="muted">({esc(view.position)}, {esc(view.team)})</span></h4>'
+        if lead else
+        f'<h4 class="claim-title">{view.order}. {esc(view.name)} <span class="muted">({esc(view.position)})</span></h4>'
+    )
+    return f"""
+    <article class="claim-card{' claim-card-lead' if lead else ''}">
+      {head}
+      <div class="panel-tags">{_chip(view.strength, _STRENGTH_CHIP_KIND.get(view.strength, "neutral"))}{_chip(view.cls, "neutral") if view.cls else ""}{dependency}<span class="muted">{esc(view.problem)}</span></div>
+      <div class="claim-move"><strong>ADD</strong> {esc(view.add_line)} &middot; <strong>DROP</strong> {esc(view.drop_line)} &middot; <strong>{esc(view.bid)}</strong></div>
+      {f'<div class="why-now"><div class="why-row"><span class="rationale-label">Why now</span><ul>{why}</ul></div>' if why else '<div class="why-now">'}
+      {f'<div class="why-row"><span class="rationale-label">Risk</span><ul>{risks}</ul></div>' if risks else ""}
+      </div>
+      {backups}{notes}
+    </article>
+    """
+
+
+def _waiver_review_block(review) -> str:
+    if review is None or not review.processed:
+        return ""
+    items = "".join(f"<li class=\"alert-item\">{esc(o.describe())}</li>" for o in review.outcomes[:8])
+    adds = f'<p class="muted">Added this week: {esc(", ".join(review.my_adds))}</p>' if review.my_adds else ""
+    return f"""
+    <div class="waiver-review">
+      <h4>{esc(review.headline)}</h4>
+      <ul class="alert-list">{items}</ul>
+      {adds}
+    </div>
+    """
+
+
+def _waiver_matrix(center) -> str:
+    if not center.matrix:
+        return ""
+    head = "".join(f"<th>{esc(c)}</th>" for c in MATRIX_COLUMNS)
+    rows = "".join(
+        "<tr>" + "".join(f"<td>{esc(cell)}</td>" for cell in matrix_row(call)) + "</tr>"
+        for call in center.matrix
+    )
+    sources = esc(" | ".join(center.source_lines))
+    return (
+        '<details class="row-details"><summary>Waiver consensus matrix &middot; each source in its own units</summary>'
+        f'<div class="table-scroll"><table class="waiver-table"><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>'
+        f'<p class="muted">Sources: {sources}</p></details>'
+    )
+
+
+def _waiver_sizing(center) -> str:
+    rows = []
+    for claim_ in center.plan.claims():
+        if claim_.window is not None:
+            rows.append(
+                f'<div class="impact-inline"><strong>{esc(claim_.call.entry.name)}</strong> ${claim_.window.low}&ndash;{claim_.window.high}, '
+                f'recommend ${claim_.window.recommended}: {esc("; ".join(claim_.window.reasons))}</div>'
+            )
+        if claim_.call.rejected_drops:
+            rows.append(f'<div class="impact-inline muted">drops considered: {esc("; ".join(claim_.call.rejected_drops[:3]))}</div>')
+    if center.drops.options:
+        rows.append(
+            '<div class="impact-inline"><strong>Drop board</strong> (cheapest first): '
+            + esc("; ".join(o.describe() for o in center.drops.options[:5])) + "</div>"
+        )
+    if not rows:
+        return ""
+    return '<details class="row-details"><summary>How these claims were sized</summary>' + "".join(rows) + "</details>"
+
+
+def _waiver_command_center_section(data: LeagueReportData, mode=None) -> str:
+    center = data.waiver_center
+    if center is None:
+        return ""
+    needs = "".join(
+        _chip(f"{n.group} {n.label}", _NEED_CHIP_KIND.get(n.label, "neutral"))
+        for n in center.needs.groups.values() if n.label != "Adequate"
+    ) or f'<span class="muted">{esc(needs_line(center.needs))}</span>'
+    week_note = (
+        f'<p class="muted">Week {center.claim_week - 1} is complete; start/sit for week {center.claim_week} opens once these claims process.</p>'
+        if data.week_complete and center.claim_week else ""
+    )
+    mode_note = f'<p class="muted">{esc(center.mode_note)}</p>' if center.mode_note else ""
+    cards = []
+    for gi, group in enumerate(center.plan.groups):
+        first, backups = group.claims[0], group.claims[1:]
+        cards.append(_claim_card(claim_view(first, center, backups=backups if gi == 0 else ()), lead=gi == 0))
+        cards += [_claim_card(claim_view(c, center), lead=False) for c in backups]
+        if group.stop_after_success:
+            cards.append(f'<p class="muted">If one of these clears, this group ({esc(group.problem)}) is done for the week.</p>')
+    if not center.plan.groups:
+        cards.append(f'<p class="empty-note">{esc(NO_CLAIMS_NOTE)}</p>')
+    plan_notes = "".join(f'<p class="muted">{esc(n)}</p>' for n in center.plan.notes)
+    do_not = ""
+    if center.plan.do_not_spend:
+        items = "".join(f"<li>{esc(line)}</li>" for line in do_not_spend_lines(center.plan.do_not_spend))
+        do_not = f'<div class="do-not-spend"><h4>Do not spend</h4><ul>{items}</ul></div>'
+    return f"""
+    <section class="panel-block waiver-center">
+      <h3>Waiver Command Center <span class="muted">&middot; {esc(command_center_subtitle(center, mode))}</span></h3>
+      <div class="panel-tags">{needs}</div>
+      {week_note}{mode_note}
+      {_waiver_review_block(data.waiver_review)}
+      {"".join(cards)}
+      {plan_notes}{do_not}
+      {_waiver_matrix(center)}
+      {_waiver_sizing(center)}
+    </section>
+    """
+
+
 def _waiver_table(
     targets: list[WaiverTarget], impacts: dict[str, MoveImpact] | None = None, conflicts: list[Conflict] | None = None,
     faab: dict | None = None, provenance: dict | None = None,
@@ -526,12 +657,12 @@ def _waiver_table(
 _MATCHUP_CHIP_KIND = {STRONG_EDGE: "positive", MODEST_EDGE: "positive", MODEST_DEFICIT: "caution", LARGE_DEFICIT: "negative"}
 
 
-def _matchup_section(m: MatchupLeverage | None) -> str:
+def _matchup_section(m: MatchupLeverage | None, *, final: bool = False) -> str:
     if m is None:
         return ""
     return f"""
     <section class="panel-block">
-      <h3>This week's matchup <span class="muted">&middot; week {m.week} vs {esc(m.opponent_name)}</span></h3>
+      <h3>Week {m.week} matchup{" &middot; final" if final else ""} <span class="muted">&middot; vs {esc(m.opponent_name)}</span></h3>
       <p class="roster-note">{_chip(m.label, _MATCHUP_CHIP_KIND.get(m.label, "neutral"))} you project
       <span class="tabular">{m.my_points:.1f}</span>, they project <span class="tabular">{m.opponent_points:.1f}</span>
       (<span class="tabular">{m.gap:+.1f}</span>)</p>
@@ -797,7 +928,7 @@ _STATUS_CHIP_KIND = {CONTENDER: "positive", MIDDLING: "neutral", REBUILD: "cauti
 _PLAYOFF_CHIP_KIND = {COMFORTABLE: "positive", BUBBLE: "caution", LONG_SHOT: "caution", OUT: "negative"}
 
 
-def _league_panel(data: LeagueReportData, shared_schedule: str = "") -> str:
+def _league_panel(data: LeagueReportData, shared_schedule: str = "", waiver_mode=None) -> str:
     slug = _slug(data.league.name)
     status_chip = ""
     status_reason = ""
@@ -836,10 +967,17 @@ def _league_panel(data: LeagueReportData, shared_schedule: str = "") -> str:
           {_alerts_list(data.time_sensitive)}
         </section>
         """ if alert_count else ""
+        # A command-center league shows the claim plan instead of the target
+        # table: the plan's claims ARE those targets, laid out as decisions.
+        command_center = _waiver_command_center_section(data, waiver_mode) if data.waiver_center is not None else ""
+        waiver_first = bool(
+            command_center and waiver_mode is not None and getattr(waiver_mode, "active", False)
+            and data.league.kind in COMMAND_CENTER_KINDS
+        )
         waivers_html = (
             f'<p class="empty-note">{esc(data.waivers_note)}</p>'
             if data.waivers_note
-            else _waiver_table(data.waiver_targets, data.waiver_impacts, data.conflicts, data.faab, data.provenance)
+            else ("" if command_center else _waiver_table(data.waiver_targets, data.waiver_impacts, data.conflicts, data.faab, data.provenance))
         )
         if data.faab_note and not data.waivers_note and data.waiver_targets:
             waivers_html += f'<p class="muted">{esc(data.faab_note)}</p>'
@@ -851,8 +989,9 @@ def _league_panel(data: LeagueReportData, shared_schedule: str = "") -> str:
           </div>
           {_consolidation_block(data.consolidations)}
         </section>
+        {"" if waiver_first else command_center}
         <section class="panel-block">
-          <h3>Waiver targets</h3>
+          <h3>{"Streaming and blocks" if command_center else "Waiver targets"}</h3>
           {waivers_html}
           {_streamers_block(data.streamers)}
           {_defensive_add_block(data.defensive_add)}
@@ -884,8 +1023,9 @@ def _league_panel(data: LeagueReportData, shared_schedule: str = "") -> str:
         # lineup lock — don't make a scrolling reader pass sections that
         # may all be empty-state ("no trades this week") to reach it.
         body = (
-            (alerts_section if has_high_alert else "")
-            + _matchup_section(data.matchup)
+            (command_center if waiver_first else "")
+            + (alerts_section if has_high_alert else "")
+            + _matchup_section(data.matchup, final=data.week_complete)
             + _lineup_decisions_section(data.lineup_decisions)
             + _lineup_leverage_section(
                 data.lineup_leverage, data.currency, data.replacement_clauses,
@@ -990,6 +1130,47 @@ def _provenance_block(prov, seen: set | None = None) -> str:
     if not rows:
         return ""
     return f'<div class="why-now"><span class="rationale-label">Why now</span>{rows}</div>'
+
+
+def _waiver_overview_section(report: WeeklyReportData) -> str:
+    """Tuesday and Wednesday: the claim to submit in each redraft/keeper
+    league, before anything else on the page."""
+    mode = report.waiver_mode
+    if mode is None or not mode.active:
+        return ""
+    centers = [ld for ld in report.leagues if ld.waiver_center is not None]
+    if not centers:
+        return ""
+    rows = []
+    for ld in centers:
+        center = ld.waiver_center
+        review = ld.waiver_review
+        if review is not None and review.processed:
+            won = ", ".join(o.name for o in review.outcomes if o.outcome == WON)
+            rows.append(
+                f'<li class="alert-item"><strong>{esc(ld.league.name)}</strong> &middot; {esc(review.headline)}'
+                + (f": {esc(won)}" if won else "") + "</li>"
+            )
+            continue
+        top = center.plan.top_claim
+        if top is None:
+            rows.append(f'<li class="alert-item"><strong>{esc(ld.league.name)}</strong> &middot; hold &mdash; {esc(NO_CLAIMS_NOTE.lower())}</li>')
+            continue
+        view = claim_view(top, center)
+        more = len(center.plan.claims()) - 1
+        rows.append(
+            f'<li class="alert-item"><strong>{esc(ld.league.name)}</strong> &middot; Add {esc(view.name)} ({esc(view.position)}), '
+            f'drop {esc(view.drop_line)} &middot; {esc(view.bid)} {_chip(view.strength, _STRENGTH_CHIP_KIND.get(view.strength, "neutral"))}'
+            + (f' <span class="muted">+{more} more claim(s)</span>' if more > 0 else "") + "</li>"
+        )
+    week = next((ld.waiver_center.claim_week for ld in centers if ld.waiver_center.claim_week), None)
+    return f"""
+    <section class="panel-block waiver-overview">
+      <h3>Waiver Command Center <span class="muted">&middot; {esc(mode.subheader)}</span></h3>
+      {f'<p class="muted">Claims for NFL week {week}.</p>' if week else ""}
+      <ul class="alert-list">{"".join(rows)}</ul>
+    </section>
+    """
 
 
 def _priority_actions_section(actions: list[PriorityAction]) -> str:
@@ -1197,6 +1378,7 @@ def _overview_panel(report: WeeklyReportData, shared_schedule: str = "") -> str:
       </header>
       {banner_html}
       {f'<p class="muted">Schedule: {esc(shared_schedule)}</p>' if shared_schedule else ""}
+      {_waiver_overview_section(report)}
       {_priority_actions_section(report.priority_actions)}
       {_delta_section(report.delta)}
       <section class="panel-block">
@@ -1225,6 +1407,14 @@ def _nav_items(report: WeeklyReportData) -> str:
 
 
 CSS = """
+.claim-card { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 10px 0; background: var(--card); }
+.claim-card-lead { border-color: var(--accent); box-shadow: 0 1px 0 var(--accent-soft); }
+.claim-title { margin: 0 0 6px; font-size: 15px; }
+.claim-move { font-size: 14px; margin: 6px 0; }
+.claim-backup { font-size: 13px; margin-top: 4px; }
+.do-not-spend ul { margin: 4px 0 0 16px; padding: 0; font-size: 13px; }
+.do-not-spend h4 { margin: 12px 0 2px; }
+.waiver-review h4 { margin: 4px 0; }
 .why-now { margin: 8px 0; padding: 8px 10px; background: var(--neutral-bg); border-radius: 6px; font-size: 0.92em; }
 .why-now .why-row { margin: 2px 0; }
 .why-now ul { margin: 2px 0 2px 16px; padding: 0; }
@@ -1530,7 +1720,7 @@ JS = """
 def render_dashboard_html(report: WeeklyReportData) -> str:
     nav_items = _nav_items(report)
     shared_schedule = common_schedule_line(report.leagues)
-    panels = _overview_panel(report, shared_schedule) + "".join(_league_panel(d, shared_schedule) for d in report.leagues)
+    panels = _overview_panel(report, shared_schedule) + "".join(_league_panel(d, shared_schedule, report.waiver_mode) for d in report.leagues)
 
     # The charset declaration matters for the local double-click / static-server
     # case: without it a server that guesses latin-1 turns every em dash and

@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from sleeper_tool.role_trends import INSUFFICIENT as INSUFFICIENT_ROLE
 from sleeper_tool.waiver_engine import EARLY_SEASON_CLAUSE
 from sleeper_tool.lineup_optimizer import slot_label
 from sleeper_tool.action_priority import IMMEDIATE, MAJOR, MEANINGFUL, THIS_WEEK, PriorityKey, priority_line  # noqa: F401  (PriorityKey re-exported for renderers)
@@ -499,3 +500,155 @@ def common_schedule_line(leagues) -> str:
     furniture."""
     lines = {ld.windows.describe() for ld in leagues if getattr(ld, "windows", None) is not None}
     return lines.pop() if len(lines) == 1 else ""
+
+
+# -- Waiver Command Center -----------------------------------------------------
+#
+# The claim plan is written by waiver_plan; these helpers only choose what
+# each renderer shows on the visible line and what it hides behind a
+# disclosure, so the Markdown report and the dashboard say the same thing.
+
+MAX_CLAIM_WHY = 4
+MAX_CLAIM_RISK = 3
+NO_CLAIMS_NOTE = "Nothing on this wire is worth a claim for this roster right now."
+NEEDS_SETTLED_NOTE = "no position group is short"
+
+
+def needs_line(needs) -> str:
+    """The position groups that are not Adequate, worst first; the settled
+    note when every group is fine."""
+    from sleeper_tool.roster_needs import ADEQUATE, NEED_ORDER
+
+    short = [n for n in needs.groups.values() if n.label != ADEQUATE]
+    short.sort(key=lambda n: NEED_ORDER[n.label])
+    return " · ".join(f"{n.group} {n.label}" for n in short) or NEEDS_SETTLED_NOTE
+
+
+def dependency_line(claim) -> str:
+    """How a claim depends on the one before it, in words."""
+    from sleeper_tool.waiver_plan import IF_PREVIOUS_FAILS, INDEPENDENT, ONLY_IF_DROP_AVAILABLE
+
+    if claim.dependency == INDEPENDENT:
+        return "Independently" if claim.order > 1 else ""
+    if claim.dependency == IF_PREVIOUS_FAILS:
+        return f"If claim {claim.depends_on} fails"
+    if claim.dependency == ONLY_IF_DROP_AVAILABLE:
+        return f"Only if claim {claim.depends_on} fails — same drop"
+    return claim.dependency
+
+
+def bid_line(claim, center) -> str:
+    """The money (or priority) line for one claim, in the league's own mode."""
+    from sleeper_tool.waiver_plan import PRIORITY_MODE
+
+    if center.mode == PRIORITY_MODE and claim.priority_call:
+        where = f" (you are #{center.priority_position[0]} of {center.priority_position[1]})" if center.priority_position else ""
+        return f"{claim.priority_call}{where}"
+    if claim.window is not None:
+        return f"{claim.window.text()} · {claim.window.posture}"
+    return center.mode_note or "no bid advice for this league"
+
+
+@dataclass(frozen=True)
+class ClaimView:
+    order: int
+    dependency: str
+    problem: str
+    name: str
+    position: str
+    team: str
+    strength: str
+    cls: str
+    add_line: str
+    drop_line: str
+    bid: str
+    why: list[str]
+    risks: list[str]
+    notes: list[str]
+    backups: list[str] = field(default_factory=list)  # "Devaughn Vele — $1–3, recommend $1"
+
+
+def claim_view(claim, center, *, backups=()) -> ClaimView:
+    call = claim.call
+    drop = claim.drop
+    return ClaimView(
+        order=claim.order,
+        dependency=dependency_line(claim),
+        problem=claim.call.problem,
+        name=call.entry.name,
+        position=call.entry.position or "?",
+        team=call.entry.team or "—",
+        strength=call.strength,
+        cls=call.cls or "",
+        add_line=call.entry.name,
+        drop_line=drop.name if drop is not None else ("no drop needed — open roster spot" if not call.needs_drop or claim.notes else "no drop needed"),
+        bid=bid_line(claim, center),
+        why=call.why[:MAX_CLAIM_WHY],
+        risks=call.risks[:MAX_CLAIM_RISK],
+        notes=list(claim.notes),
+        backups=[f"{b.call.entry.name} — {bid_line(b, center)}" for b in backups],
+    )
+
+
+MATRIX_COLUMNS = ("Player", "Pos", "FP ROS", "Ballers", "A/J/M", "RotoBaller", "Boone", "Role", "Need", "Lineup Δ", "Call")
+
+
+def matrix_row(call) -> tuple[str, ...]:
+    """One consensus-matrix row,each source in its own units — nothing is
+    converted into a shared scale."""
+    ev = call.evidence
+    delta = call.structural_gain if abs(call.structural_gain) >= abs(call.week_gain) else call.week_gain
+    # A role label that says there is no role history yet is not a reading;
+    # a lineup delta under a tenth of a point is not a change.
+    role = ev.role_label if ev.role_label and ev.role_label != INSUFFICIENT_ROLE else "—"
+    return (
+        ev.name,
+        ev.position or "?",
+        ev.pos_label(ev.fp_ros_pos_rank),
+        f"#{ev.ballers_rank}" if ev.ballers_rank is not None else "—",
+        ev.hosts_text(),
+        f"#{ev.rotoballer_rank}" if ev.rotoballer_rank is not None else "—",
+        ev.pos_label(ev.boone_pos_rank),
+        role,
+        call.need.label if call.need is not None else "—",
+        f"{delta:+.1f}" if abs(delta) >= 0.05 else "—",
+        call.strength,
+    )
+
+
+DEEPER_LEAGUE_REASON = "deeper leagues"
+
+
+def do_not_spend_lines(calls) -> list[str]:
+    """One line per player, except the deeper-league passes: three rows all
+    saying RotoBaller tags him for a bigger league is one fact, not three."""
+    deeper = [c for c in calls if DEEPER_LEAGUE_REASON in (c.pass_reason or "")]
+    rest = [c for c in calls if c not in deeper]
+    lines = [do_not_spend_line(c) for c in rest]
+    if len(deeper) == 1:
+        lines.append(do_not_spend_line(deeper[0]))
+    elif deeper:
+        who = ", ".join(f"{c.entry.name} ({c.entry.position or '?'})" for c in deeper)
+        lines.append(f"{who} — RotoBaller tags them for deeper leagues than this one, and none has a path onto this lineup")
+    return lines
+
+
+def do_not_spend_line(call) -> str:
+    board = f"Ballers #{call.evidence.ballers_rank}" if call.evidence.ballers_rank is not None else (
+        f"RotoBaller #{call.evidence.rotoballer_rank}" if call.evidence.rotoballer_rank is not None else "an expert board"
+    )
+    return f"{call.entry.name} ({call.entry.position or '?'}) — {board}: good player, poor claim for this roster: {call.pass_reason}"
+
+
+def command_center_subtitle(center, mode) -> str:
+    """"Tuesday — claims pending · week 2 claims · $95 FAAB left"."""
+    bits = []
+    if mode is not None and mode.active:
+        bits.append(mode.subheader)
+    if center.claim_week:
+        bits.append(f"week {center.claim_week} claims")
+    if center.remaining_budget is not None:
+        bits.append(f"${center.remaining_budget} FAAB left")
+    elif center.priority_position:
+        bits.append(f"waiver priority #{center.priority_position[0]} of {center.priority_position[1]}")
+    return " · ".join(bits)

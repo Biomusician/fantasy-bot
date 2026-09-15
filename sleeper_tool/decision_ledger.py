@@ -120,6 +120,12 @@ class LedgerEntry:
     observed_at: str | None = None
     failed_claim: bool = False  # a waiver claim of mine for this player failed to process
     paid_bid: int | None = None  # FAAB actually spent, when Completed via a waiver
+    # The waiver calibration dataset (2026-09-15). Recorded, never used to tune.
+    faab_window: tuple[int, int] | None = None  # (low, high) as recommended
+    recommended_bid: int | None = None
+    evidence: dict[str, Any] = field(default_factory=dict)  # source ranks, role, need, scarcity, class, strength, lineup gains
+    winning_bid: int | None = None  # the bid that took the player, when a waiver claim did
+    next_bid: int | None = None  # highest failed bid visible on the same player
 
     @property
     def subject(self) -> str:
@@ -236,6 +242,33 @@ def _impact_delta(impact) -> float | None:
     return impact.after.weekly_points - impact.before.weekly_points
 
 
+def _waiver_dataset(ld, center, player_id: str) -> dict[str, Any]:
+    """The calibration record for one waiver recommendation: every source
+    rank, the role and need labels, the replacement state, the simulated
+    lineup gains, the FAAB window and recommended bid. Empty for a league
+    without a command center (dynasty) beyond the bid itself."""
+    out: dict[str, Any] = {}
+    advice = (getattr(ld, "faab", None) or {}).get(player_id)
+    if advice is not None:
+        out["recommended_bid"] = advice.suggested_dollars
+        if getattr(advice, "window_low", None) is not None:
+            out["faab_window"] = (advice.window_low, advice.window_high)
+    call = center.call_for(player_id) if center is not None else None
+    if call is not None:
+        ev = call.evidence
+        out["evidence"] = {
+            "fp_ros_pos_rank": ev.fp_ros_pos_rank, "ballers_rank": ev.ballers_rank, "ballers_hosts": list(ev.ballers_hosts),
+            "ballers_agreement": ev.ballers_agreement, "rotoballer_rank": ev.rotoballer_rank,
+            "rotoballer_min_league_size": ev.rotoballer_min_league_size, "boone_pos_rank": ev.boone_pos_rank,
+            "role_label": ev.role_label, "scarcity": ev.scarcity, "labels": list(ev.labels), "support": ev.support,
+            "need": call.need.label if call.need is not None else None, "class": call.cls, "strength": call.strength,
+            "structural_gain": call.structural_gain, "week_gain": call.week_gain,
+            "alternatives": call.alternatives.label if call.alternatives is not None else None,
+            "claim_week": center.claim_week,
+        }
+    return out
+
+
 def build_entries(report) -> list[LedgerEntry]:
     """Ledger entries for every recommendation in a WeeklyReportData
     (duck-typed, like decision_delta, so this module stays out of
@@ -309,6 +342,7 @@ def build_entries(report) -> list[LedgerEntry]:
                 **common,
             )
 
+        center = getattr(ld, "waiver_center", None)
         for t in ld.waiver_targets:
             labels = [f"horizon:{t.horizon}"]
             if t.fills_need:
@@ -332,6 +366,7 @@ def build_entries(report) -> list[LedgerEntry]:
                 replacement_context=_scarcity(ld, [t.position]),
                 projected_lineup_delta=_impact_delta(ld.waiver_impacts.get(t.player_id)),
                 faab_pct=t.suggested_faab_pct,
+                **_waiver_dataset(ld, center, t.player_id),
                 **common,
             )
 
@@ -431,6 +466,12 @@ def merge_entries(ledger: Ledger, new_entries: Iterable[LedgerEntry], run_id: st
         existing.league_name = entry.league_name
         if existing.role_signal is None and entry.role_signal is not None:
             existing.role_signal = entry.role_signal
+        # An entry first recorded before the waiver dataset existed gains it
+        # once; a recorded window is never rewritten by a later run.
+        if not existing.evidence and entry.evidence:
+            existing.evidence = dict(entry.evidence)
+        if existing.faab_window is None and entry.faab_window is not None:
+            existing.faab_window, existing.recommended_bid = entry.faab_window, entry.recommended_bid
         refreshed += 1
     ledger.updated_at = run_id
     _enforce_retention(ledger)
@@ -466,6 +507,8 @@ def _entry_from_dict(data: dict[str, Any]) -> LedgerEntry:
         kwargs[key] = tuple(kwargs.get(key) or ())
     for key in ("give_picks", "receive_picks"):
         kwargs[key] = tuple((str(k[0]), int(k[1]), int(k[2])) for k in (kwargs.get(key) or ()))
+    if kwargs.get("faab_window") is not None:
+        kwargs["faab_window"] = tuple(int(v) for v in kwargs["faab_window"])
     return LedgerEntry(**kwargs)
 
 
@@ -665,6 +708,13 @@ def _observe_add(
                 entry.paid_bid = int(bid)
             kind = mine[-1].get("type") or "transaction"
             return COMPLETED, f"added via {kind}" + (f" for ${entry.paid_bid} FAAB" if entry.paid_bid is not None else "")
+    visible_failed = [
+        int(b) for tx in rows if tx.get("type") == "waiver" and tx.get("status") == "failed"
+        for pid in pids if (tx.get("adds") or {}).get(pid) is not None and not _same_roster((tx.get("adds") or {}).get(pid), my_roster_id)
+        if (b := (tx.get("settings") or {}).get("waiver_bid")) is not None
+    ]
+    if visible_failed:
+        entry.next_bid = max(visible_failed)
     for tx in rows:
         adds = tx.get("adds") or {}
         for pid in pids:
@@ -677,14 +727,17 @@ def _observe_add(
                 continue
             if tx.get("status") != "complete":
                 continue
+            bid = (tx.get("settings") or {}).get("waiver_bid")
+            if bid is not None:
+                entry.winning_bid = int(bid)  # what the player actually cost, whoever won him
             if _same_roster(landed, my_roster_id):
-                bid = (tx.get("settings") or {}).get("waiver_bid")
                 if bid is not None:
                     entry.paid_bid = int(bid)
                 kind = tx.get("type") or "transaction"
                 detail = f"added via {kind}" + (f" for ${entry.paid_bid} FAAB" if entry.paid_bid is not None else "")
                 return COMPLETED, detail
-            return ACQUIRED_BY_ANOTHER, f"added by roster {landed}"
+            cost = f" for ${entry.winning_bid} FAAB" if entry.winning_bid is not None else ""
+            return ACQUIRED_BY_ANOTHER, f"added by roster {landed}{cost}"
     unrostered = [pid for pid in pids if pid not in rostered]
     if unrostered:
         return STILL_AVAILABLE, "not on any roster"

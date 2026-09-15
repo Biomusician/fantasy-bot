@@ -28,6 +28,13 @@ from sleeper_tool.portfolio_exposure import PortfolioExposure
 from sleeper_tool.replacement_value import SCARCE, VERY_SCARCE, ReplacementMarket
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
 from sleeper_tool.report_views import (
+    MATRIX_COLUMNS,
+    NO_CLAIMS_NOTE,
+    claim_view,
+    command_center_subtitle,
+    do_not_spend_lines,
+    matrix_row,
+    needs_line,
     common_schedule_line,
     grouped_picks,
     pick_group_label,
@@ -59,6 +66,8 @@ from sleeper_tool.trade_opportunity_cost import TradeEconomics
 from sleeper_tool.trade_types import DropCandidate, TradeProposal
 from sleeper_tool.valuation import ValuationEngine
 from sleeper_tool.waiver_engine import WaiverTarget
+from sleeper_tool.waiver_command_center import COMMAND_CENTER_KINDS
+from sleeper_tool.waiver_review import WON
 
 TREND_ARROW = {"rising": "↑", "down": "↓", "no change": "→"}
 
@@ -132,6 +141,40 @@ def _render_priority_actions(actions: list[PriorityAction]) -> list[str]:
         lines.append("**Optional value plays**" + ("" if do_now else f" — {NOTHING_URGENT_NOTE}"))
         lines.append("")
         lines.extend(rows(optional))
+    lines.append("")
+    return lines
+
+
+def _render_waiver_overview(report: WeeklyReportData) -> list[str]:
+    """Tuesday and Wednesday only: one line per redraft/keeper league, so the
+    first thing on the page is the claim to submit in each of them."""
+    mode = report.waiver_mode
+    if mode is None or not mode.active:
+        return []
+    centers = [ld for ld in report.leagues if ld.waiver_center is not None]
+    if not centers:
+        return []
+    lines = [f"## Waiver Command Center — {mode.subheader}", ""]
+    week = next((ld.waiver_center.claim_week for ld in centers if ld.waiver_center.claim_week), None)
+    if week:
+        lines += [f"_Claims for NFL week {week}._", ""]
+    for ld in centers:
+        center = ld.waiver_center
+        review = ld.waiver_review
+        if review is not None and review.processed:
+            won = [o for o in review.outcomes if o.outcome == WON]
+            lines.append(f"- **{ld.league.name}** — {review.headline}" + (f": {', '.join(o.name for o in won)}" if won else ""))
+            continue
+        top = center.plan.top_claim
+        if top is None:
+            lines.append(f"- **{ld.league.name}** — hold: {NO_CLAIMS_NOTE.lower()}")
+            continue
+        view = claim_view(top, center)
+        more = len(center.plan.claims()) - 1
+        lines.append(
+            f"- **{ld.league.name}** — Add {view.name} ({view.position}), drop {view.drop_line} · {view.bid} · {view.strength}"
+            + (f" · +{more} more claim(s)" if more > 0 else "")
+        )
     lines.append("")
     return lines
 
@@ -437,6 +480,99 @@ def _render_trade_proposal(
     return lines
 
 
+def _render_claim(view, *, lead: bool = False) -> list[str]:
+    """One claim: what to do, then why now, then what could go wrong."""
+    head = f"**{view.order}. {view.dependency + ': ' if view.dependency else ''}Add {view.add_line}**" if not lead else f"**TOP CLAIM — {view.name} ({view.position}, {view.team})**"
+    lines = [head]
+    if lead:
+        lines.append(f"- {view.strength} · {view.cls} · {view.problem}")
+    lines.append(f"- ADD: {view.add_line} · DROP: {view.drop_line} · {view.bid}")
+    if view.why:
+        lines.append("- Why now: " + " · ".join(view.why))
+    if view.risks:
+        lines.append("- Risk: " + " · ".join(view.risks))
+    for note in view.notes:
+        lines.append(f"- _{note}_")
+    for backup in view.backups:
+        lines.append(f"- If lost → {backup}")
+    return lines
+
+
+def _render_waiver_review(review, claim_week: int | None) -> list[str]:
+    lines = [f"**{review.headline}**", ""]
+    lines += [f"- {o.describe()}" for o in review.outcomes[:8]]
+    if review.my_adds:
+        lines.append(f"- Added this week: {', '.join(review.my_adds)}")
+    lines += [f"- _{n}_" for n in review.notes]
+    lines.append("")
+    return lines
+
+
+def _render_waiver_command_center(data: LeagueReportData, mode=None) -> list[str]:
+    """The league's waiver decision: the top claim in full, the rest of the
+    ordered plan, what not to spend on, and the consensus matrix behind a
+    disclosure."""
+    center = data.waiver_center
+    if center is None:
+        return []
+    lines = [_heading("Waiver Command Center", command_center_subtitle(center, mode)), ""]
+    if center.mode_note:
+        lines += [f"_{center.mode_note}_", ""]
+    lines += [f"_Roster needs: {needs_line(center.needs)}_", ""]
+    if data.week_complete and center.claim_week:
+        lines += [
+            f"_Week {center.claim_week - 1} is complete; start/sit for week {center.claim_week} opens once these claims process._",
+            "",
+        ]
+    if data.waiver_review is not None and data.waiver_review.processed:
+        lines += _render_waiver_review(data.waiver_review, center.claim_week)
+
+    groups = center.plan.groups
+    if not groups:
+        lines += [NO_CLAIMS_NOTE, ""]
+    for gi, group in enumerate(groups):
+        first, backups = group.claims[0], group.claims[1:]
+        view = claim_view(first, center, backups=backups if gi == 0 else ())
+        lines += _render_claim(view, lead=gi == 0)
+        lines.append("")
+        for claim in backups:
+            lines += _render_claim(claim_view(claim, center))
+            lines.append("")
+        if group.stop_after_success:
+            lines += [f"_If one of these clears, this group ({group.problem}) is done for the week._", ""]
+    for note in center.plan.notes:
+        lines += [f"_{note}_", ""]
+
+    if center.plan.do_not_spend:
+        lines += ["**Do not spend**", ""]
+        lines += [f"- {line}" for line in do_not_spend_lines(center.plan.do_not_spend)]
+        lines.append("")
+
+    if center.matrix:
+        lines.extend(_summary("Waiver consensus matrix", "each source in its own units, available players only"))
+        lines.append("| " + " | ".join(MATRIX_COLUMNS) + " |")
+        lines.append("|" + "---|" * len(MATRIX_COLUMNS))
+        for call in center.matrix:
+            lines.append("| " + " | ".join(matrix_row(call)) + " |")
+        lines.append("")
+        lines += ["_Sources: " + " | ".join(center.source_lines) + "_"]
+        lines.extend(_CLOSE_DETAILS)
+
+    sizing: list[str] = []
+    for claim in center.plan.claims():
+        if claim.window is not None:
+            sizing.append(f"- **{claim.call.entry.name}** ${claim.window.low}–{claim.window.high}, recommend ${claim.window.recommended}: " + "; ".join(claim.window.reasons))
+        if claim.call.rejected_drops:
+            sizing.append(f"  - drops considered: {'; '.join(claim.call.rejected_drops[:3])}")
+    if center.drops.options:
+        sizing.append("- **Drop board** (cheapest first): " + "; ".join(o.describe() for o in center.drops.options[:5]))
+    if sizing:
+        lines.extend(_summary("How these claims were sized", "bid windows, drops considered, the drop board"))
+        lines += sizing
+        lines.extend(_CLOSE_DETAILS)
+    return lines
+
+
 _TIER_MARK = {"Must Add": "🔴", "Strong Add": "🟠", "Moderate": "🟡", "Speculative": "⚪", "Monitor": "⚪", "Insurance": "🛡️"}
 
 
@@ -637,7 +773,7 @@ def _render_context(data: LeagueReportData, shared_schedule: str = "") -> list[s
     return [*_summary("Roster context", CONTEXT_SUMMARY), *body, *_CLOSE_DETAILS]
 
 
-def render_league_section(data: LeagueReportData, shared_schedule: str = "") -> list[str]:
+def render_league_section(data: LeagueReportData, shared_schedule: str = "", waiver_mode=None) -> list[str]:
     lines = [f"## {data.league.name}", ""]
 
     if data.error:
@@ -665,6 +801,12 @@ def render_league_section(data: LeagueReportData, shared_schedule: str = "") -> 
     # scrolling reader shouldn't have to pass sections that may all be
     # empty-state to reach the one thing that's actually time-boxed to
     # this week's lineup lock.
+    # Tuesday and Wednesday the waiver block leads a redraft/keeper league:
+    # claims are the decision of the day and lock before anything else here.
+    waiver_first = (
+        waiver_mode is not None and waiver_mode.active and data.waiver_center is not None
+        and data.league.kind in COMMAND_CENTER_KINDS
+    )
     has_high_alert = any(n.severity == "high" for n in data.time_sensitive)
     alert_lines: list[str] = []
     for n in data.time_sensitive:
@@ -679,7 +821,10 @@ def render_league_section(data: LeagueReportData, shared_schedule: str = "") -> 
 
     if data.matchup is not None:
         sections.append((
-            _heading("This week's matchup", f"week {data.matchup.week} vs {data.matchup.opponent_name}"),
+            _heading(
+                f"Week {data.matchup.week} matchup" + (" · final" if data.week_complete else ""),
+                f"vs {data.matchup.opponent_name}",
+            ),
             [data.matchup.describe(), "", "This-week lineups with byes and outs applied.", ""],
         ))
 
@@ -713,10 +858,13 @@ def render_league_section(data: LeagueReportData, shared_schedule: str = "") -> 
         trade_lines.append("")
     sections.append((_heading("Trade offers"), trade_lines))
 
+    # A command-center league shows the claim plan instead of the target
+    # table: the plan's claims ARE those targets, laid out as decisions.
+    center_lines = _render_waiver_command_center(data, waiver_mode) if data.waiver_center is not None else []
     waiver_lines = (
         [f"_{data.waivers_note}_", ""]
         if data.waivers_note
-        else _render_waiver_targets(data.waiver_targets, data.waiver_impacts, data.conflicts, data.faab, data.provenance) + [""]
+        else ([] if center_lines else _render_waiver_targets(data.waiver_targets, data.waiver_impacts, data.conflicts, data.faab, data.provenance) + [""])
     )
     if data.faab_note and not data.waivers_note and data.waiver_targets:
         waiver_lines.extend([f"_{data.faab_note}_", ""])
@@ -724,7 +872,11 @@ def render_league_section(data: LeagueReportData, shared_schedule: str = "") -> 
         waiver_lines.extend(_render_streamers(data.streamers))
     if data.defensive_add is not None:
         waiver_lines.extend([f"**🛡 Defensive add** (deny this week's opponent): {data.defensive_add.describe()}", ""])
-    sections.append((_heading("Waiver targets"), waiver_lines))
+    if center_lines:
+        block = (center_lines[0], center_lines[2:] + waiver_lines)
+        sections.insert(0, block) if waiver_first else sections.append(block)
+    else:
+        sections.append((_heading("Waiver targets"), waiver_lines))
 
     if data.drop_candidates:
         # Only rendered when there's something real to say — no synthetic
@@ -754,6 +906,7 @@ def render_weekly_report(report: WeeklyReportData) -> str:
     banner = health_banner(report)
     if banner is not None:
         lines.extend([f"> ⚠️ **{banner.text}** Details in Signal health below.", ""])
+    lines.extend(_render_waiver_overview(report))
     lines.extend(_render_priority_actions(report.priority_actions))
     lines.extend(_render_delta(report.delta))
     lines.extend(_render_portfolio_exposure(report.portfolio, report.asymmetries))
@@ -763,7 +916,7 @@ def render_weekly_report(report: WeeklyReportData) -> str:
     if shared_schedule:
         lines.extend([f"_Schedule: {shared_schedule}_", ""])
     for league_data in report.leagues:
-        lines.extend(render_league_section(league_data, shared_schedule))
+        lines.extend(render_league_section(league_data, shared_schedule, report.waiver_mode))
         lines.append("---")
         lines.append("")
 
