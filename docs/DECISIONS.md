@@ -177,6 +177,58 @@ from the diffs.
 - **Recommendation search** (`recommendation_search.py`, `scripts/search_recommendations.py`)
   queries a built report; every hit is a sentence the report already holds.
 
+### Depth is measured, not assumed (after the depth red team)
+
+Three separate defects turned out to be the same mistake: a structural
+assumption standing in for something the data could be asked directly.
+
+- **A FLEX slot is not a third each of RB, WR and TE.** Measured against
+  these leagues' own optimized lineups, flex slots fill RB 35% / WR 57% /
+  TE 6%. The even split made TE depth read about twice as deep as reality
+  (Disco: 28 "startable" TEs against 17 actually started) and WR too
+  shallow (40 against 53), which is how a FantasyPros ROS TE37 became a
+  reason *to* add a TE in a league that starts one, and a WR51 inside real
+  starting demand became a cheap drop. `FLEX_DEMAND_SHARE` is a stated
+  approximation from a measurement, not a guess from slot eligibility.
+- **League size is how many players are off the wire.** RotoBaller's
+  "Add in 12+ Team Leagues" tag describes how picked-over a wire is, and
+  the code compared it against the team count. Team count only determines
+  that if roster size is standard, and it is not in any of these leagues:
+  8-team Primo plays like a 10.4-team league, 12-team Disco like a
+  16.3-team one, 12-team This League Sucks like a 9.1-team one.
+  `league_depth.py` divides rostered skill players by a 14-per-team
+  baseline. The tag can now also *add* support — in Disco a "14+" tag is
+  a direct recommendation for that league — and a row whose tag fits
+  counts as listed whatever its rank.
+- **Sleeper's `position` is the primary NFL listing, not a fantasy one.**
+  Travis Hunter is "DB"; every fullback is "FB". Reading it alone dropped
+  124 players out of the ranking-source name index, so no source could
+  ever match them, and out of the free-agent universe.
+  `sleeper_positions.py` is the single answer both layers read.
+
+Two more league settings were being hardcoded, against the standing rule:
+IR eligibility (`reserve_allow_out` and friends — Disco has two IR slots
+and forbids Out, so "move him to IR instead" was advice the manager could
+not take, and it protected him from a drop for a reason that did not
+exist), and the claim-week lineup, which was not excluding players ruled
+Out and so reported a FLEX the roster could not field as already covered.
+
+### The FAAB window states worth, and uncertainty never raises a bid
+
+A source split used to widen the band *and* carry the recommendation up
+with it, so "the experts disagree" read as "pay more". The point is now
+placed inside the pre-widening band and clamped into the widened one.
+Alongside that: Unique/Few Alternatives no longer stacks on an Abundant
+market (that market is Abundant *because* of him — charging both
+directions for one fact nets to noise); the total multiplier is floored,
+because three modest cuts could erase a claim every board recommends; the
+late-season cut applies only to speculative classes, since a budget that
+expires unspent is worth nothing and week 12 is not when to economise on
+this week's starter; the Immediate Starter premium is earned by a real
+per-week gain rather than by clearing the threshold by a rounding error;
+and Preserve caps a share of the *season* budget, so a manager down to $10
+can still bid $2 for a starter.
+
 ### Defects the red team found, and the rules that replaced them
 
 - **Every draft pick in every league read "Late".** `estimate_tier` wants a
