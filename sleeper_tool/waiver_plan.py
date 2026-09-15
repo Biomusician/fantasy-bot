@@ -193,6 +193,13 @@ def build_plan(
             first.priority_call = priority_call(lead)
         group = ClaimGroup(problem=lead.problem, claims=[first])
 
+        # A chain needs room under the first claim for every backup, or the
+        # fallbacks are priced at nothing and cannot win.
+        backups_wanted = min(MAX_BACKUPS, max(0, len(members) - 1))
+        if first.window is not None and backups_wanted:
+            headroom = bid_min + backups_wanted
+            if first.window.recommended < headroom:
+                first.window.recommended = min(max(first.window.recommended, headroom), first.window.high, max(first.window.high, headroom))
         previous = first
         for backup in members[1:1 + MAX_BACKUPS]:
             # A backup inherits the first choice's drop so that only one of
@@ -240,12 +247,13 @@ def _keep_bid_below(claim: Claim, previous: Claim, bid_min: int) -> None:
     if claim.window.recommended <= ceiling:
         return
     if ceiling < bid_min:
-        claim.window.recommended = claim.window.low = claim.window.high = bid_min
+        claim.window.recommended = bid_min
         claim.notes.append(
             f"both claims sit at the ${bid_min} minimum — which processes first is the league's tiebreak (waiver order), not this plan"
         )
         return
+    was = claim.window.recommended
     claim.window.recommended = ceiling
-    claim.window.high = max(ceiling, min(claim.window.high, ceiling))
-    claim.window.low = min(claim.window.low, ceiling)
-    claim.notes.append(f"bid kept below claim {previous.order}'s ${previous.window.recommended} so the first choice processes first")
+    claim.notes.append(
+        f"worth ${was} on its own; bid ${ceiling} so claim {previous.order} processes first"
+    )

@@ -622,7 +622,10 @@ def build_league_report_data(
             waiver_targets, insurance, my_roster, current_week=current_week, deadline_passed=deadline_passed,
             waiver_budget=waiver_budget, clog_ids=clog_ids, protected_ids=lineup.starter_ids,
         )
-    time_sensitive = get_time_sensitive_notes(storage, my_roster, current_week=current_week)
+    time_sensitive = get_time_sensitive_notes(
+        storage, my_roster, current_week=current_week,
+        reserve_slots=int((league_data.get("settings") or {}).get("reserve_slots") or 0),
+    )
     urgent_add_ids: set[str] = set()  # waiver targets that answer a bye hole (FAAB posture reads this)
     note_directions: dict[tuple[str, str], str] = {}  # (player_id, note) -> the side the note argues for
     # Pre-draft, the roster is keepers and placeholders: a week-5 bye hole is

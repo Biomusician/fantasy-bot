@@ -65,6 +65,7 @@ class WaiverCommandCenter:
     matrix: list[AcquisitionCall] = field(default_factory=list)
     source_lines: list[str] = field(default_factory=list)
     priority_position: tuple[int, int] | None = None  # (my waiver position, teams) in a priority league
+    faab_context: FaabContext | None = None  # this league's budgets, for the outbid and anchor facts
     mode_note: str | None = None
     remaining_budget: int | None = None
 
@@ -150,6 +151,7 @@ def build_command_center(
     drops = build_drop_board(
         roster, lineup=lineup, week_lineup=week_lineup, num_teams=num_teams, ros_pos_rank=ros_pos_rank,
         trade_piece_ids=trade_piece_ids, current_week=current_week, open_spots=open_spots,
+        reserve_slots=int((league_data.get("settings") or {}).get("reserve_slots") or 0),
     )
     extras = _expert_entries(sources, rostered_ids, {fa.player_id for fa in free_agents}, all_players, engine, roster)
     pool = skill_fas + extras
@@ -222,7 +224,7 @@ def build_command_center(
     return WaiverCommandCenter(
         mode=mode, claim_week=claim_week, needs=needs, drops=drops, calls=calls, plan=plan, windows=windows,
         matrix=matrix[:MATRIX_MAX_ROWS], source_lines=[s.describe() for s in sources.statuses],
-        priority_position=priority_position, mode_note=mode_note,
+        priority_position=priority_position, mode_note=mode_note, faab_context=faab_ctx,
         remaining_budget=faab_ctx.remaining if mode == FAAB_MODE else None,
     )
 

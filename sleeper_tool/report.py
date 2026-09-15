@@ -484,13 +484,15 @@ def _render_claim(view, *, lead: bool = False) -> list[str]:
     """One claim: what to do, then why now, then what could go wrong."""
     head = f"**{view.order}. {view.dependency + ': ' if view.dependency else ''}Add {view.add_line}**" if not lead else f"**TOP CLAIM — {view.name} ({view.position}, {view.team})**"
     lines = [head]
-    if lead:
-        lines.append(f"- {view.strength} · {view.cls} · {view.problem}")
+    labels = " · ".join(x for x in (view.strength, view.cls) if x)
+    lines.append(f"- {labels} — {view.problem}" if lead else f"- {labels}")
     lines.append(f"- ADD: {view.add_line} · DROP: {view.drop_line} · {view.bid}")
     if view.why:
         lines.append("- Why now: " + " · ".join(view.why))
     if view.risks:
         lines.append("- Risk: " + " · ".join(view.risks))
+    if view.budget:
+        lines.append("- Budget: " + " · ".join(view.budget))
     for note in view.notes:
         lines.append(f"- _{note}_")
     for backup in view.backups:

@@ -489,6 +489,8 @@ def _explain(call: AcquisitionCall, *, need: PositionNeed | None, claim_week: in
         risks.append(call.alternatives.describe())
     if ev.weekly_projection is None:
         risks.append("no projection in this league's sources yet")
+    if call.drop is not None and call.drop.status_caution:
+        risks.append(f"dropping {call.drop.entry.name}: {call.drop.status_caution}")
     call.risks = risks
 
 

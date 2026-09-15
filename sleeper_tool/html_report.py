@@ -471,6 +471,7 @@ def _claim_card(view, *, lead: bool) -> str:
     risks = "".join(f"<li>{esc(r)}</li>" for r in view.risks)
     notes = "".join(f'<div class="muted">{esc(n)}</div>' for n in view.notes)
     backups = "".join(f'<div class="claim-backup">If lost &rarr; {esc(b)}</div>' for b in view.backups)
+    budget = f'<div class="muted">{esc(" · ".join(view.budget))}</div>' if view.budget else ""
     dependency = f'{_chip(view.dependency, "neutral")}' if view.dependency else ""
     head = (
         f'<h4 class="claim-title">TOP CLAIM &middot; {esc(view.name)} <span class="muted">({esc(view.position)}, {esc(view.team)})</span></h4>'
@@ -485,7 +486,7 @@ def _claim_card(view, *, lead: bool) -> str:
       {f'<div class="why-now"><div class="why-row"><span class="rationale-label">Why now</span><ul>{why}</ul></div>' if why else '<div class="why-now">'}
       {f'<div class="why-row"><span class="rationale-label">Risk</span><ul>{risks}</ul></div>' if risks else ""}
       </div>
-      {backups}{notes}
+      {budget}{backups}{notes}
     </article>
     """
 

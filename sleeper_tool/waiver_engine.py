@@ -549,7 +549,7 @@ _LONG_TERM_SLEEPER_STATUSES = LONG_TERM_SLEEPER_STATUSES
 
 
 def get_time_sensitive_notes(
-    storage: Storage, my_roster: ValuedRoster, *, current_week: int | None = None
+    storage: Storage, my_roster: ValuedRoster, *, current_week: int | None = None, reserve_slots: int = 0,
 ) -> list[TimeSensitiveNote]:
     """The "anything time-sensitive" part of the weekly report — deliberately
     narrow. Bye week comes from FantasyPros/RotoBaller (via
@@ -557,6 +557,10 @@ def get_time_sensitive_notes(
     all.
     """
     notes: list[TimeSensitiveNote] = []
+    # Sleeper reports IR capacity as settings.reserve_slots; a league with
+    # none (or none free) cannot be told to "move him to IR", which is how
+    # a roster ended up being advised to make a move it cannot make.
+    open_reserve = max(0, reserve_slots - sum(1 for e in my_roster.entries if e.is_reserve))
     for entry in my_roster.entries:
         long_term_label = entry.injury_status if entry.injury_status in _LONG_TERM_INJURY_STATUSES else (
             entry.status if entry.status in _LONG_TERM_SLEEPER_STATUSES else None
@@ -566,13 +570,12 @@ def get_time_sensitive_notes(
         # IR to free the slot" is both false (there's no slot to free) and
         # exactly the noise this alert was narrowed to eliminate.
         if long_term_label and not entry.is_reserve and not entry.is_taxi:
-            notes.append(
-                TimeSensitiveNote(
-                    entry.name,
-                    f"{long_term_label} but sitting in an active roster spot — move to IR to free the slot for a streamer",
-                    severity="high",
-                )
+            note = (
+                f"{long_term_label} but sitting in an active roster spot — move to IR to free the slot for a streamer"
+                if open_reserve else
+                f"{long_term_label} and this league has no open IR slot — he is holding an active roster spot"
             )
+            notes.append(TimeSensitiveNote(entry.name, note, severity="high"))
         if current_week is not None and entry.value.bye_week == current_week and entry.is_starter:
             notes.append(
                 TimeSensitiveNote(entry.name, f"On bye week {current_week} — starting slot needs a fill-in", severity="medium")

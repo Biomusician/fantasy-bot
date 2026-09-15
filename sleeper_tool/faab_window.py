@@ -35,6 +35,8 @@ import math
 from dataclasses import dataclass, field
 
 from sleeper_tool.faab_strategy import (
+    ANCHOR_MIN_BIDS,
+    ANCHOR_OVERSHOOT_RATIO,
     PRESERVE,
     PRIORITY_SPEND,
     PRIORITY_SPEND_MAX_PCT_OF_REMAINING,
@@ -48,6 +50,7 @@ from sleeper_tool.replacement_value import ABUNDANT, SCARCE, VERY_SCARCE
 from sleeper_tool.roster_needs import CRITICAL_NEED, STRONG, SURPLUS, WEAK
 from sleeper_tool.waiver_acquisition import (
     BYE_COVER,
+    MAJOR_GAIN,
     DEPTH_ADD,
     IMMEDIATE_STARTER,
     PASS,
@@ -64,11 +67,22 @@ from sleeper_tool.waiver_engine import STREAMER as STREAMER_HORIZON
 from sleeper_tool.waiver_engine import STRONG_ADD as ENGINE_STRONG_ADD
 
 # (low %, high %) of REMAINING budget, by acquisition strength.
-BASE_BAND_PCT = {PRIORITY_ADD: (14, 24), STRONG_ADD: (7, 14), DEPTH_ADD: (2, 6), SPECULATIVE_ADD: (1, 3)}
+BASE_BAND_PCT = {PRIORITY_ADD: (14, 24), STRONG_ADD: (7, 14), DEPTH_ADD: (3, 8), SPECULATIVE_ADD: (1, 4)}
+# Shifts multiply, so three modest cuts can erase a claim every board in the
+# set recommends. The floor keeps the bottom of the scale meaningful: below
+# it the dollar is smaller than the rounding.
+MIN_TOTAL_MULTIPLIER = 0.45
+# Two waiver boards inside their first twelve WITH rest-of-season or Boone
+# support is the one piece of market information the window has: a claim
+# other managers are also reading about is contested.
+SHIFT_BROAD_CONVICTION = 1.20
 
 SHIFT_CRITICAL_NEED = 1.35
 SHIFT_WEAK = 1.15
 SHIFT_IMMEDIATE_STARTER = 1.10
+# The Immediate Starter premium (and the top of the window) is for a real
+# upgrade, not for clearing STARTER_MIN_GAIN by a rounding error.
+STARTER_PREMIUM_MIN_GAIN = 2.0
 SHIFT_VERY_SCARCE = 1.25
 SHIFT_SCARCE = 1.10
 SHIFT_UNIQUE = 1.25
@@ -85,7 +99,10 @@ DISAGREEMENT_HIGH = 1.10
 LATE_SEASON_WEEKS_LEFT = 3
 ROLE_MOVES_FAAB = False  # the role heuristic is annotation-only until redesigned
 
-PRESERVE_MAX_PCT = 4
+# Preserve caps a bid as a share of the SEASON budget, not of what is left:
+# 4% of a dwindling balance means a manager with $15 in week 12 can never
+# bid $2 for a starter, and FAAB has no salvage value at the end.
+PRESERVE_MAX_PCT_OF_BUDGET = 3
 PRIORITY_MIN_HIGH_PCT = 30
 NON_PRIORITY_MAX_PCT = 35
 
@@ -109,6 +126,8 @@ class WindowFacts:
     alternatives_count: int = 0
     disagreement: bool = False
     projected: bool = True
+    gain_per_week: float = 0.0  # the simulated lineup gain, so a premium scales with it
+    broad_conviction: bool = False  # both waiver boards inside their first twelve, with support
     role_market: str | None = None  # read only when ROLE_MOVES_FAAB
 
 
@@ -158,8 +177,10 @@ def build_window(ctx: FaabContext, facts: WindowFacts, *, name: str = "", player
         shift(SHIFT_SURPLUS_ROOM, "Surplus room")
     elif facts.need == STRONG and facts.cls != IMMEDIATE_STARTER:
         shift(SHIFT_STRONG_ROOM, "Strong room")
-    if facts.cls == IMMEDIATE_STARTER:
-        shift(SHIFT_IMMEDIATE_STARTER, "Immediate Starter")
+    if facts.cls == IMMEDIATE_STARTER and facts.gain_per_week >= STARTER_PREMIUM_MIN_GAIN:
+        shift(SHIFT_IMMEDIATE_STARTER, f"Immediate Starter (+{facts.gain_per_week:.1f}/wk)")
+    if facts.broad_conviction:
+        shift(SHIFT_BROAD_CONVICTION, "every board recommends him")
     if facts.scarcity == VERY_SCARCE:
         shift(SHIFT_VERY_SCARCE, "Very Scarce position")
     elif facts.scarcity == SCARCE:
@@ -167,10 +188,12 @@ def build_window(ctx: FaabContext, facts: WindowFacts, *, name: str = "", player
     elif facts.scarcity == ABUNDANT:
         shift(SHIFT_ABUNDANT, "Abundant position")
     # An unprojected player has no measurable substitutes; that is not
-    # uniqueness and must never raise a bid.
-    if facts.alternatives == UNIQUE and facts.projected:
+    # uniqueness and must never raise a bid. Neither is being the best player
+    # on an Abundant wire: that market is Abundant BECAUSE of him, and
+    # paying twice for one fact (once up, once down) nets to noise.
+    if facts.alternatives == UNIQUE and facts.projected and facts.scarcity != ABUNDANT:
         shift(SHIFT_UNIQUE, "Unique Opportunity")
-    elif facts.alternatives == FEW and facts.projected:
+    elif facts.alternatives == FEW and facts.projected and facts.scarcity != ABUNDANT:
         shift(SHIFT_FEW, "Few Alternatives")
     elif facts.alternatives == SOME:
         shift(SHIFT_SOME, "Some Alternatives")
@@ -179,10 +202,19 @@ def build_window(ctx: FaabContext, facts: WindowFacts, *, name: str = "", player
     if facts.cls in SPECULATIVE_CLASSES:
         shift(SHIFT_SPECULATIVE, "speculative add")
     weeks_left = ctx.weeks_to_playoffs
-    if weeks_left is not None and weeks_left <= LATE_SEASON_WEEKS_LEFT and facts.strength != PRIORITY_ADD:
+    # Only the speculative end is cut late: a budget that expires unspent is
+    # worth nothing, so a real add late in the year is not the thing to save on.
+    if weeks_left is not None and weeks_left <= LATE_SEASON_WEEKS_LEFT and facts.cls in SPECULATIVE_CLASSES:
         shift(SHIFT_LATE_SEASON, f"{weeks_left} weeks to the playoffs")
+    if mult < MIN_TOTAL_MULTIPLIER:
+        reasons.append(f"floored at ×{MIN_TOTAL_MULTIPLIER:g} of the base band")
+        mult = MIN_TOTAL_MULTIPLIER
 
     low_pct, high_pct = low_pct * mult, high_pct * mult
+    # The pre-widening pair survives the split: the recommendation is placed
+    # inside THAT band, so disagreement widens what is reasonable without
+    # making the bid larger.
+    settled = (low_pct, high_pct)
     if facts.disagreement:
         low_pct, high_pct = low_pct * DISAGREEMENT_LOW, high_pct * DISAGREEMENT_HIGH
         reasons.append(f"sources disagree: window widened (low ×{DISAGREEMENT_LOW:g}, high ×{DISAGREEMENT_HIGH:g})")
@@ -195,26 +227,37 @@ def build_window(ctx: FaabContext, facts: WindowFacts, *, name: str = "", player
     reasons.extend(posture_reasons)
     cap_pct = NON_PRIORITY_MAX_PCT
     if posture == PRESERVE:
-        cap_pct = PRESERVE_MAX_PCT
+        budget = ctx.budget or remaining
+        cap_pct = 100 * max(1, round(budget * PRESERVE_MAX_PCT_OF_BUDGET / 100)) / remaining
     elif posture == PRIORITY_SPEND:
-        high_pct = max(high_pct, PRIORITY_MIN_HIGH_PCT)
         cap_pct = PRIORITY_SPEND_MAX_PCT_OF_REMAINING
-    high_pct = min(high_pct, cap_pct)
-    low_pct = min(low_pct, high_pct)
 
-    low = max(1, math.floor(remaining * low_pct / 100))
-    high = max(low, math.ceil(remaining * high_pct / 100))
-    low, high = min(low, remaining), min(high, remaining)
+    def dollars(band: tuple[float, float]) -> tuple[int, int]:
+        lo_pct, hi_pct = band
+        if posture == PRIORITY_SPEND:
+            hi_pct = max(hi_pct, PRIORITY_MIN_HIGH_PCT)
+        hi_pct = min(hi_pct, cap_pct)
+        lo_pct = min(lo_pct, hi_pct)
+        lo = min(max(1, math.floor(remaining * lo_pct / 100)), remaining)
+        return lo, min(max(lo, math.ceil(remaining * hi_pct / 100)), remaining)
 
-    if facts.need == CRITICAL_NEED or facts.cls == IMMEDIATE_STARTER:
+    low, high = dollars((low_pct, high_pct))
+
+    if facts.need == CRITICAL_NEED or (facts.cls == IMMEDIATE_STARTER and facts.gain_per_week >= MAJOR_GAIN):
         point = POINT_TOP
-    elif facts.need == WEAK:
+    elif facts.need == WEAK or facts.cls == IMMEDIATE_STARTER:
         point = POINT_WEAK
     elif facts.cls in SPECULATIVE_CLASSES:
         point = POINT_LUXURY
     else:
         point = POINT_NEUTRAL
-    recommended = max(low, min(high, round(low + point * (high - low))))
+    if posture == PRESERVE:
+        # Preserve is a decision not to chase; the point must not then sit at
+        # the top of the window because the need label is urgent.
+        point = min(point, POINT_NEUTRAL)
+    settled_low, settled_high = dollars(settled)
+    recommended = round(settled_low + point * (settled_high - settled_low))
+    recommended = max(low, min(high, recommended))
     return FaabWindow(low, high, recommended, posture, reasons, point)
 
 
@@ -249,4 +292,10 @@ def advice_from_window(ctx: FaabContext, window: FaabWindow, *, player_id: str, 
         anchor_text=_anchor_text(ctx.league_bids), notes=[], name=name, tier=tier,
     )
     advice.window_low, advice.window_high, advice.window_reasons = window.low, window.high, list(window.reasons)
+    contested = [b for b in ctx.league_bids if b > 0]
+    if len(contested) >= ANCHOR_MIN_BIDS and max(contested) > 0 and window.recommended > max(contested) * ANCHOR_OVERSHOOT_RATIO:
+        advice.notes.append(
+            f"${window.recommended} is more than {ANCHOR_OVERSHOOT_RATIO:g}x the largest winning bid this league has paid "
+            f"(${max(contested)}) — not a cap, but check it is what you meant"
+        )
     return advice

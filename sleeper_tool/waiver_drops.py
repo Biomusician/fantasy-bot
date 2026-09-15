@@ -16,6 +16,12 @@ Never offered as a drop (each is a documented protection, not a score):
   - a dynasty developmental player (roster_clog's definition)
   - an injured player the league has an open IR slot for — the move is IR,
     not a drop
+A player whose projection is missing BECAUSE he is unavailable (Out, IR,
+PUP, NA, suspended) sorts LAST rather than first: the blank is a data gap,
+not a football fact, and "cut the top-12 back whose feed went blank" is
+exactly the advice a projection-ordered board would give. He is still
+droppable — a roster with nothing else to cut has to cut someone — but the
+claim that pairs him says what the blank means.
 
 Everyone else is ordered cheapest-to-drop first by, in order:
   1. ROS starter calibre — FantasyPros ROS positional rank inside this
@@ -60,6 +66,7 @@ class DropOption:
     ros_pos_rank: int | None
     ros_starter_calibre: bool
     reasons: list[str] = field(default_factory=list)  # why he is cheap (or not) to drop, in order
+    status_caution: str | None = None  # his projection is missing because Sleeper says he is unavailable
 
     @property
     def is_dead_spot(self) -> bool:
@@ -79,6 +86,13 @@ class DropBoard:
 
     def option_for(self, player_id: str) -> DropOption | None:
         return next((o for o in self.options if o.entry.player_id == player_id), None)
+
+
+def _unavailable_status(entry: RosterEntry) -> str | None:
+    """The Sleeper designation that explains a missing projection, if any."""
+    if entry.injury_status:
+        return entry.injury_status
+    return entry.status if entry.status not in (None, "Active") else None
 
 
 def startable_depth(roster: ValuedRoster, num_teams: int) -> dict[str, int]:
@@ -101,13 +115,15 @@ def build_drop_board(
     trade_piece_ids: Collection[str] = (),
     current_week: int | None = None,
     open_spots: int = 0,
+    reserve_slots: int = 0,
 ) -> DropBoard:
+    """`reserve_slots` is the league's IR capacity — Sleeper reports it as
+    `settings.reserve_slots`, never as an IR entry in roster_positions."""
     per_week = games_remaining(current_week)
     currency = value_currency(my_roster)
     depth = startable_depth(my_roster, num_teams)
     starters = set(lineup.starter_ids)
-    ir_slots = sum(1 for s in my_roster.fmt.roster_positions if s == "IR")
-    open_ir = max(0, ir_slots - sum(1 for e in my_roster.entries if e.is_reserve))
+    open_ir = max(0, reserve_slots - sum(1 for e in my_roster.entries if e.is_reserve))
     week_starters = set(week_lineup.starter_ids) if week_lineup is not None else set()
     trade_pieces = set(trade_piece_ids)
 
@@ -153,15 +169,20 @@ def build_drop_board(
         elif pw is not None:
             reasons.append(f"{pw:.1f}/wk" + (", and another bench player covers his position as well" if others else ""))
         else:
-            status = e.injury_status or (e.status if e.status not in (None, "Active") else None)
+            status = _unavailable_status(e)
             reasons.append(
                 f"no projection in this league's sources (Sleeper: {status}) — confirm he isn't returning soon"
                 if status else "no projection in this league's sources"
             )
-        options.append(DropOption(e, pw, round(cover, 2), rank, calibre, reasons))
+        caution = (
+            f"no projection because Sleeper has him {_unavailable_status(e)} — confirm he isn't returning before you cut him"
+            if pw is None and _unavailable_status(e) else None
+        )
+        options.append(DropOption(e, pw, round(cover, 2), rank, calibre, reasons, caution))
 
     options.sort(key=lambda o: (
         o.ros_starter_calibre,
+        o.status_caution is not None,  # a blank projection an injury explains is the LAST thing to cut
         o.cover_value >= MATERIAL_COVER_POINTS,
         o.weekly_projection if o.weekly_projection is not None else -1.0,
         -(o.ros_pos_rank or 10_000),

@@ -537,6 +537,18 @@ def dependency_line(claim) -> str:
     return claim.dependency
 
 
+def budget_facts(claim, center) -> list[str]:
+    """What the league's own budgets say about a recommended bid: how many
+    managers still hold more than it, and what claims have actually cost
+    here this season. Facts about money, never a forecast of a bid."""
+    if claim.window is None or center.faab_context is None:
+        return []
+    from sleeper_tool.faab_strategy import _anchor_text
+    from sleeper_tool.faab_window import outbid_text
+
+    return [t for t in (outbid_text(center.faab_context, claim.window.recommended), _anchor_text(center.faab_context.league_bids)) if t]
+
+
 def bid_line(claim, center) -> str:
     """The money (or priority) line for one claim, in the league's own mode."""
     from sleeper_tool.waiver_plan import PRIORITY_MODE
@@ -565,6 +577,7 @@ class ClaimView:
     why: list[str]
     risks: list[str]
     notes: list[str]
+    budget: list[str] = field(default_factory=list)
     backups: list[str] = field(default_factory=list)  # "Devaughn Vele — $1–3, recommend $1"
 
 
@@ -586,6 +599,7 @@ def claim_view(claim, center, *, backups=()) -> ClaimView:
         why=call.why[:MAX_CLAIM_WHY],
         risks=call.risks[:MAX_CLAIM_RISK],
         notes=list(claim.notes),
+        budget=budget_facts(claim, center),
         backups=[f"{b.call.entry.name} — {bid_line(b, center)}" for b in backups],
     )
 
