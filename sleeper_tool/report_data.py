@@ -90,6 +90,7 @@ from sleeper_tool.trade_engine import generate_trade_proposals, identify_drop_ca
 from sleeper_tool.trade_opportunity_cost import MAJOR_LINEUP_COST, TradeEconomics, analyze_trade
 from sleeper_tool.trade_rating import VERY_LOW_ACCEPTANCE
 from sleeper_tool.trade_types import DropCandidate, TradeProposal
+from sleeper_tool.sleeper_positions import fantasy_position
 from sleeper_tool.valuation import LeagueFormat, ValuationEngine, games_remaining, weekly_projection
 from sleeper_tool.waiver_engine import INSURANCE, MUST_ADD, STRONG_ADD, TimeSensitiveNote, WaiverTarget, get_rostered_player_ids, get_time_sensitive_notes, get_waiver_targets
 from sleeper_tool.watchlist import Watchlist, load_watchlist
@@ -1341,7 +1342,7 @@ def _load_usage_layer(
     # anyone active at a fantasy position — a few thousand, not 12k.
     only_ids.update(
         pid for pid, p in all_players.items()
-        if (p.get("position") in FREE_AGENT_POSITIONS) and p.get("team") and p.get("status") in (None, "Active")
+        if (fantasy_position(p) in FREE_AGENT_POSITIONS) and p.get("team") and p.get("status") in (None, "Active")
     )
     crosswalk, xreport = build_crosswalk(all_players, ff_rows=ff_rows, nfl_rows=nfl_rows, only_ids=only_ids)
     return usage, crosswalk, None, f"Player id crosswalk: {xreport.describe()}"

@@ -34,7 +34,8 @@ def test_pick_tiers_span_early_to_late_across_a_league():
 def test_superflex_slot_is_qb_demand():
     fmt = derive_league_format({"scoring_settings": {}, "roster_positions": ["QB", "RB", "WR", "TE", "FLEX", "SUPER_FLEX", "BN"]})
     assert fmt.starter_slots["QB"] == pytest.approx(2.0)
-    assert fmt.starter_slots["TE"] == pytest.approx(1 + 1 / 3)
+    # A FLEX slot is mostly a fourth WR and almost never a third TE.
+    assert fmt.starter_slots["TE"] == pytest.approx(1.05)
 
 
 @pytest.fixture(scope="module")

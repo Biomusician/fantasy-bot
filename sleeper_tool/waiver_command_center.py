@@ -136,7 +136,14 @@ def build_command_center(
     open_spots: int = 0,
 ) -> WaiverCommandCenter:
     num_teams = len([r for r in rosters.values()]) or 1
-    week_lineup = optimize_lineup(roster, nfl_week=claim_week) if claim_week is not None else None
+    # The claim-week lineup is a THIS-WEEK lineup, so a player Sleeper has
+    # ruled Out does not fill a slot in it. Leaving him in is how a FLEX the
+    # roster cannot actually field reads as "already covered", which hides
+    # the very claim the waiver run exists to find.
+    week_lineup = (
+        optimize_lineup(roster, nfl_week=claim_week, exclude_game_day_out=True)
+        if claim_week is not None else None
+    )
     skill_fas = [fa for fa in free_agents if fa.position in SKILL]
     needs = assess_roster_needs(
         roster, lineup=lineup, lineups=lineups, market=market, free_agents=skill_fas,

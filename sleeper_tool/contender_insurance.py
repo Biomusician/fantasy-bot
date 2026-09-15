@@ -46,6 +46,7 @@ from sleeper_tool.lineup_optimizer import (
     unavailability_reason,
 )
 from sleeper_tool.roster_analysis import SKILL_POSITIONS, RosterEntry, ValuedRoster, player_name
+from sleeper_tool.sleeper_positions import fantasy_position
 from sleeper_tool.storage import Storage
 from sleeper_tool.team_status import CONTENDER
 from sleeper_tool.trade_engine import identify_needs
@@ -102,16 +103,17 @@ def free_agent_candidates(
     wanted = set(positions)
     pool: list[RosterEntry] = []
     for pid, pdata in storage.get_all_players().items():
-        if pid in rostered or pdata.get("position") not in wanted or not pdata.get("team"):
+        position = fantasy_position(pdata)
+        if pid in rostered or position not in wanted or not pdata.get("team"):
             continue
         if pdata.get("status") not in (None, "Active") or pdata.get("injury_status") in LONG_TERM_INJURY_STATUSES:
             continue
         name = player_name(pdata)
-        value = engine.value_player(name, roster.fmt, pdata.get("position"))
+        value = engine.value_player(name, roster.fmt, position)
         if value.proj_points is None and (require_projection or value.dynasty_value is None):
             continue
         entry = RosterEntry(
-            player_id=pid, name=name, position=pdata.get("position"), team=pdata.get("team"), age=pdata.get("age"),
+            player_id=pid, name=name, position=position, team=pdata.get("team"), age=pdata.get("age"),
             years_exp=pdata.get("years_exp"), injury_status=pdata.get("injury_status"), status=pdata.get("status"),
             is_starter=False, is_taxi=False, is_reserve=False, value=value,
         )

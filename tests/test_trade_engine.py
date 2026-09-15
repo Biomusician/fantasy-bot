@@ -406,16 +406,20 @@ def test_derive_league_format_distributes_flex_and_superflex_demand():
     # spots is typical). Each FLEX slot should add real, if approximate,
     # demand to RB/WR/TE; each SUPER_FLEX slot is QB demand (nobody starts
     # a TE there when a QB is available).
-    from sleeper_tool.valuation import derive_league_format
+    from sleeper_tool.valuation import FLEX_DEMAND_SHARE, derive_league_format
 
     fmt = derive_league_format({
         "scoring_settings": {},
         "roster_positions": ["QB", "RB", "WR", "TE", "FLEX", "SUPER_FLEX", "BN"],
     })
     assert fmt.starter_slots["QB"] == pytest.approx(2.0)
-    assert fmt.starter_slots["RB"] == pytest.approx(1 + 1 / 3)
-    assert fmt.starter_slots["WR"] == pytest.approx(1 + 1 / 3)
-    assert fmt.starter_slots["TE"] == pytest.approx(1 + 1 / 3)
+    # The split is weighted, not even: measured against these leagues' own
+    # optimized lineups, FLEX slots fill RB 35% / WR 57% / TE 6%.
+    assert fmt.starter_slots["RB"] == pytest.approx(1.40)
+    assert fmt.starter_slots["WR"] == pytest.approx(1.55)
+    assert fmt.starter_slots["TE"] == pytest.approx(1.05)
+    assert sum(FLEX_DEMAND_SHARE.values()) == pytest.approx(1.0)
+    assert FLEX_DEMAND_SHARE["WR"] > FLEX_DEMAND_SHARE["RB"] > FLEX_DEMAND_SHARE["TE"]
 
 
 # -- identify_drop_candidates: proactive roster-cleanup recommendations -----

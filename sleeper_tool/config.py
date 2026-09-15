@@ -82,7 +82,7 @@ LEAGUES: list[LeagueInfo] = [
         notes=(
             "League of Record keeper format: 1 franchise player (auto-kept) + "
             "3 lottery players (no shared position w/ franchise; 2 of 3 randomly kept). "
-            "0.5 PPR, 6pt pass TD, 40+yd TD bonus (+2), no K, 2 IR, FAAB, "
+            "Full PPR, 6pt pass TD, 40+yd TD bonus (+2), no K, 2 IR, FAAB, "
             "trade deadline wk 11, playoffs wk 15-17 (6 teams)."
         ),
     ),

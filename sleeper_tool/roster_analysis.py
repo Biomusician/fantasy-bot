@@ -8,6 +8,7 @@ import logging
 from dataclasses import dataclass
 
 from sleeper_tool.config import LeagueInfo
+from sleeper_tool.sleeper_positions import fantasy_position
 from sleeper_tool.storage import Storage
 from sleeper_tool.valuation import LeagueFormat, PlayerValue, ValuationEngine, derive_league_format
 
@@ -104,12 +105,16 @@ def build_valued_roster(
             skipped_count += 1
             continue
         name = player_name(pdata)
-        value = engine.value_player(name, fmt, pdata.get("position"))
+        # Sleeper's `position` is the primary NFL listing, which is not always
+        # a fantasy one (Travis Hunter is "DB"); the slot he can be started
+        # in is the one every downstream depth calculation means.
+        position = fantasy_position(pdata) or pdata.get("position")
+        value = engine.value_player(name, fmt, position)
         entries.append(
             RosterEntry(
                 player_id=pid,
                 name=name,
-                position=pdata.get("position"),
+                position=position,
                 team=pdata.get("team"),
                 age=pdata.get("age"),
                 years_exp=pdata.get("years_exp"),

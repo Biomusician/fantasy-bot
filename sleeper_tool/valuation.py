@@ -119,6 +119,12 @@ class LeagueFormat:
 
 CORE_SKILL_POSITIONS = ("QB", "RB", "WR", "TE")
 
+# How a FLEX slot's starter demand actually lands, measured against these
+# leagues' own optimized lineups rather than assumed from slot eligibility.
+# Rounded off the observed RB 35 / WR 57 / TE 6 so the shares stay a stated
+# approximation and sum to 1.
+FLEX_DEMAND_SHARE = {"RB": 0.40, "WR": 0.55, "TE": 0.05}
+
 
 def derive_league_format(league_data: dict) -> LeagueFormat:
     # `or {}`/`or []`, not `.get(key, default)` — Sleeper can return the key
@@ -132,18 +138,22 @@ def derive_league_format(league_data: dict) -> LeagueFormat:
     }
     # FLEX/SUPER_FLEX slots are real starter demand too — leaving them out
     # entirely (as if they needed zero players) badly undercounts depth
-    # need in the median real league, which runs 2-3 FLEX spots. Distribute
-    # each FLEX slot's demand evenly across the positions eligible to fill
-    # it (RB/WR/TE for FLEX) rather than attributing it to none of them —
-    # still an approximation (real demand depends on which position actually
-    # gets started there most weeks), but a floor closer to reality than
-    # counting it as zero. A SUPER_FLEX slot is QB demand: nobody starts a
-    # TE there when a QB is available, and splitting it four ways made a
-    # third QB in Superflex read as "buried" surplus.
+    # need in the median real league, which runs 2-3 FLEX spots. A
+    # SUPER_FLEX slot is QB demand: nobody starts a TE there when a QB is
+    # available, and splitting it four ways made a third QB in Superflex
+    # read as "buried" surplus.
+    #
+    # FLEX demand is NOT split evenly. Measured across these leagues' own
+    # optimized lineups (2026-09-15), flex slots are filled RB 35% / WR 57%
+    # / TE 6%: nobody flexes a third TE when a fourth WR is available. An
+    # even third each made TE depth read about twice as deep as the league
+    # really is (Disco: 28 "startable" TEs against 17 actually started) and
+    # WR too shallow (40 against 53), which is how a TE37 became a reason
+    # TO add and a WR51 became a cheap drop.
     flex_count = roster_positions.count("FLEX")
     if flex_count:
-        for pos in ("RB", "WR", "TE"):
-            starter_slots[pos] = starter_slots.get(pos, 0.0) + flex_count / 3
+        for pos, share in FLEX_DEMAND_SHARE.items():
+            starter_slots[pos] = starter_slots.get(pos, 0.0) + flex_count * share
     superflex_count = roster_positions.count("SUPER_FLEX")
     if superflex_count:
         starter_slots["QB"] = starter_slots.get("QB", 0.0) + superflex_count

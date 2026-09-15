@@ -16,14 +16,15 @@ from dataclasses import dataclass, field
 from typing import Sequence
 
 from sleeper_tool.name_matching import normalize_name
-
-FANTASY_POSITIONS = ("QB", "RB", "WR", "TE", "K", "DEF")
+from sleeper_tool.sleeper_positions import (
+    FANTASY_POSITIONS,
+    POSITION_ALIASES,
+    fantasy_positions as _fantasy_positions,
+    normalize_position,
+)
 
 # Sources disagree on a handful of team codes; Sleeper uses the right-hand side.
 TEAM_CODE_ALIASES = {"JAC": "JAX", "LA": "LAR", "WSH": "WAS"}
-
-# Sources spell defense and kicker positions several ways.
-POSITION_ALIASES = {"DST": "DEF", "D/ST": "DEF", "PK": "K"}
 
 # Full team name -> Sleeper team code. Sleeper's DEF player ids are the codes.
 TEAM_FULL_NAMES = {
@@ -123,15 +124,6 @@ def normalize_team(code: str | None) -> str | None:
     return TEAM_CODE_ALIASES.get(cleaned, cleaned)
 
 
-def normalize_position(position: str | None) -> str | None:
-    if not position:
-        return None
-    cleaned = position.strip().upper()
-    if not cleaned:
-        return None
-    return POSITION_ALIASES.get(cleaned, cleaned)
-
-
 def _sleeper_name(player: dict) -> str:
     # Same rule as roster_analysis.player_name; not imported from there so the
     # rankings package stays free of the analysis layer's import graph.
@@ -148,7 +140,7 @@ def build_sleeper_name_index(all_players: dict[str, dict]) -> dict[str, list[str
     """
     index: dict[str, list[str]] = {}
     for pid, player in all_players.items():
-        if player.get("position") not in FANTASY_POSITIONS:
+        if not _fantasy_positions(player):
             continue
         key = normalize_name(_sleeper_name(player))
         if key:
@@ -226,7 +218,7 @@ def match_source_names(
 
         position = normalize_position(row.position)
         if position:
-            by_position = [p for p in candidates if all_players[p].get("position") == position]
+            by_position = [p for p in candidates if position in _fantasy_positions(all_players[p])]
             # Sources occasionally list a gadget player at another position
             # (a QB-eligible TE, a WR/RB hybrid). An empty filter means the
             # label disagreed, not that the player doesn't exist — keep the

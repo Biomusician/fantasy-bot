@@ -142,3 +142,28 @@ def test_prebuilt_index_is_used():
     index = build_sleeper_name_index(PLAYERS)
     result = match_source_names([SourceName("Jalen Coker")], PLAYERS, index=index)
     assert result.matched == {0: "100"}
+
+
+def test_a_two_way_player_is_matchable_at_his_fantasy_position():
+    # Sleeper lists Travis Hunter as position "DB" with fantasy_positions
+    # ["DB", "WR"]. Filtering the index on the primary listing made him
+    # unmatchable by every ranking source.
+    players = {
+        "900": {
+            "full_name": "Travis Hunter", "first_name": "Travis", "last_name": "Hunter",
+            "position": "DB", "fantasy_positions": ["DB", "WR"], "team": "JAX", "status": "Active",
+        }
+    }
+    assert "900" in {pid for pids in build_sleeper_name_index(players).values() for pid in pids}
+    result = match_source_names([SourceName("Travis Hunter", "JAX", "WR")], players)
+    assert result.matched == {0: "900"}
+
+
+def test_a_defender_with_no_fantasy_eligibility_stays_out_of_the_index():
+    players = {
+        "901": {
+            "full_name": "Roquan Smith", "first_name": "Roquan", "last_name": "Smith",
+            "position": "LB", "fantasy_positions": ["LB"], "team": "BAL", "status": "Active",
+        }
+    }
+    assert build_sleeper_name_index(players) == {}

@@ -48,7 +48,7 @@ def test_startable_depth_is_teams_times_this_leagues_own_demand():
 def test_flex_demand_is_already_distributed_and_a_position_never_started_is_absent():
     r = roster([], positions=("QB", "RB", "WR", "WR", "TE", "FLEX", "FLEX", "BN"))
     depth = startable_depth(r, 12)
-    assert depth["RB"] == 20  # (1 + 2/3) x 12
+    assert depth["RB"] == 22  # (1 + 2 x 0.40) x 12, rounded up
     assert depth["QB"] == 12
     assert "K" not in depth
 
@@ -158,10 +158,10 @@ def test_a_worse_ros_rank_drops_first_when_everything_else_ties():
 
 def test_starter_calibre_is_the_ros_rank_inside_this_leagues_own_depth():
     depth = startable_depth(roster([], positions=POSITIONS), 10)
-    assert depth["WR"] == 34
-    inside = board_for([player("wr_x", "WR", 5.0)], ranks={"wr_x": 34})
+    assert depth["WR"] == 36  # (3 + 0.55) x 10, rounded up
+    inside = board_for([player("wr_x", "WR", 5.0)], ranks={"wr_x": 36})
     assert inside.option_for("wr_x").ros_starter_calibre is True
-    outside = board_for([player("wr_x", "WR", 5.0)], ranks={"wr_x": 35})
+    outside = board_for([player("wr_x", "WR", 5.0)], ranks={"wr_x": 37})
     assert outside.option_for("wr_x").ros_starter_calibre is False
     unranked = board_for([player("wr_x", "WR", 5.0)])
     assert unranked.option_for("wr_x").ros_starter_calibre is False
