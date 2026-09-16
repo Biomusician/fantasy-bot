@@ -9,7 +9,7 @@ Regenerate this file with `/handoff`.
 ## Status
 
 **Nothing from this tranche has been pushed.** `origin/main` is at `fdf6ad8` (the
-2026-09-04 night build, already published); the 17 commits of this tranche sit on local
+2026-09-04 night build, already published); the commits of this tranche sit on local
 `main` ahead of it, starting at `1f5f67f`. Pushing is Jonathan's decision; the 9am ET
 automated run publishes whatever `origin/main` holds, so treat the push as a deploy.
 
@@ -61,8 +61,9 @@ A six-persona red team ran against real data. The consequential ones, all fixed:
 2. **Every drop.** The board never offers an optimized starter, a claim-week starter, a
    trade piece, or (where the league's settings allow IR) an IR-eligible player. Confirm
    the four it does offer in each league read as your four most expendable.
-3. **Primo Veterans has 8 claims** — an 8-team keeper league with a deep wire. If that
-   reads as too many, `MAX_GROUPS` / `MAX_BACKUPS` in `waiver_plan.py` are the dials.
+3. **Claim counts run 4-7 a league** (Primo the highest: an 8-team keeper league with a
+   deep wire). If that reads as too many, the dials are `MAX_GROUPS`, `MAX_BACKUPS`,
+   `MAX_SPECULATIVE_GROUPS` and `MAX_SPECULATIVE_BACKUPS` in `waiver_plan.py`.
 4. **The Ballers CSV path.** `data/manual/` is gitignored except its README. With no CSV
    for the claim week that source is simply absent and the plan still builds; confirm
    that is what happens when you have not yet exported one.
