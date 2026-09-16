@@ -342,10 +342,15 @@ sleeper_tool/
   players_cache.py        Daily-refresh player dictionary cache
   config.py                League list + my Sleeper identity
   name_matching.py          Cross-source player name normalization
+  sleeper_positions.py       What position Sleeper means (primary listing vs fantasy eligibility)
   rankings/
     ktc.py                   KeepTradeCut dynasty value scraper
     fantasypros.py            FantasyPros ECR scraper
     rotoballer.py               RotoBaller projections scraper
+    rotoballer_waivers.py        RotoBaller's weekly waiver board (an acquisition-priority source)
+    fantasyfootballers.py         The manual Fantasy Footballers waiver CSV
+    boone.py                       Justin Boone weekly ranks (optional cross-check)
+    source_matching.py              Source rows -> Sleeper player ids
     ff_dynasty_pass.py           Manual CSV import (paywalled source)
     cache.py                      Generic fetch-date-aware ranking cache
   valuation.py           Format-aware per-player valuation engine
@@ -362,6 +367,7 @@ sleeper_tool/
   waiver_engine.py                   Trending-add waiver targeting + alerts
   waiver_sources.py                   Outside waiver boards, loaded and id-matched once a run
   waiver_evidence.py                   One row per candidate, each source in its own units
+  league_depth.py                       How many standard teams' worth of players are off the wire
   roster_needs.py                       Critical Need → Surplus per position group
   waiver_drops.py                        The drop board and its protections
   waiver_alternatives.py                  How many close substitutes a target has
@@ -453,9 +459,13 @@ is fast and deterministic.
   week being claimed for means that source is simply absent — the plan still
   builds from the other three. The gated FAAB and matchup columns are never
   read.
-- **RotoBaller's league-size tag is taken at face value.** A "12+ Team
-  Leagues" tag in a 10-team league demotes an upside add. Bench depth is not
-  part of that judgment yet.
+- **RotoBaller's league-size tag is read against rostered depth, not the
+  team count.** The tag describes how picked-over a wire is, and team count
+  only decides that if roster size is standard. `league_depth.py` divides
+  the league's rostered skill players by a 14-per-team baseline, so 8-team
+  Primo reads as 10.4 and 12-team Disco as 16.3. A tag this league satisfies
+  counts as a recommendation *for* it, at any row number; the 14-per-team
+  baseline is itself a rule of thumb, not a measurement of these leagues.
 - **Priority-waiver leagues are built but not live.** The analytical path
   (Use / Consider / Hold Priority) and the renderer exist and are used the
   moment a league reports a waiver order; Yahoo leagues are still blocked on
@@ -481,10 +491,12 @@ is fast and deterministic.
   a league's projection is interpolated between the two by its PPR value;
   half PPR is halfway, not standard (fixed 2026-09-03).
 - **Multi-FLEX formats** (3-4 FLEX spots) are approximated: each FLEX slot
-  spreads its demand evenly across RB/WR/TE, and a SUPER_FLEX slot counts
-  entirely as QB demand (nobody starts a TE there when a QB is available).
-  Real demand depends on which position actually gets started in the slot
-  most weeks, so this is a floor, not the total. `identify_needs` also
+  spreads its demand across RB/WR/TE by `FLEX_DEMAND_SHARE` (0.40/0.55/0.05,
+  rounded off the RB 35% / WR 57% / TE 6% these leagues' own optimized
+  lineups actually show), and a SUPER_FLEX slot counts entirely as QB demand
+  (nobody starts a TE there when a QB is available). The shares are one
+  measurement of nine leagues in one season, not a league-specific figure,
+  and they are not re-derived per league at runtime. `identify_needs` also
   applies a depth term — a position already carrying its slots plus two
   spare rosterable bodies is not a need, however weak its best player ranks
   against the other positions.
