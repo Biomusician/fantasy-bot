@@ -25,6 +25,8 @@ from sleeper_tool.waiver_plan import (
     MAX_BACKUPS,
     MAX_DO_NOT_SPEND,
     MAX_GROUPS,
+    MAX_SPECULATIVE_BACKUPS,
+    MAX_SPECULATIVE_GROUPS,
     ONLY_IF_DROP_AVAILABLE,
     PRIORITY_MODE,
     USE_PRIORITY,
@@ -203,15 +205,34 @@ def test_at_most_four_problem_groups_are_planned():
     assert [g.claims[0].call.player_id for g in plan.groups] == ["c0", "c1", "c2", "c3"]
 
 
-def test_only_one_speculative_group_a_week():
-    calls = [
-        call("s1", "upside", strength=SPECULATIVE_ADD, cls=UPSIDE_BENCH, drop=drop_option("d1")),
-        call("s2", "upside:other", strength=SPECULATIVE_ADD, cls=UPSIDE_BENCH, drop=drop_option("d2")),
+def speculative_calls():
+    return [
+        call("s1", "upside:RB", strength=SPECULATIVE_ADD, cls=UPSIDE_BENCH, drop=drop_option("d1")),
+        call("s2", "upside:WR", strength=SPECULATIVE_ADD, cls=UPSIDE_BENCH, drop=drop_option("d2")),
+        call("s3", "upside:TE", strength=SPECULATIVE_ADD, cls=UPSIDE_BENCH, drop=drop_option("d4")),
         call("real", "upgrade:x", drop=drop_option("d3")),
     ]
-    plan = build_plan(calls)
-    assert [g.claims[0].call.player_id for g in plan.groups] == ["s1", "real"]
-    assert [c.order for c in plan.claims()] == [1, 2]
+
+
+def test_a_speculative_add_needs_a_bench_spot_that_is_doing_nothing():
+    # A stash is a bench spot spent on a maybe. With nothing dead and nothing
+    # open there is no spot to spend, and a real upgrade still plans.
+    plan = build_plan(speculative_calls())
+    assert [g.claims[0].call.player_id for g in plan.groups] == ["real"]
+
+
+def test_speculative_groups_are_budgeted_by_the_dead_and_open_spots():
+    one = build_plan(speculative_calls(), dead_spots=1)
+    assert [g.claims[0].call.player_id for g in one.groups] == ["s1", "real"]
+
+    two = build_plan(speculative_calls(), dead_spots=1, open_spots=1)
+    assert [g.claims[0].call.player_id for g in two.groups] == ["s1", "s2", "real"]
+
+
+def test_a_roster_of_dead_weight_does_not_become_a_week_of_lottery_tickets():
+    plan = build_plan(speculative_calls(), dead_spots=9)
+    speculative = [g for g in plan.groups if g.claims[0].call.strength == SPECULATIVE_ADD]
+    assert len(speculative) == MAX_SPECULATIVE_GROUPS
 
 
 # -- bids -------------------------------------------------------------------------------------------
@@ -352,3 +373,16 @@ def test_a_claim_exposes_its_name_and_its_drop_entry():
     assert claim.name == "a"
     assert claim.drop.player_id == "d1"
     assert build_plan([]).top_claim is None
+
+
+def test_a_lottery_ticket_gets_one_substitute_not_a_three_deep_chain():
+    # A real upgrade is worth chasing through two fallbacks. A speculative
+    # stash is one bench spot on a maybe; the third name is a table where a
+    # decision should be.
+    spec = [call(f"s{i}", "upside:WR", strength=SPECULATIVE_ADD, cls=UPSIDE_BENCH, drop=drop_option(f"d{i}")) for i in range(4)]
+    plan = build_plan(spec, dead_spots=2)
+    assert len(plan.groups) == 1
+    assert len(plan.groups[0].claims) == 1 + MAX_SPECULATIVE_BACKUPS
+
+    real = [call(f"r{i}", "upgrade:x", drop=drop_option(f"e{i}")) for i in range(4)]
+    assert len(build_plan(real).groups[0].claims) == 1 + MAX_BACKUPS

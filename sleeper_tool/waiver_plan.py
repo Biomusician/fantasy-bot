@@ -65,7 +65,17 @@ HOLD_PRIORITY = "Hold Priority"
 
 MAX_GROUPS = 4
 MAX_BACKUPS = 2  # per group, after the first choice
-MAX_SPECULATIVE_GROUPS = 1  # at most one speculative-upside spot a week
+# A speculative add is a bench spot spent on a maybe, so the budget for
+# them is the bench spots that are doing nothing: a dead spot (no starter
+# calibre, no material cover) plus any genuinely open one. The ceiling
+# stops a roster full of dead weight from turning the whole week into
+# lottery tickets. Until the problem key included the position, every
+# speculative add collapsed into one group and this cap was never what
+# was binding.
+MAX_SPECULATIVE_GROUPS = 2
+# A lottery ticket does not get a three-deep fallback chain. One backup is
+# the substitute; the third name is a table where a decision should be.
+MAX_SPECULATIVE_BACKUPS = 1
 MAX_DO_NOT_SPEND = 5
 
 
@@ -131,6 +141,7 @@ def build_plan(
     *,
     mode: str = FAAB_MODE,
     open_spots: int = 0,
+    dead_spots: int = 0,
     remaining_budget: int | None = None,
     window_for: Callable[[AcquisitionCall], FaabWindow | None] = lambda c: None,
     choose_drop: Callable[[AcquisitionCall, set[str]], DropOption | None] | None = None,
@@ -139,7 +150,9 @@ def build_plan(
 ) -> WaiverPlan:
     """`calls` in acquisition order. `choose_drop(call, used_ids)` finds the
     next viable drop that isn't already used; `drop_ok(call, option)` checks
-    one specific pairing (a backup inheriting the first choice's drop)."""
+    one specific pairing (a backup inheriting the first choice's drop).
+    `dead_spots` is how many bench spots are doing nothing (DropBoard), which
+    with `open_spots` is the week's budget for speculative adds."""
     plan = WaiverPlan(mode=mode)
     claims = [c for c in calls if c.is_claim]
     by_key: dict[str, list[AcquisitionCall]] = {}
@@ -153,6 +166,7 @@ def build_plan(
     used_drops: dict[str, int] = {}  # drop player_id -> the claim order that first uses it
     order = 0
     speculative_groups = 0
+    speculative_budget = min(MAX_SPECULATIVE_GROUPS, max(0, dead_spots) + max(0, open_spots))
     spots = max(0, open_spots)
     for key in key_order:
         if len(plan.groups) >= MAX_GROUPS:
@@ -160,7 +174,7 @@ def build_plan(
         members = by_key[key]
         lead = members[0]
         if lead.strength == SPECULATIVE_ADD:
-            if speculative_groups >= MAX_SPECULATIVE_GROUPS:
+            if speculative_groups >= speculative_budget:
                 continue
             speculative_groups += 1
 
@@ -197,13 +211,14 @@ def build_plan(
         # it the descending bids walk straight down to the floor and the
         # fallbacks are priced at nothing — which is not a cheap claim, it is
         # a claim that loses to anyone who bids a dollar.
-        backups_wanted = min(MAX_BACKUPS, max(0, len(members) - 1))
+        max_backups = MAX_SPECULATIVE_BACKUPS if lead.strength == SPECULATIVE_ADD else MAX_BACKUPS
+        backups_wanted = min(max_backups, max(0, len(members) - 1))
         if first.window is not None and backups_wanted:
             headroom = _chain_floor(first.window, bid_min) + backups_wanted
             if first.window.recommended < headroom:
                 first.window.recommended = min(headroom, first.window.high)
         previous = first
-        for backup in members[1:1 + MAX_BACKUPS]:
+        for backup in members[1:1 + max_backups]:
             # A backup inherits the first choice's drop so that only one of
             # them can ever clear; a pairing the guardrail rejects for the
             # backup means he is not a real substitute for this claim.

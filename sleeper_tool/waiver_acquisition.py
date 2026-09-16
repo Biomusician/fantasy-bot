@@ -17,8 +17,13 @@ with the shared lineup optimizer (never a second lineup model):
        Likely FLEX/Depth Upgrade  enters the lineup for less, or becomes a
                                   credible best cover at his position
        Upside Bench Add           no lineup path now, but a waiver board
-                                  ranks him inside its first WAIVER_TOP
-       Speculative Stash          no lineup path, listed deeper
+                                  ranks him inside its first WAIVER_TOP, or
+                                  FantasyPros ROS / Boone rank him inside
+                                  this league's STARTABLE depth — a starter
+                                  in this format who is somehow still free
+       Speculative Stash          no lineup path: a board lists him deeper,
+                                  or a ROS/weekly rank puts him inside
+                                  rosterable depth only
   3. Who goes? The drop board's cheapest option that survives the
      opportunity-cost guardrail (below). No viable drop and no open spot
      makes the add a Pass, however good the player.
@@ -36,6 +41,16 @@ Opportunity-cost guardrail (each rejection is recorded, never silent):
     no starter calibre) — the explicit exception for stashes
   - a drop who would still start in either simulated lineup is never used
 
+Kickers and defenses are deliberately out of scope: `candidate_universe`
+evaluates QB/RB/WR/TE only. This module judges an add by what it does to
+the lineup and by where the sources place him in this league's positional
+depth, and neither input exists for K/DEF — no waiver board ranks them, no
+FantasyPros ROS positional rank is loaded for them, and the replacement
+market has no depth curve for a position whose weekly spread is mostly
+noise. The K/DST decision is owned end to end by the streaming planner
+(`streamer_planner.py`, which does cover K and DEF), so nothing here —
+including a Pass — should be read as a depth judgement about them.
+
 Nothing here averages sources or turns them into a score. The one ordering
 (`order_key`) is lexicographic over the labels, then lineup gain. Role
 labels stay context: the role heuristic is annotation-only until it is
@@ -46,7 +61,14 @@ from __future__ import annotations
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 
-from sleeper_tool.lineup_optimizer import LineupResult, SlotAssignment, optimize_lineup_after_moves, slot_eligibility, slot_label
+from sleeper_tool.lineup_optimizer import (
+    LineupResult,
+    SlotAssignment,
+    optimize_lineup_after_moves,
+    slot_eligibility,
+    slot_label,
+    starter_slots_for,
+)
 from sleeper_tool.replacement_value import ABUNDANT, NORMAL
 from sleeper_tool.roster_analysis import RosterEntry, ValuedRoster
 from sleeper_tool.roster_needs import CRITICAL_NEED, DEPTH_COVER_RATIO, NEED_ORDER, STRONG, SURPLUS, WEAK, PositionNeed, RosterNeeds, group_of_slot
@@ -56,6 +78,7 @@ from sleeper_tool.waiver_drops import MATERIAL_COVER_POINTS, DropBoard, DropOpti
 from sleeper_tool.waiver_evidence import (
     DEEPER_LEAGUES_ONLY,
     FANTASYPROS_HIGHER,
+    SUPERFLEX_ONLY,
     SUPPORT_AGREE,
     SUPPORT_BROAD,
     SUPPORT_ORDER,
@@ -179,7 +202,11 @@ def candidate_universe(
     projected free agents at each position, the rest of the waiver boards'
     listed players (inside WAIVER_LISTED), Sleeper's trending adds, then
     anyone else a board names. `expert_rank` is each player's best rank on
-    any waiver board; `free_agents` must already exclude rostered players."""
+    any waiver board; `free_agents` must already exclude rostered players.
+
+    `positions` defaults to the four this module can actually judge. K and
+    DEF are excluded on purpose (module docstring): there is no source rank
+    or depth curve for them here, and streamer_planner owns that decision."""
     wanted = set(positions)
     pool = [fa for fa in free_agents if fa.position in wanted]
     by_id = {fa.player_id: fa for fa in pool}
@@ -271,9 +298,47 @@ def _problem(cls: str, entry: RosterEntry, slot: str | None, displaced: SlotAssi
         return f"stream:{pos}", f"{pos} streamer", (pos,)
     if cls == FLEX_DEPTH:
         return f"depth:{pos}", f"{pos} depth", (pos,)
-    # Upside adds and deeper stashes compete for the same bench spot, so they
-    # share one key; the label names the better kind in the group's lead.
-    return "upside", ("Upside bench add" if cls == UPSIDE_BENCH else "Speculative stash"), (pos,)
+    # Upside adds and deeper stashes at the SAME position are substitutes for
+    # one another and share a key. Across positions they are not: a superflex
+    # QB stash and a WR stash solve different problems, and keying them
+    # together meant only one speculative add per league could ever clear —
+    # backups in a group inherit the lead's drop. How many such groups a week
+    # is worth is a plan decision (waiver_plan), not a key decision.
+    return f"upside:{pos}", ("Upside bench add" if cls == UPSIDE_BENCH else "Speculative stash"), (pos,)
+
+
+def _inside(rank: int | None, depth: int | None) -> bool:
+    return rank is not None and depth is not None and rank <= depth
+
+
+def _ros_rank(evidence: WaiverEvidence) -> tuple[str, int] | None:
+    """The better of the two season/weekly positional ranks, and which source
+    said it: (source, rank). These are never merged with a waiver board's
+    rank — they answer a different question — and never averaged with each
+    other; the pair is only compared with this league's own depth."""
+    ranked = [
+        (source, rank)
+        for source, rank in (("FantasyPros ROS", evidence.fp_ros_pos_rank), ("Boone", evidence.boone_pos_rank))
+        if rank is not None
+    ]
+    return min(ranked, key=lambda sr: (sr[1], sr[0])) if ranked else None
+
+
+def _no_path_reason(evidence: WaiverEvidence) -> str:
+    """Why an add with no lineup path and no support is a Pass, in the terms
+    the sources actually used. "No waiver board recommends him" is simply
+    false about a player a board ranks #38, or one FantasyPros has as the
+    WR60 — those are real facts that happen to fall short here."""
+    ros = _ros_rank(evidence)
+    if ros is not None:
+        source, rank = ros
+        return f"no path onto this lineup, and {source} {evidence.pos_label(rank)} is depth here rather than an upgrade"
+    if evidence.best_waiver_rank is not None:
+        return (
+            f"no path onto this lineup, and no waiver board has him inside its first {WAIVER_LISTED} "
+            f"(best #{evidence.best_waiver_rank})"
+        )
+    return "no path onto this lineup and no waiver board recommends him"
 
 
 def assess_candidate(entry: RosterEntry, evidence: WaiverEvidence, ctx: LeagueWaiverContext, *, open_spot_available: bool = False) -> AcquisitionCall:
@@ -294,6 +359,9 @@ def assess_candidate(entry: RosterEntry, evidence: WaiverEvidence, ctx: LeagueWa
     own_need = needs.for_position(pos)
     cover_best = _bench_cover(roster, ctx.lineup, pos, per_week)
     pw = evidence.weekly_projection
+    ros = _ros_rank(evidence)
+    ros_rank = ros[1] if ros is not None else None
+    ros_startable = _inside(ros_rank, evidence.startable_depth)
     cls: str | None
     if entered_slot is not None and structural_gain >= STARTER_MIN_GAIN - DROP_TOLERANCE:
         cls = IMMEDIATE_STARTER
@@ -309,6 +377,14 @@ def assess_candidate(entry: RosterEntry, evidence: WaiverEvidence, ctx: LeagueWa
     elif evidence.best_waiver_rank is not None and evidence.best_waiver_rank <= WAIVER_TOP:
         cls = UPSIDE_BENCH
     elif evidence.best_waiver_rank is not None and evidence.best_waiver_rank <= WAIVER_LISTED:
+        cls = SPECULATIVE_STASH
+    elif ros_startable:
+        # A weekly waiver board is one question ("who should I claim this
+        # week"); FantasyPros ROS and Boone answer another, and a player
+        # either of them ranks as a STARTER in this league's own format while
+        # he sits free is an add whatever the boards happen to be covering.
+        cls = UPSIDE_BENCH
+    elif _inside(ros_rank, evidence.rosterable_depth):
         cls = SPECULATIVE_STASH
     else:
         cls = None
@@ -334,7 +410,7 @@ def assess_candidate(entry: RosterEntry, evidence: WaiverEvidence, ctx: LeagueWa
         entry, ctx.free_agents, positions=positions, current_week=ctx.current_week, ros_pos_rank=ctx.ros_pos_rank,
     )
     if cls is None:
-        call.pass_reason = "no path onto this lineup and no waiver board recommends him"
+        call.pass_reason = _no_path_reason(evidence)
         return call
 
     # -- strength before the drop -----------------------------------------------------------------
@@ -364,9 +440,28 @@ def assess_candidate(entry: RosterEntry, evidence: WaiverEvidence, ctx: LeagueWa
         strength = _DEMOTE[strength]
         if strength == PASS:
             call.pass_reason = f"RotoBaller tags him for deeper leagues ({evidence.rotoballer_note}) and he has no path onto this lineup"
-    if FANTASYPROS_HIGHER in evidence.labels and cls in SPECULATIVE_CLASSES and strength != PASS:
+    # A row tagged for 2QB/Superflex is a recommendation about a FORMAT this
+    # league does not run, which is at least as disqualifying as a league-size
+    # tag: it is the board's backup quarterback, named for someone else.
+    if SUPERFLEX_ONLY in evidence.labels and cls in SPECULATIVE_CLASSES and strength != PASS:
+        strength = _DEMOTE[strength]
+        if strength == PASS:
+            call.pass_reason = (
+                f"RotoBaller tags him for Superflex/2QB leagues ({evidence.rotoballer_note}); "
+                "this league starts one quarterback and he has no path onto this lineup"
+            )
+    if FANTASYPROS_HIGHER in evidence.labels and cls in SPECULATIVE_CLASSES and strength != PASS and not ros_startable:
+        # The boring-known-quantity pass is right for a player the season
+        # ranks as roster depth. It is wrong for one they rank as a STARTER
+        # in this format — that player is the whole point of the depth rung
+        # above, and passing on him was how the best free-agent TE in the
+        # league stayed invisible.
         strength = PASS
-        call.pass_reason = "a known quantity with no path onto this lineup"
+        call.pass_reason = (
+            f"{ros[0]} {evidence.pos_label(ros_rank)} is roster depth in this league, not a starter, "
+            "and he has no path onto this lineup"
+            if ros is not None else "a known quantity with no path onto this lineup"
+        )
     if cls in SPECULATIVE_CLASSES and strength != PASS and evidence.scarcity == ABUNDANT and _single_starter_position(pos, roster):
         strength = PASS
         call.pass_reason = f"a bench {pos} in a league that starts one, with comparable {pos}s on waivers every week"
@@ -387,11 +482,16 @@ def assess_candidate(entry: RosterEntry, evidence: WaiverEvidence, ctx: LeagueWa
 
 
 def _single_starter_position(pos: str | None, roster: ValuedRoster) -> bool:
-    """QB in a 1QB league, TE anywhere without a TE-specific second slot:
-    positions where a stashed backup almost never plays."""
-    if pos == "QB":
-        return not roster.fmt.is_superflex and roster.fmt.roster_positions.count("QB") <= 1
-    return pos == "TE" and roster.fmt.roster_positions.count("TE") <= 1
+    """A position this league can only ever start one of — where a stashed
+    backup almost never plays.
+
+    Counted over the real slot list, not literal slot names: a FLEX is a
+    second TE slot every week someone wants to use it that way, and a
+    SUPER_FLEX is a second QB slot. Counting the token "TE" instead called a
+    two-FLEX league single-starter and passed on its best free-agent TE."""
+    if not pos:
+        return False
+    return sum(1 for slot in starter_slots_for(roster) if pos in slot_eligibility(slot)) <= 1
 
 
 def _is_real_cover(pw: float | None, cover_best: float, own_need: PositionNeed | None, pos: str | None, roster: ValuedRoster) -> bool:

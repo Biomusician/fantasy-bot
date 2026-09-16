@@ -219,6 +219,7 @@ def build_command_center(
 
     plan = build_plan(
         calls, mode=mode or FAAB_MODE, open_spots=open_spots,
+        dead_spots=sum(1 for o in drops.options if o.is_dead_spot),
         remaining_budget=faab_ctx.remaining if mode == FAAB_MODE else None,
         window_for=lambda c: copy.deepcopy(raw_windows.get(c.player_id)),
         choose_drop=lambda c, used: pick_drop(c, ctx, exclude_ids=used),
