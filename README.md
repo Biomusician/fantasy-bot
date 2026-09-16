@@ -472,7 +472,16 @@ is fast and deterministic.
   the Yahoo API access above, so no priority position is ever guessed.
 - **Kickers and defenses are streamed, not claimed.** The command center's
   candidate universe is QB/RB/WR/TE; K and DEF stay with the streamer planner
-  and the defensive-add block.
+  and the defensive-add block. Nothing there is a depth judgement about them:
+  no waiver board ranks them and no positional depth curve is built for them.
+- **Scarcity anchors on the worst starter league-wide, which inverts for WR
+  in a many-FLEX league.** Disco's four FLEX slots push 53 WRs into lineups,
+  so the anchor is the 53rd-best WR and the best free agent matches it — the
+  wire reads "Abundant" at a gap of 0.0%. Technically true, decision-useless:
+  that label then suppresses a WR FAAB shift, blocks the cover path to a
+  depth add, and disqualifies WR from contender insurance in the league where
+  insurance matters most. Fixing it means reworking `replacement_value`'s
+  anchor, which the trade engine also reads.
 
 - **KTC's TE-premium modeling** is three fixed tiers (+0.5/+1.0/+1.5 per
   TE reception) regardless of your league's exact PPR type — a
