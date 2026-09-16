@@ -188,6 +188,7 @@ def build_command_center(
     evidence: dict[str, WaiverEvidence] = {
         c.player_id: build_evidence(
             c, sources=sources, ppr=roster.fmt.ppr, num_teams=num_teams, effective_size=effective_size,
+            is_superflex=roster.fmt.is_superflex,
             startable=startable, current_week=current_week,
             scarcity=market.scarcity_of(c.position) if market is not None else None,
             role_label=(role_labels or {}).get(c.player_id), role_market=(role_market or {}).get(c.player_id),

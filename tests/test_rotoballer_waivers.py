@@ -59,6 +59,7 @@ def test_parses_combined_board_in_rank_order():
         "position": "WR",
         "league_size_note": "All Leagues",
         "min_league_size": None,
+        "superflex_only": False,
     }
     assert rows[1]["name"] == "Wan'Dale Robinson"
     assert rows[2]["name"] == "Devaughn Vele"  # plain text cell, no player link
@@ -75,6 +76,10 @@ def test_league_size_tags_and_positions():
     assert rows["Jordan Love"]["position"] == "QB"
     assert rows["Jacoby Brissett"]["league_size_note"] == "2QB Leagues"
     assert rows["Jacoby Brissett"]["min_league_size"] is None
+    # A format tag is not a size tag, and "states no size" is not "applies to
+    # every league" — in a 1QB league this row is not a recommendation at all.
+    assert rows["Jacoby Brissett"]["superflex_only"] is True
+    assert rows["Khalil Shakir"]["superflex_only"] is False
     assert rows["Baltimore Ravens"]["position"] == "DST"
     assert all(r["team"] is None for r in rows.values())
 

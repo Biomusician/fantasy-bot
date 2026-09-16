@@ -19,6 +19,7 @@ from sleeper_tool.waiver_evidence import (
     ROLE_SUPPORTS,
     SCARCE_POSITION,
     SPECIALISTS_HIGHER,
+    SUPERFLEX_ONLY,
     SUPPORT_AGREE,
     SUPPORT_BROAD,
     SUPPORT_NONE,
@@ -41,8 +42,11 @@ def ballers_row(rank, hosts=(None, None, None)):
     return BallersRow(name="t", team="KC", rank=rank, andy=hosts[0], jason=hosts[1], mike=hosts[2])
 
 
-def roto_row(rank, *, note=None, min_size=None):
-    return WaiverBoardRow(rank=rank, name="t", team="KC", position="WR", league_size_note=note, min_league_size=min_size)
+def roto_row(rank, *, note=None, min_size=None, superflex_only=False):
+    return WaiverBoardRow(
+        rank=rank, name="t", team="KC", position="WR", league_size_note=note, min_league_size=min_size,
+        superflex_only=superflex_only,
+    )
 
 
 def sources_with(*, fp=None, ballers=None, roto=None, boone=None):
@@ -58,10 +62,11 @@ def sources_with(*, fp=None, ballers=None, roto=None, boone=None):
     return src
 
 
-def ev(*, proj=170.0, num_teams=12, effective_size=None, present=ALL_SOURCES, entry=None, **kw):
+def ev(*, proj=170.0, num_teams=12, effective_size=None, is_superflex=False, present=ALL_SOURCES, entry=None, **kw):
     return build_evidence(
         entry if entry is not None else player(PID, "WR", proj),
         sources=sources_with(**kw), ppr=1.0, num_teams=num_teams, effective_size=effective_size,
+        is_superflex=is_superflex,
         startable=STARTABLE, current_week=WEEK, sources_present=present,
         scarcity=kw.pop("scarcity", None) if False else None,
     )
@@ -408,3 +413,26 @@ def test_pos_label_falls_back_to_a_dash():
     e = ev(ballers=ballers_row(3))
     assert e.pos_label(12) == "WR12"
     assert e.pos_label(None) == "—"
+
+
+# -- a format tag is not a size tag ----------------------------------------------------------
+
+
+def test_a_two_qb_tag_is_a_recommendation_in_superflex_and_a_warning_in_one_qb():
+    row = roto_row(76, note="2QB Leagues", superflex_only=True)
+
+    sf = ev(roto=row, is_superflex=True)
+    assert DEPTH_FIT in sf.labels and SUPERFLEX_ONLY not in sf.labels
+    assert any("RotoBaller #76" in line for line in sf.for_lines)
+
+    one_qb = ev(roto=row, is_superflex=False)
+    assert SUPERFLEX_ONLY in one_qb.labels and DEPTH_FIT not in one_qb.labels
+    assert any("this league starts one quarterback" in line for line in one_qb.risk_lines)
+
+
+def test_a_stated_size_wins_over_the_format_flag_when_the_board_gives_both():
+    both = ev(
+        roto=roto_row(40, note="14+ Team 2QB Leagues", min_size=14, superflex_only=True),
+        effective_size=9.1, is_superflex=True,
+    )
+    assert DEEPER_LEAGUES_ONLY in both.labels and SUPERFLEX_ONLY not in both.labels

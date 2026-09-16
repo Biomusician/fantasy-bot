@@ -75,6 +75,8 @@ _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.S | re.I)
 _H1_RE = re.compile(r"<h1[^>]*>(.*?)</h1>", re.S | re.I)
 _WEEK_RE = re.compile(r"\bWeek\s+(\d{1,2})\b", re.I)
 _MIN_SIZE_RE = re.compile(r"\b(\d{1,2})\+\s*Team", re.I)
+# "Add in 2QB Leagues" / "Superflex Leagues" states a FORMAT, not a size.
+_SUPERFLEX_RE = re.compile(r"\b(2\s*QB|Superflex|Super\s*Flex)\b", re.I)
 
 
 class RotoBallerWaiverFetchError(RuntimeError):
@@ -89,6 +91,7 @@ class WaiverBoardRow:
     position: str | None
     league_size_note: str | None  # verbatim short tag e.g. "12+ Team PPR Leagues", else None
     min_league_size: int | None  # 12 for "12+", None when not stated
+    superflex_only: bool = False  # tagged for 2QB/Superflex leagues only
 
 
 @dataclass
@@ -130,14 +133,17 @@ def _header_index(header: list[str]) -> dict[str, int] | None:
     return {"rank": rank, "name": name, "position": position, "move": find("baller move", "move")}
 
 
-def _league_size(move: str | None) -> tuple[str | None, int | None]:
-    """"Add in 12+ Team PPR Leagues" -> ("12+ Team PPR Leagues", 12).
-    "Add in All Leagues" keeps its note but states no minimum size."""
+def _league_size(move: str | None) -> tuple[str | None, int | None, bool]:
+    """"Add in 12+ Team PPR Leagues" -> ("12+ Team PPR Leagues", 12, False).
+    "Add in All Leagues" keeps its note but states no minimum size. A "2QB
+    Leagues" tag states a FORMAT instead of a size, and stating no size is
+    not the same as applying to every league: without the flag those rows
+    read as universal recommendations in a 1QB league."""
     if not move:
-        return None, None
+        return None, None, False
     note = re.sub(r"^add\s+in\s+", "", move, flags=re.I).strip() or None
     match = _MIN_SIZE_RE.search(move)
-    return note, int(match.group(1)) if match else None
+    return note, int(match.group(1)) if match else None, bool(_SUPERFLEX_RE.search(move))
 
 
 def _parse_week(raw: str) -> int | None:
@@ -185,7 +191,7 @@ def parse_waiver_board(raw: str, *, url: str | None = None) -> dict:
                 i = columns[key]
                 return (cells[i] or None) if i is not None and i < len(cells) else None
 
-            note, min_size = _league_size(col("move"))
+            note, min_size, superflex_only = _league_size(col("move"))
             position = col("position")
             rows.append(
                 WaiverBoardRow(
@@ -195,6 +201,7 @@ def parse_waiver_board(raw: str, *, url: str | None = None) -> dict:
                     position=position.upper() if position else None,
                     league_size_note=note,
                     min_league_size=min_size,
+                    superflex_only=superflex_only,
                 )
             )
         break
@@ -216,12 +223,21 @@ def find_latest_article_url(index_html: str) -> str | None:
     return best_url
 
 
+def _with_format_flag(row: dict) -> dict:
+    """A board cached before the format tag was parsed still holds the note
+    it was parsed from, so the flag is re-derived rather than waiting a week
+    for the next fetch to correct itself."""
+    if "superflex_only" in row:
+        return row
+    return {**row, "superflex_only": bool(_SUPERFLEX_RE.search(row.get("league_size_note") or ""))}
+
+
 def board_from_snapshot(snapshot) -> WaiverBoard | None:
     if snapshot is None or not isinstance(snapshot.payload, dict):
         return None
     payload = snapshot.payload
     try:
-        rows = [WaiverBoardRow(**row) for row in payload.get("rows") or []]
+        rows = [WaiverBoardRow(**_with_format_flag(row)) for row in payload.get("rows") or []]
     except TypeError:
         logger.warning("RotoBaller waiver cache has an unexpected row shape; ignoring it")
         return None

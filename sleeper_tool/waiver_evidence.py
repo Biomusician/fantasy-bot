@@ -60,6 +60,7 @@ BALLERS_SPLIT = "Ballers Split"
 SPECIALISTS_HIGHER = "Waiver Specialists Higher"
 FANTASYPROS_HIGHER = "FantasyPros Higher"
 DEEPER_LEAGUES_ONLY = "Deeper Leagues Only"
+SUPERFLEX_ONLY = "Superflex Leagues Only"
 DEPTH_FIT = "Recommended At This Depth"
 ROLE_SUPPORTS = "Role Supports Add"
 ROLE_LAGS = "Role Lags Hype"
@@ -96,6 +97,7 @@ class WaiverEvidence:
     rotoballer_rank: int | None = None
     rotoballer_note: str | None = None
     rotoballer_min_league_size: int | None = None
+    rotoballer_superflex_only: bool = False  # the board tags him for 2QB/Superflex leagues
     boone_pos_rank: int | None = None
     role_label: str | None = None
     role_market: str | None = None
@@ -142,6 +144,7 @@ def build_evidence(
     ppr: float,
     num_teams: int,
     effective_size: float | None = None,
+    is_superflex: bool = False,
     startable: dict[str, int],
     current_week: int | None = None,
     scarcity: str | None = None,
@@ -171,6 +174,7 @@ def build_evidence(
     rb = sources.rotoballer_by_id.get(pid)
     if rb is not None:
         ev.rotoballer_rank, ev.rotoballer_note, ev.rotoballer_min_league_size = rb.rank, rb.league_size_note, rb.min_league_size
+        ev.rotoballer_superflex_only = bool(getattr(rb, "superflex_only", False))
     boone = sources.boone_for(ppr)
     if boone:
         ev.boone_pos_rank = boone.get(pid)
@@ -178,7 +182,10 @@ def build_evidence(
     ev.startable_depth = startable.get(pos or "")
     ev.rosterable_depth = rosterable_depth(ev.startable_depth) if ev.startable_depth else None
     ev.effective_league_size = float(num_teams) if effective_size is None else effective_size
-    _label(ev, num_teams=num_teams, effective_size=ev.effective_league_size, sources_present=set(sources_present))
+    _label(
+        ev, num_teams=num_teams, effective_size=ev.effective_league_size, is_superflex=is_superflex,
+        sources_present=set(sources_present),
+    )
     return ev
 
 
@@ -202,7 +209,9 @@ def _depth_phrase(num_teams: int, effective_size: float) -> str:
     return f"this league's roster depth ({num_teams} teams rostering like a {round(effective_size)}-team league)"
 
 
-def _label(ev: WaiverEvidence, *, num_teams: int, effective_size: float, sources_present: set[str]) -> None:
+def _label(
+    ev: WaiverEvidence, *, num_teams: int, effective_size: float, is_superflex: bool, sources_present: set[str]
+) -> None:
     from sleeper_tool.waiver_sources import BALLERS, BOONE, FP_ROS, ROTOBALLER
 
     ballers_top = ev.ballers_rank is not None and ev.ballers_rank <= WAIVER_TOP
@@ -242,6 +251,16 @@ def _label(ev: WaiverEvidence, *, num_teams: int, effective_size: float, sources
         else:
             ev.depth_tag_fits = True
             ev.labels.append(DEPTH_FIT)
+    # A "2QB Leagues" tag states a FORMAT, not a size, and stating no size is
+    # not the same as applying everywhere: in a 1QB league those rows are the
+    # board's backup quarterbacks, and reading them as universal is how seven
+    # of them arrive as recommendations in a league that starts one QB.
+    elif ev.rotoballer_superflex_only:
+        if is_superflex:
+            ev.depth_tag_fits = True
+            ev.labels.append(DEPTH_FIT)
+        else:
+            ev.labels.append(SUPERFLEX_ONLY)
     # A row whose tag this league satisfies is a recommendation here at any
     # row number: the rank is ordinal and league-size-blind, while the tag
     # is the board's own statement of which leagues the row is for — that is
@@ -279,7 +298,9 @@ def _label(ev: WaiverEvidence, *, num_teams: int, effective_size: float, sources
         tag = f", {ev.rotoballer_note}" if ev.rotoballer_note else ""
         line = f"RotoBaller #{ev.rotoballer_rank}{tag}"
         depth = _depth_phrase(num_teams, effective_size)
-        if DEEPER_LEAGUES_ONLY in ev.labels:
+        if SUPERFLEX_ONLY in ev.labels:
+            ev.risk_lines.append(f"{line} — a Superflex/2QB recommendation; this league starts one quarterback")
+        elif DEEPER_LEAGUES_ONLY in ev.labels:
             ev.risk_lines.append(f"{line} — deeper than {depth}")
         elif ev.depth_tag_fits and _depth_differs(num_teams, effective_size):
             # Only worth spelling out when rostering depth and team count
