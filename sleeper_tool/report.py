@@ -485,10 +485,7 @@ def _render_claim(view, *, lead: bool = False) -> list[str]:
     head = f"**{view.order}. {view.dependency + ': ' if view.dependency else ''}Add {view.add_line}**" if not lead else f"**TOP CLAIM — {view.name} ({view.position}, {view.team})**"
     lines = [head]
     labels = " · ".join(x for x in (view.strength, view.cls) if x)
-    # The group's problem is dropped when it is only the class said again
-    # ("Upside Bench Add — Upside bench add"); it earns its place when it
-    # names a lineup hole ("RB2 upgrade (over Kenny Gainwell)").
-    problem = view.problem if lead and view.problem and view.problem.lower() != (view.cls or "").lower() else None
+    problem = view.problem if lead else ""
     lines.append(f"- {labels} — {problem}" if problem else f"- {labels}")
     lines.append(f"- ADD: {view.add_line} · DROP: {view.drop_line} · {view.bid}")
     if view.why:

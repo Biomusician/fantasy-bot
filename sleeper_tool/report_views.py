@@ -581,13 +581,21 @@ class ClaimView:
     backups: list[str] = field(default_factory=list)  # "Devaughn Vele — $1–3, recommend $1"
 
 
+def _problem_worth_printing(call) -> str:
+    """The group's problem, unless it is only the acquisition class said a
+    second time ("Upside Bench Add · Upside bench add"). It earns its place
+    when it names a lineup hole ("RB2 upgrade (over Kenny Gainwell)")."""
+    problem = call.problem or ""
+    return "" if problem.lower() == (call.cls or "").lower() else problem
+
+
 def claim_view(claim, center, *, backups=()) -> ClaimView:
     call = claim.call
     drop = claim.drop
     return ClaimView(
         order=claim.order,
         dependency=dependency_line(claim),
-        problem=claim.call.problem,
+        problem=_problem_worth_printing(claim.call),
         name=call.entry.name,
         position=call.entry.position or "?",
         team=call.entry.team or "—",

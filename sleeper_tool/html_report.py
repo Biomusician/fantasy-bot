@@ -481,7 +481,7 @@ def _claim_card(view, *, lead: bool) -> str:
     return f"""
     <article class="claim-card{' claim-card-lead' if lead else ''}">
       {head}
-      <div class="panel-tags">{_chip(view.strength, _STRENGTH_CHIP_KIND.get(view.strength, "neutral"))}{_chip(view.cls, "neutral") if view.cls else ""}{dependency}<span class="muted">{esc(view.problem)}</span></div>
+      <div class="panel-tags">{_chip(view.strength, _STRENGTH_CHIP_KIND.get(view.strength, "neutral"))}{_chip(view.cls, "neutral") if view.cls else ""}{dependency}{f'<span class="muted">{esc(view.problem)}</span>' if view.problem else ""}</div>
       <div class="claim-move"><strong>ADD</strong> {esc(view.add_line)} &middot; <strong>DROP</strong> {esc(view.drop_line)} &middot; <strong>{esc(view.bid)}</strong></div>
       {f'<div class="why-now"><div class="why-row"><span class="rationale-label">Why now</span><ul>{why}</ul></div>' if why else '<div class="why-now">'}
       {f'<div class="why-row"><span class="rationale-label">Risk</span><ul>{risks}</ul></div>' if risks else ""}
