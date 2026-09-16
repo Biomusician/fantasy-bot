@@ -8,11 +8,10 @@ Regenerate this file with `/handoff`.
 
 ## Status
 
-**Local commits only — NOTHING has been pushed.** Three tranches (2026-09-03
-intelligence & hardening, 2026-09-04 night build, 2026-09-15 waiver command center)
-sit on `main` on top of `2d1f739`, the last pushed commit — 70 commits in total, 16 of
-them this tranche. Pushing is Jonathan's decision; the 9am ET automated run publishes
-whatever `origin/main` holds, so treat the push as a deploy.
+**Nothing from this tranche has been pushed.** `origin/main` is at `fdf6ad8` (the
+2026-09-04 night build, already published); the 17 commits of this tranche sit on local
+`main` ahead of it, starting at `1f5f67f`. Pushing is Jonathan's decision; the 9am ET
+automated run publishes whatever `origin/main` holds, so treat the push as a deploy.
 
 Tests: **1763 passed, 1 skipped, 7 xfailed in ~12s**, fully synthetic and network-free
 (1140 at the start of this tranche). Report generation is ~8s, the dashboard ~7s — both
