@@ -77,7 +77,6 @@ from sleeper_tool.waiver_alternatives import AlternativeDensity, alternative_den
 from sleeper_tool.waiver_drops import MATERIAL_COVER_POINTS, DropBoard, DropOption
 from sleeper_tool.waiver_evidence import (
     DEEPER_LEAGUES_ONLY,
-    FANTASYPROS_HIGHER,
     SUPERFLEX_ONLY,
     SUPPORT_AGREE,
     SUPPORT_BROAD,
@@ -450,17 +449,18 @@ def assess_candidate(entry: RosterEntry, evidence: WaiverEvidence, ctx: LeagueWa
                 f"RotoBaller tags him for Superflex/2QB leagues ({evidence.rotoballer_note}); "
                 "this league starts one quarterback and he has no path onto this lineup"
             )
-    if FANTASYPROS_HIGHER in evidence.labels and cls in SPECULATIVE_CLASSES and strength != PASS and not ros_startable:
-        # The boring-known-quantity pass is right for a player the season
-        # ranks as roster depth. It is wrong for one they rank as a STARTER
-        # in this format — that player is the whole point of the depth rung
-        # above, and passing on him was how the best free-agent TE in the
-        # league stayed invisible.
+    # The boring known quantity: the season lists rank him as roster DEPTH
+    # rather than as a starter here, no waiver board is talking about him, and
+    # he has no path onto this lineup. Read off the depth facts rather than
+    # off FANTASYPROS_HIGHER, which by construction only marks the startable
+    # case — exactly the player this rule must not touch, since he is the
+    # whole point of the depth rung above.
+    depth_only = ros is not None and not ros_startable
+    if depth_only and not evidence.expert_listed and cls in SPECULATIVE_CLASSES and strength != PASS:
         strength = PASS
         call.pass_reason = (
             f"{ros[0]} {evidence.pos_label(ros_rank)} is roster depth in this league, not a starter, "
-            "and he has no path onto this lineup"
-            if ros is not None else "a known quantity with no path onto this lineup"
+            "and no waiver board is recommending him"
         )
     if cls in SPECULATIVE_CLASSES and strength != PASS and evidence.scarcity == ABUNDANT and _single_starter_position(pos, roster):
         strength = PASS

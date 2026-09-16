@@ -20,7 +20,7 @@ Individual stages: `scripts/pull_data.py` (sync only), `scripts/generate_report.
 .venv/Scripts/python.exe -m pytest tests/ -q
 ```
 
-1140+ tests, about six seconds, fully synthetic — no network. Keep it that way.
+1760+ tests, about twelve seconds, fully synthetic — no network. Keep it that way.
 
 ## Conventions
 
@@ -68,6 +68,23 @@ The intelligence layer added on 2026-09-03 follows the same one-file-per-capabil
 `report_views.py` holds render-only choices shared by both renderers (which phrasing of
 one fact keeps the visible slot, visible/collapsed splits) — never decision logic. Only
 `scripts/daily_run.py` persists the snapshot, ledger and watchlist, after a complete run.
+
+The redraft/keeper waiver layer added on 2026-09-15 follows the same rule.
+`waiver_command_center.py` is orchestration only; the judgments live in `roster_needs.py`
+(Critical Need → Surplus), `waiver_drops.py` (the drop board and its protections),
+`waiver_evidence.py` (one row per candidate, each source in its own units),
+`waiver_alternatives.py`, `waiver_acquisition.py` (is he worth it to THIS roster),
+`faab_window.py`, `waiver_plan.py` (the ordered, dependency-aware chain),
+`waiver_mode.py` (Tuesday/Wednesday, and which week claims are for), `waiver_review.py`
+and `waiver_calibration.py`. `waiver_sources.py` loads the outside boards once a run;
+`league_depth.py` answers how many standard teams' worth of players are off the wire.
+Dynasty leagues keep `waiver_engine.py` untouched.
+
+Two facts about Sleeper that are easy to get wrong, and that cost real defects:
+`settings.reserve_slots` is IR capacity (there is no "IR" entry in `roster_positions`),
+and a player's `position` is his primary NFL listing, not always a fantasy one — use
+`sleeper_positions.fantasy_position`, since Travis Hunter is "DB" and every fullback is
+"FB".
 
 ## Constraints
 

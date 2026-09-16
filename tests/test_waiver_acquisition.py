@@ -42,7 +42,6 @@ from sleeper_tool.waiver_acquisition import (
 from sleeper_tool.waiver_drops import build_drop_board
 from sleeper_tool.waiver_evidence import (
     DEEPER_LEAGUES_ONLY,
-    FANTASYPROS_HIGHER,
     SUPERFLEX_ONLY,
     SUPPORT_AGREE,
     SUPPORT_BROAD,
@@ -472,34 +471,35 @@ def test_a_deeper_leagues_tag_never_touches_an_add_with_a_lineup_path():
 
 
 def test_a_known_quantity_who_is_only_roster_depth_is_a_pass_that_names_the_rank():
+    # No waiver board is talking about him and the season lists rank him as
+    # depth rather than as a starter here: the boring known quantity.
     ctx = make_ctx()
-    call = call_for(
-        player("add", "WR", 1.0), ctx, rank=3, support=SUPPORT_BROAD, labels=[FANTASYPROS_HIGHER],
-        fp_ros=18, startable=12, rosterable=21,
-    )
+    call = call_for(player("add", "WR", 1.0), ctx, fp_ros=18, startable=12, rosterable=21)
     assert call.strength == PASS
     assert call.pass_reason == (
-        "FantasyPros ROS WR18 is roster depth in this league, not a starter, and he has no path onto this lineup"
+        "FantasyPros ROS WR18 is roster depth in this league, not a starter, "
+        "and no waiver board is recommending him"
     )
 
 
 def test_a_known_quantity_the_season_ranks_as_a_starter_here_survives_the_pass():
-    # The narrowed rule: being a boring known quantity is only a reason to
-    # pass when the season ranks him as depth, not when it ranks him a
-    # starter this league somehow left on the wire.
+    # Being a known quantity is only a reason to pass when the season ranks
+    # him as depth, not when it ranks him a starter this league left on the
+    # wire — that player is the whole point of the depth rung.
     ctx = make_ctx()
-    call = call_for(
-        player("add", "WR", 1.0), ctx, rank=3, support=SUPPORT_BROAD, labels=[FANTASYPROS_HIGHER],
-        fp_ros=6, startable=12, rosterable=21,
-    )
+    call = call_for(player("add", "WR", 1.0), ctx, fp_ros=6, startable=12, rosterable=21)
     assert call.cls == UPSIDE_BENCH
     assert call.strength != PASS and call.pass_reason is None
 
 
-def test_the_known_quantity_pass_keeps_its_old_wording_when_no_source_named_a_rank():
+def test_a_player_a_waiver_board_is_recommending_is_never_a_boring_known_quantity():
+    # The rule is about silence from the boards. A Ballers #3 is not silence,
+    # whatever his rest-of-season rank says.
     ctx = make_ctx()
-    call = call_for(player("add", "WR", 1.0), ctx, rank=3, support=SUPPORT_BROAD, labels=[FANTASYPROS_HIGHER])
-    assert call.strength == PASS and call.pass_reason == "a known quantity with no path onto this lineup"
+    call = call_for(
+        player("add", "WR", 1.0), ctx, rank=3, support=SUPPORT_BROAD, fp_ros=18, startable=12, rosterable=21,
+    )
+    assert call.strength != PASS
 
 
 def test_a_bench_quarterback_in_an_abundant_one_qb_market_is_a_pass():
