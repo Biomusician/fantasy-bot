@@ -93,6 +93,53 @@ A six-persona red team ran against real data. The consequential ones, all fixed:
   never reads KTC — one global rule was silencing it in four leagues it has no part in.
 - The banner names the capability lost and what still works.
 
+## Open findings from the 2026-09-19 red team (not fixed)
+
+Three reviewers ran against the real cache. Everything dangerous or
+dishonest was fixed; these are the capability gaps left, in priority order.
+
+1. **The drop board, stash board and buyer board go silently empty in all
+   five dynasty leagues when KTC is out** (measured: 3-5 rows each becomes
+   0). All trade-side functions gate on `asset_value.corroborated`, which
+   needs a number in the league's currency — the KTC market value. Trade
+   proposals and the buyer board genuinely need cardinal value and are
+   right to suppress. The **drop and stash boards only use it for
+   ordering**, and now that `percentile_for_currency` falls back to
+   FantasyPros dynasty ECR they could run on rank alone. The fix is a
+   rank-based gate in `roster_assets.py`, not a change to `corroborated`
+   (which would wrongly resurrect trade proposals on a rank-only basis).
+   Those sections also vanish with no note; the banner and health section
+   say dynasty values are limited, but the sections themselves are silent.
+
+2. **`Reason.freshness` is computed on every provenance card and never
+   rendered.** Both renderers drop it. Before it can be rendered,
+   `signal_health.FAMILY_SOURCES` needs to be currency-aware: `trade_engine`
+   is fed by all three ranking families, so a degraded KTC currently tags 20
+   reason rows in the four redraft/keeper leagues, which never read KTC.
+   The last-write-wins bug in that dict is fixed; the currency gap is not.
+
+3. **13 of 17 `FEATURE_REQUIREMENTS` entries have no consumer.** Only
+   `role_trends`, `waiver_engine` and the two `source_disagreement_*` flags
+   are honoured. `dynasty_values` is the awkward one: the reader is told it
+   was suppressed while the page still makes dynasty claims from FantasyPros
+   — which is now correct behaviour, but the flag's name no longer describes
+   it. Either give each flag a consumer or shrink the table to the ones that
+   are honoured.
+
+4. **`roster_clog` still says "reconciled dynasty rank" when only one source
+   contributed**, and a single-source composite crossing the top-150 cutoff
+   invents a new clog (Keenan Allen in That Other Dynasty League). It should
+   name the source it actually used.
+
+5. **`corroborated` (>=2 of KTC/FantasyPros/RotoBaller) is the real
+   `ANY_TWO_OF` case and has no entry in `FEATURE_REQUIREMENTS`.**
+
+Smaller, from the cache review: `nflverse_players` and
+`dynastyprocess_playerids` have no `MIN_COVERAGE` entry so `signal_health`
+never grades them; the memoized cache payload object is shared across
+callers (no current mutation site, but nothing enforces read-only); and
+`save_snapshot` strands a `.tmp` file on a hard kill, which nothing sweeps.
+
 ## Must QC before pushing
 
 1. **The four command centers** in `data/weekly_report.md` — Primo Veterans, This

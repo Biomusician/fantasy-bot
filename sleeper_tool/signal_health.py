@@ -669,8 +669,20 @@ def worse_label(labels) -> str | None:
 
 def freshness_by_source(report: SignalHealthReport) -> dict[str, str]:
     """{module: label} for every module fed by a family that is not Fresh or
-    Usable this run — the provenance layer appends the label to the reasons
-    that rest on it. Fresh sources add nothing."""
+    Usable this run — the provenance layer attaches the label to the reasons
+    that rest on it. Fresh sources add nothing.
+
+    Two known limits, both recorded in docs/HANDOFF.md because they must be
+    settled before this is rendered anywhere:
+
+      * It is NOT currency-aware. `trade_engine` is fed by all three ranking
+        families, so a degraded KTC tags it in the four redraft/keeper
+        leagues too — and those never read KTC. The fix needs the league's
+        currency, which a report-level dict does not have.
+      * Several families feed one module, so a module can be degraded for
+        more than one reason; they are joined rather than overwritten, which
+        is what the previous last-write-wins dict silently lost.
+    """
     out: dict[str, str] = {}
     for family, modules in FAMILY_SOURCES.items():
         members = report.by_family(family)
@@ -685,7 +697,7 @@ def freshness_by_source(report: SignalHealthReport) -> dict[str, str]:
             ", serving a validated snapshot after a failed refresh" if fallback else ""
         )
         for module in modules:
-            out[module] = text
+            out[module] = f"{out[module]}; {text}" if module in out else text
     return out
 
 
