@@ -61,8 +61,8 @@ def parse_for_diagnostics(html: str) -> tuple[KtcParse | None, str | None]:
     to report a bad page, not die on it."""
     try:
         return parse_ktc(html), None
-    except KTCParseError as exc:
-        return None, str(exc)
+    except Exception as exc:  # the command exists to explain a bad page, not die on one
+        return None, f"{type(exc).__name__}: {exc}"
 
 
 def _fetch_and_parse() -> list[dict]:

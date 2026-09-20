@@ -196,13 +196,23 @@ def test_embedded_json_that_is_not_a_list_is_rejected():
         parse_ktc(page)
 
 
-def test_records_without_value_blocks_are_dropped_and_counted():
+def test_records_without_value_blocks_leave_nothing_to_find():
+    # A strategy that matched but produced nobody has not found a board, so
+    # the search continues rather than stopping on an empty result.
     payload = json.dumps([{"playerName": "Nobody"}, {"playerName": "Nobody Else"}])
-    parse = parse_ktc(f'<script type="application/json" id="ktc-players">{payload}</script>')
-    assert parse.rows == 0
-    assert parse.notes == ["2 of 2 records carried no value blocks"]
-    with pytest.raises(KTCParseError, match="yielded 0 players"):
-        validate_parse(parse)
+    with pytest.raises(KTCParseError) as exc:
+        parse_ktc(f'<script type="application/json" id="ktc-players">{payload}</script>')
+    assert "yielded 0 players" in str(exc.value)
+
+
+def test_a_zero_row_json_tag_does_not_hide_a_healthy_rendered_board():
+    # The JSON keys moving must not stop the rendered rows answering the
+    # question diagnostics need: is this a real rankings page at all?
+    empty = '<script type="application/json" id="ktc-players">[]</script>'
+    parse = parse_ktc(empty + _fixture("dynasty_rankings_rendered_markup.html"))
+    assert parse.strategy == RENDERED_MARKUP and parse.rows == 3
+    # And what actually broke travels with the result.
+    assert any("yielded 0 players" in note for note in parse.notes)
 
 
 def test_a_partial_response_is_a_parse_failure_either_way():
@@ -264,7 +274,7 @@ def test_a_board_of_zeroes_found_the_right_keys_in_the_wrong_objects():
     parse = board()
     for p in parse.players:
         p["superflex"] = {"value": 0, "rank": 0, "positional_rank": 0}
-    with pytest.raises(KTCParseError, match="with a value above zero"):
+    with pytest.raises(KTCParseError, match="superflex value above zero"):
         validate_parse(parse)
 
 
@@ -283,7 +293,7 @@ def test_the_cache_gate_accepts_a_whole_board_and_refuses_anything_less():
     # what gets recorded and read the next morning.
     assert ktc.valid_ktc_payload(board().players) is True
     assert "fewer than the" in ktc.valid_ktc_payload(board(rows=3).players)
-    assert "yielded 0 players" in ktc.valid_ktc_payload([])
+    assert "yielded 0 ranked players" in ktc.valid_ktc_payload([])
     assert "NoneType, not a list" in ktc.valid_ktc_payload(None)
     assert "dict, not a list" in ktc.valid_ktc_payload({"players": []})
     assert ktc.valid_ktc_payload([{"name": "no value blocks"}]) is not True
@@ -304,3 +314,116 @@ def test_diagnostics_reports_a_bad_page_instead_of_raising():
 
     parse, reason = ktc.parse_for_diagnostics(_fixture("dynasty_rankings_script_tag.html"))
     assert reason is None and parse.strategy == EMBEDDED_JSON_V2 and parse.rows == 3
+
+
+# -- the red team's findings ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize("block", ["one_qb", "superflex", "one_qb_tepp", "superflex_teppp"])
+def test_a_zeroed_value_block_is_caught_whichever_block_it_is(block):
+    # Validating only `superflex` left seven of eight blocks unguarded — and
+    # `superflex` plain is read by a Superflex league with no TE premium and
+    # by nobody else. A moved sub-key zeroes its block without raising.
+    parse = board()
+    for p in parse.players:
+        p[block] = {"value": 0, "rank": 0, "positional_rank": 0}
+    with pytest.raises(KTCParseError, match=f"{block} value above zero"):
+        validate_parse(parse)
+    assert ktc.valid_ktc_payload(parse.players) is not True
+
+
+def test_rookie_picks_do_not_count_toward_the_ranked_player_floor():
+    # 84 of the live board's 500 rows are RDP picks, and that share grows in
+    # the offseason. Counting them let the floor drift with the calendar.
+    parse = board(rows=MIN_PLAYERS)
+    for p in parse.players[: MIN_PLAYERS // 2]:
+        p["position"] = "RDP"
+    with pytest.raises(KTCParseError, match="ranked players of"):
+        validate_parse(parse)
+
+
+def test_a_placeholder_tag_ahead_of_the_real_one_does_not_take_the_source_down():
+    # A template emitting an empty node and hydrating a second one used to
+    # lose a healthy 500-player board to the first match.
+    real = _fixture("dynasty_rankings_script_tag.html")
+    for decoy in (
+        '<script type="application/json" id="ktc-players"></script>',
+        '<script type="application/json" id="ktc-players">   </script>',
+        '<script type="application/json" id="ktc-players">[]</script>',
+    ):
+        parse = parse_ktc(decoy + real)
+        assert parse.strategy == EMBEDDED_JSON_V2 and parse.rows == 3, decoy
+
+
+@pytest.mark.parametrize("attr", ["data-id", "aria-id", "ng-id"])
+def test_a_lookalike_attribute_is_not_the_id_we_want(attr):
+    # In `data-id` the hyphen is a non-word character, so a plain \b was
+    # satisfied and the decoy matched.
+    decoy = f'<script type="application/json" {attr}="ktc-players">{{"not": "a board"}}</script>'
+    parse = parse_ktc(decoy + _fixture("dynasty_rankings_script_tag.html"))
+    assert parse.strategy == EMBEDDED_JSON_V2 and parse.rows == 3
+
+
+@pytest.mark.parametrize(
+    "tag",
+    [
+        '<script id=\'ktc-players\'>',
+        '<script id = "ktc-players">',
+        '<script type="application/json" id="ktc-players" data-x="1">',
+        '<SCRIPT ID="KTC-PLAYERS">',
+    ],
+)
+def test_attribute_spelling_variants_that_should_match_do(tag):
+    payload = json.dumps([
+        {"playerName": "A", "position": "QB", "oneQBValues": {"value": 1}, "superflexValues": {"value": 1}}
+    ])
+    assert parse_ktc(f"{tag}{payload}</script>").strategy == EMBEDDED_JSON_V2
+
+
+@pytest.mark.parametrize("field,value", [("position", 3), ("playerName", 7), ("team", {"abbr": "KC"})])
+def test_a_non_string_field_does_not_crash_any_entry_point(field, value):
+    record = {"playerName": "X", "position": "QB", "oneQBValues": {"value": 1}, "superflexValues": {"value": 1}}
+    record[field] = value
+    page = f'<script id="ktc-players">{json.dumps([record])}</script>'
+    parse = parse_ktc(page)  # must not raise
+    assert parse.rows == 1
+    parse, reason = ktc.parse_for_diagnostics(page)
+    assert parse is not None and reason is None
+
+
+def test_the_non_standard_json_literals_are_rejected_rather_than_crashing():
+    # json.loads accepts Infinity/NaN by default, and int(inf) raises
+    # OverflowError — an ArithmeticError, so it escaped the caught tuple.
+    page = '<script id="ktc-players">[{"playerName":"X","position":"QB","oneQBValues":{"value":Infinity},"superflexValues":{"value":1}}]</script>'
+    with pytest.raises(KTCParseError, match="not valid JSON"):
+        parse_ktc(page)
+    parse, reason = ktc.parse_for_diagnostics(page)
+    assert parse is None and "not valid JSON" in reason
+
+
+def test_diagnostics_never_raises_whatever_the_page_is():
+    for page in ("", "<html/>", '<script id="ktc-players">[[[</script>', "\x00\xff"):
+        parse, reason = ktc.parse_for_diagnostics(page)
+        assert parse is None and reason
+
+
+def test_a_rookie_pick_row_in_the_rendered_markup_is_kept_and_names_are_unescaped():
+    page = (
+        '<div class="onePlayer"><div class="player-name"><p>'
+        '<a href="#">Ja&#x27;Marr Chase</a><span class="player-team">CIN</span></p></div>'
+        '<p class="position">WR1</p><div class="value"><p>9999</p></div></div>'
+        '<div class="onePlayer"><div class="player-name"><p><a href="#">2026 Pick 1.01</a></p></div>'
+        '<p class="position">RDP</p><div class="value"><p>7185</p></div></div>'
+    )
+    parse = parse_ktc(page)
+    assert parse.strategy == RENDERED_MARKUP
+    assert [p["name"] for p in parse.players] == ["Ja'Marr Chase", "2026 Pick 1.01"]
+    assert parse.players[1]["superflex"]["rank"] == 0  # pick rows carry no rank cell
+
+
+def test_the_ranked_player_floor_has_real_headroom_under_the_measured_board():
+    # A floor just under the real count fails the week KTC trims a few
+    # names; its job is to catch a fraction of a board, not a haircut.
+    assert MIN_PLAYERS < ktc_parser.MEASURED_RANKED_PLAYERS * 0.85
+    # and still catches the disasters it exists for
+    assert MIN_PLAYERS > 50

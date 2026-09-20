@@ -23,6 +23,8 @@ CACHE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "rankings_c
 # "fallback"  the fetch or parse failed and a cache was served in its place
 # "rejected"  the refresh produced something that failed validation; the
 #             PREVIOUS cache was kept and served rather than overwritten
+# "unsaved"   the refresh was good but could not be written; it is served
+#             from memory and the previous file is left as it was
 # "failed"    no usable cache and nothing to serve; get_or_fetch raised
 # Process-local and deliberately not persisted — it describes THIS run, and
 # signal_health reads it to tell "served from a fallback" apart from "the
@@ -68,8 +70,12 @@ class RankingSnapshot:
         )
 
 
-def _cache_path(source: str) -> Path:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+def _cache_path(source: str, *, create: bool = True) -> Path:
+    """The file this source caches to. `create=False` for read paths: a
+    directory that cannot be created is a reason for ONE source to have no
+    cache, not for the run to die inside a health check."""
+    if create:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
     safe_name = source.replace("/", "_")
     return CACHE_DIR / f"{safe_name}.json"
 
@@ -92,6 +98,12 @@ _parsed_cache: dict[str, tuple[int, int, Any]] = {}
 # millisecond simply re-parses, which for a fixture-sized file is free.
 _SETTLED_NS = 1_000_000_000
 
+# See _replace_with_retry: a scanner's handle on the destination clears in
+# well under a second, so a few short attempts cover it without making a
+# genuinely locked file slow to fail.
+_REPLACE_ATTEMPTS = 5
+_REPLACE_BACKOFF = 0.05
+
 
 def save_snapshot(source: str, payload: Any) -> RankingSnapshot:
     """Write atomically: serialize to a temp file in the same directory and
@@ -106,19 +118,44 @@ def save_snapshot(source: str, payload: Any) -> RankingSnapshot:
     path = _cache_path(source)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_text(json.dumps(snapshot.to_json()), encoding="utf-8")
-        os.replace(tmp, path)  # atomic on Windows and POSIX alike
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(snapshot.to_json()))
+            handle.flush()
+            # Without this, NTFS can commit the directory entry while the
+            # data blocks are still unflushed: after a power loss the file
+            # exists and is empty, which load_snapshot reads as no cache.
+            os.fsync(handle.fileno())
+        _replace_with_retry(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
     _parsed_cache.pop(str(path), None)  # don't lean on mtime for our own writes
     return snapshot
 
 
+def _replace_with_retry(tmp: Path, path: Path) -> None:
+    """os.replace, retried briefly.
+
+    The replace is atomic when it succeeds, but on Windows it fails outright
+    with PermissionError while any handle is open on the destination — an
+    antivirus scanner holding a just-written .json is the ordinary case, not
+    an exotic one. Without the retry a scan lands on the one write a day the
+    cron makes, the write raises, and a freshly fetched board is thrown away.
+    """
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == _REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(_REPLACE_BACKOFF)
+
+
 def load_snapshot(source: str) -> RankingSnapshot | None:
-    path = _cache_path(source)
     try:
+        path = _cache_path(source, create=False)
         stat = path.stat()
-    except OSError:  # missing, or vanished between the check and the read
+    except OSError:  # missing, unreadable, or vanished between check and read
         return None
     key = str(path)
     hit = _parsed_cache.get(key)
@@ -230,6 +267,17 @@ def get_or_fetch(
                 return kept
             raise ValueError(reason)
 
+    try:
+        snapshot = save_snapshot(source, payload)
+    except Exception as exc:
+        # The board itself is good and already in hand; only the write
+        # failed. Throwing it away would turn a disk hiccup into an
+        # Unavailable source for the whole run.
+        reason = f"fetched board could not be cached — {type(exc).__name__}: {exc}"
+        logger.error("Could not write the %s cache: %s", source, exc)
+        last_fetch_outcome[source] = "unsaved"
+        last_fetch_error[source] = reason
+        return RankingSnapshot(source=source, fetched_at=dt.datetime.now(dt.timezone.utc), payload=payload)
     last_fetch_outcome[source] = "fresh"
     last_fetch_error.pop(source, None)
-    return save_snapshot(source, payload)
+    return snapshot
