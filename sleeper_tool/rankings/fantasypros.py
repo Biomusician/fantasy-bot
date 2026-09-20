@@ -21,6 +21,7 @@ import requests
 from sleeper_tool.name_matching import build_name_index
 from sleeper_tool.rankings.cache import RankingSnapshot, get_or_fetch
 from sleeper_tool.rankings.freshness import ceiling_for
+from sleeper_tool.rankings.snapshot_validation import by_row_count
 
 FANTASYPROS_PAGES: dict[str, str] = {
     "redraft_full_ppr": "ppr-cheatsheets",
@@ -139,6 +140,28 @@ def _fetcher(page_key: str):
     return _fetch
 
 
+def _ranks_are_present(payload) -> str | None:
+    """A board whose ranks all collapsed to zero has the right number of
+    rows and is not a board: `_parse_player` requires only a name, so a
+    renamed rank field yields 500 identically-ranked players that every
+    consumer reads as a real consensus."""
+    ranked = sum(1 for row in payload if (row.get("rank_ecr") or 0) > 0)
+    if ranked < len(payload) * MIN_RANKED_SHARE:
+        return (
+            f"FantasyPros refresh has only {ranked} of {len(payload)} rows carrying a rank — "
+            "the rank field has moved"
+        )
+    return None
+
+
+# A whole FantasyPros list runs 300-1000 rows; the floor is what a partial
+# parse cannot reach, not a target.
+MIN_FP_ROWS = 100
+MIN_RANKED_SHARE = 0.90
+
+_validate_fp = by_row_count(label="FantasyPros", floor=MIN_FP_ROWS, extra=_ranks_are_present)
+
+
 def get_fp_rankings(
     page_key: str, *, force: bool = False, max_age: dt.timedelta = DEFAULT_MAX_AGE
 ) -> RankingSnapshot:
@@ -148,6 +171,7 @@ def get_fp_rankings(
         max_age=max_age,
         force=force,
         ceiling=ceiling_for("fantasypros"),
+        validate=_validate_fp,
     )
 
 

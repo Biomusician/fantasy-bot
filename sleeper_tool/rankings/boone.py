@@ -61,6 +61,7 @@ import requests
 from sleeper_tool.name_matching import normalize_name
 from sleeper_tool.rankings.cache import RankingSnapshot, get_or_fetch, load_snapshot
 from sleeper_tool.rankings.freshness import ceiling_for
+from sleeper_tool.rankings.snapshot_validation import by_row_count
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +323,23 @@ def _board_from_snapshot(scoring: str, snapshot: RankingSnapshot) -> BooneBoard:
     )
 
 
+def _every_position_list_arrived(payload) -> str | None:
+    """One list 502ing must not replace a whole board with a quarter of one.
+
+    `fetch_boone_payload` deliberately keeps going when a single list fails,
+    which is the right FETCH policy and the wrong CACHE-WRITE policy: it is
+    exactly how a four-position board becomes a one-position board on disk.
+    """
+    present = {row.get("position") for row in (payload or {}).get("rows") or []}
+    missing = [p for p in FETCHED_POSITIONS if p not in present]
+    if missing:
+        return f"Boone refresh is missing the {'/'.join(missing)} list — a partial fetch, not a board"
+    return None
+
+
+_validate_boone = by_row_count(label="Boone", floor=40, extra=_every_position_list_arrived)
+
+
 def load_boone_board(
     scoring: str,
     *,
@@ -365,6 +383,7 @@ def load_boone_board(
             max_age=max_age,
             force=force or wrong_week,
             ceiling=ceiling,
+            validate=_validate_boone,
         )
         if (snapshot.payload or {}).get("week") != week:
             # get_or_fetch fell back to a cached board from another week.

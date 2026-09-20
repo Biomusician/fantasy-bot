@@ -115,9 +115,17 @@ def _percentile(pv: PlayerValue, currency: str) -> float | None:
     plumbed through yet (the same known, smaller-impact gap asset_value
     documents), so it falls back to pool-wide.
     """
-    if currency == "dynasty" and pv.dynasty_positional_percentile is not None:
+    if currency != "dynasty":
+        return pv.redraft_ecr_percentile
+    if pv.dynasty_positional_percentile is not None:
         return pv.dynasty_positional_percentile
-    return pv.dynasty_value_percentile if currency == "dynasty" else pv.redraft_ecr_percentile
+    # FantasyPros dynasty ECR places a player perfectly well when the market
+    # -value source is out, and `composite_overall_rank` already falls back
+    # to it. Without this, losing KTC gave every roster in the league a
+    # strength of 0.0 — and an all-tie ranked everyone at the 100th
+    # percentile, so five dynasty leagues read CONTENDER on the week the
+    # data went missing.
+    return pv.dynasty_value_percentile or pv.dynasty_ecr_percentile
 
 
 def avg_percentile(entries, currency: str) -> float | None:
@@ -139,10 +147,26 @@ def _roster_strength(roster: ValuedRoster, currency: str) -> float:
 
 
 def _rank_percentile(values: dict[int, float], target_id: int) -> float:
+    """Where `target_id` sits among the others, 0-100.
+
+    An all-tie is the middle, not the top. When every roster measures the
+    same — which is what happens when the source behind the measurement is
+    gone, and every strength is 0.0 — "<=" counted the whole league as at or
+    below me and returned 100 for everybody.
+    """
     ranked = sorted(values.values())
     my_value = values[target_id]
     n = len(ranked)
-    return (100.0 * sum(1 for v in ranked if v <= my_value) / n) if n else 50.0
+    if not n:
+        return 50.0
+    if len(set(ranked)) == 1:
+        # Every roster measures the same, which in practice means the source
+        # behind the measurement is gone and every strength came back 0.0.
+        # "<=" then counted the whole league as at or below me and handed
+        # everybody the 100th percentile: five dynasty leagues read
+        # CONTENDER on the week their market-value source went missing.
+        return 50.0
+    return 100.0 * sum(1 for v in ranked if v <= my_value) / n
 
 
 def get_valued_picks_by_roster(

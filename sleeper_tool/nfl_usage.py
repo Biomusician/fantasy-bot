@@ -48,6 +48,7 @@ import requests
 
 from sleeper_tool.nfl_schedule import normalize_team
 from sleeper_tool.rankings.freshness import ceiling_for
+from sleeper_tool.rankings.snapshot_validation import absent_marker_validator
 from sleeper_tool.rankings.cache import get_or_fetch, load_snapshot
 
 logger = logging.getLogger(__name__)
@@ -413,6 +414,7 @@ def _load_asset(source: str, url: str, parse, *, season: int | None, max_age: dt
         snapshot = get_or_fetch(
             source, lambda: _fetch_payload(url, parse, season, fetch), max_age=max_age, force=force,
             ceiling=ceiling_for("nflverse_usage"),
+            validate=absent_marker_validator(label=source, floor=0),
         )
     except Exception as exc:  # nothing cached to fall back to
         logger.warning("nflverse asset unavailable (%s): %s", source, exc)

@@ -25,7 +25,7 @@ from sleeper_tool.waiver_engine import EARLY_SEASON_CLAUSE
 from sleeper_tool.lineup_optimizer import slot_label
 from sleeper_tool.action_priority import IMMEDIATE, MAJOR, MEANINGFUL, THIS_WEEK, PriorityKey, priority_line  # noqa: F401  (PriorityKey re-exported for renderers)
 from sleeper_tool.recommendation_conflicts import CONFLICTED
-from sleeper_tool.signal_health import DEGRADED_LABELS, FRESH, UNAVAILABLE, USABLE
+from sleeper_tool.signal_health import DEGRADED_LABELS, FRESH, OPTIONAL_FAMILIES, UNAVAILABLE, USABLE
 from sleeper_tool.trade_rating import player_confidence
 
 # -- one vocabulary for one fact ---------------------------------------------
@@ -492,14 +492,21 @@ def health_banner(report) -> HealthBanner | None:
     if health is None or (not health.degraded and not suppressed):
         return None
 
+    # A source that is optional by design (a paid CSV nobody exported) is not
+    # what went wrong, and naming it put "FF Dynasty Pass unavailable" in the
+    # banner of every single run — including the runs where KTC was the thing
+    # that broke and went unmentioned.
+    def matters(signal) -> bool:
+        return not signal.expected_absent and signal.family not in OPTIONAL_FAMILIES
+
+    # A fallback signal's label is Usable, which is not a degraded label — so
+    # keying on the label alone could never name the case the "serving a
+    # validated snapshot" wording was written for.
     stale = sorted(
         s.display_name for s in health.signals
-        if s.label in DEGRADED_LABELS and not s.expected_absent and s.label != UNAVAILABLE
+        if matters(s) and s.label != UNAVAILABLE and (s.label in DEGRADED_LABELS or s.fallback)
     )
-    gone = sorted(
-        s.display_name for s in health.signals
-        if s.label == UNAVAILABLE and not s.expected_absent
-    )
+    gone = sorted(s.display_name for s in health.signals if matters(s) and s.label == UNAVAILABLE)
 
     # Severity is the health layer's own grade, never the banner's opinion:
     # the lead phrase below has to match the Signal health section this sits
@@ -511,7 +518,7 @@ def health_banner(report) -> HealthBanner | None:
         bits.append(f"{lost} {'are' if len(suppressed) > 1 else 'is'} limited this run")
     if gone:
         bits.append(f"{', '.join(gone)} unavailable")
-    if stale and not suppressed:
+    if stale:
         bits.append(f"{', '.join(stale)} served from a validated cached snapshot")
     if not bits:
         bits.append("one or more sources unusable")
@@ -520,7 +527,9 @@ def health_banner(report) -> HealthBanner | None:
         # it is usually most of the page.
         working = sorted({s.display_name for s in health.signals if s.label in (FRESH, USABLE)})
         if working:
-            bits.append(f"still available: {', '.join(working[:4])}")
+            shown = ", ".join(working[:4])
+            more = f" and {len(working) - 4} more" if len(working) > 4 else ""
+            bits.append(f"still available: {shown}{more}")
     elif health.degraded:
         bits.append("no recommendation was suppressed")
 

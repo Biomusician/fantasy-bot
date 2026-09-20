@@ -25,6 +25,7 @@ import requests
 
 from sleeper_tool.rankings.cache import RankingSnapshot, get_or_fetch, load_snapshot
 from sleeper_tool.rankings.freshness import ceiling_for
+from sleeper_tool.rankings.snapshot_validation import by_row_count, rows_of
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,30 @@ def fetch_schedule_rows(season: int) -> dict:
     return {"season": season, "rows": rows}
 
 
+# A season is ~285 regular + post games across 32 teams. The team count is
+# what matters: a partial file still parses, and `regular_weeks()` is derived
+# from whatever survived — so three rows produce a confident "no byes" rather
+# than a missing schedule, which is a wrong answer rather than an absent one.
+MIN_SCHEDULE_ROWS = 100
+MIN_SCHEDULE_TEAMS = 30
+
+
+def _covers_the_league(payload) -> str | None:
+    rows = (payload or {}).get("rows") or []
+    teams = {row.get(key) for row in rows for key in ("home_team", "away_team")} - {None, ""}
+    if len(teams) < MIN_SCHEDULE_TEAMS:
+        return (
+            f"NFL schedule refresh covers {len(teams)} teams across {len(rows)} games — "
+            "a partial file gives wrong bye weeks rather than no schedule"
+        )
+    return None
+
+
+_validate_schedule = by_row_count(
+    label="NFL schedule", floor=MIN_SCHEDULE_ROWS, extra=_covers_the_league
+)
+
+
 def load_schedule(season: int, *, force: bool = False) -> Schedule | None:
     """Cached daily; a cache holding a different season is treated as
     stale (a new season's first run refetches). None when nothing usable
@@ -157,6 +182,7 @@ def load_schedule(season: int, *, force: bool = False) -> Schedule | None:
             max_age=SCHEDULE_MAX_AGE,
             force=force,
             ceiling=ceiling_for(SCHEDULE_SOURCE),
+            validate=_validate_schedule,
         )
     except Exception as exc:  # no cache to fall back to
         logger.warning("NFL schedule unavailable for %s: %s", season, exc)

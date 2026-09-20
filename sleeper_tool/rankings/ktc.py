@@ -69,7 +69,7 @@ def _fetch_and_parse() -> list[dict]:
     return parse_ktc_players(fetch_ktc_html())
 
 
-def valid_ktc_payload(payload) -> bool | str:
+def valid_ktc_payload(payload, previous=None) -> bool | str:
     """Cache-write gate: True, or what is wrong with this payload.
 
     `get_or_fetch` calls this before replacing a good snapshot, so a parse

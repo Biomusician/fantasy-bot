@@ -77,3 +77,21 @@ def test_three_game_record_no_longer_dominates_classification():
     result = classify_team_status(1, rosters, "dynasty")
     assert result.win_pct is None  # 3 games is below MIN_GAMES_FOR_RECORD_BLEND now
     assert result.status == CONTENDER  # falls back to roster strength alone
+
+
+def test_losing_the_market_value_source_does_not_make_everyone_a_contender():
+    # With KTC gone every roster measured 0.0, and "<=" handed the whole
+    # league the 100th percentile: five dynasty leagues read CONTENDER on
+    # the week their market-value source went missing.
+    from sleeper_tool.team_status import _rank_percentile
+
+    all_tied = {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0}
+    assert {_rank_percentile(all_tied, rid) for rid in all_tied} == {50.0}
+
+
+def test_a_real_ordering_still_ranks_normally():
+    from sleeper_tool.team_status import _rank_percentile
+
+    spread = {1: 10.0, 2: 50.0, 3: 90.0}
+    assert _rank_percentile(spread, 3) == 100.0
+    assert round(_rank_percentile(spread, 1), 1) == 33.3

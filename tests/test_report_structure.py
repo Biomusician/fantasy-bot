@@ -250,6 +250,8 @@ class _Signal:
     display_name = "KTC dynasty"
     label = "Stale"
     display_label = "Stale"
+    family = "ktc"
+    fallback = False
     state = "CACHED"
     detail = ""
     expected_absent = False

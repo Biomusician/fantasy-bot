@@ -24,6 +24,7 @@ import requests
 from sleeper_tool.name_matching import build_name_index
 from sleeper_tool.rankings.cache import RankingSnapshot, get_or_fetch
 from sleeper_tool.rankings.freshness import ceiling_for
+from sleeper_tool.rankings.snapshot_validation import by_row_count
 
 ROTOBALLER_SPREADSHEETS: dict[str, str] = {
     "full_ppr": "ppr",
@@ -126,6 +127,12 @@ def _fetcher(spreadsheet_key: str):
     return _fetch
 
 
+# A whole RotoBaller sheet runs ~600 rows; the floor is what a partial
+# parse cannot reach, not a target.
+MIN_RB_ROWS = 100
+_validate_rb = by_row_count(label="RotoBaller", floor=MIN_RB_ROWS)
+
+
 def get_rb_rankings(
     spreadsheet_key: str, *, force: bool = False, max_age: dt.timedelta = DEFAULT_MAX_AGE
 ) -> RankingSnapshot:
@@ -135,6 +142,7 @@ def get_rb_rankings(
         max_age=max_age,
         force=force,
         ceiling=ceiling_for("rotoballer"),
+        validate=_validate_rb,
     )
 
 

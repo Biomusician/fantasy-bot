@@ -187,7 +187,8 @@ def test_ktc_index_by_name_is_memoized_per_snapshot():
 
 
 def _good(payload="whole board"):
-    return lambda p: p == payload
+    """The validator contract: (payload, previous) -> True or a reason."""
+    return lambda p, previous: p == payload or "not the whole board"
 
 
 def test_a_refresh_that_fails_validation_keeps_and_serves_the_previous_cache():
@@ -202,7 +203,7 @@ def test_a_refresh_that_fails_validation_keeps_and_serves_the_previous_cache():
     assert snapshot.payload == "whole board"
     assert snapshot.served_from_fallback is True
     assert cache_module.last_fetch_outcome["src"] == "rejected"
-    assert "failed validation" in cache_module.last_fetch_error["src"]
+    assert cache_module.last_fetch_error["src"] == "not the whole board"
     # The file on disk is untouched, so the next run still has it.
     assert load_snapshot("src").payload == "whole board"
 
@@ -221,7 +222,7 @@ def test_a_refresh_that_passes_validation_does_replace_the_cache():
 
 
 def test_a_rejected_refresh_with_no_cache_at_all_raises():
-    with pytest.raises(ValueError, match="failed validation"):
+    with pytest.raises(ValueError, match="not the whole board"):
         get_or_fetch("src", lambda: "junk", max_age=dt.timedelta(hours=20), validate=_good())
     assert cache_module.last_fetch_outcome["src"] == "failed"
     assert load_snapshot("src") is None
@@ -230,7 +231,7 @@ def test_a_rejected_refresh_with_no_cache_at_all_raises():
 def test_a_rejected_refresh_past_the_ceiling_does_not_serve_the_stale_cache(frozen_age):
     _age_snapshot("src", "whole board", dt.timedelta(days=30))
     frozen_age(dt.timedelta(days=30))
-    with pytest.raises(ValueError, match="failed validation"):
+    with pytest.raises(ValueError, match="not the whole board"):
         get_or_fetch(
             "src", lambda: "junk", max_age=dt.timedelta(hours=20),
             ceiling=dt.timedelta(days=7), validate=_good(),
@@ -283,7 +284,7 @@ def test_a_validator_can_say_what_was_wrong_and_the_reason_is_recorded():
     _age_snapshot("src", "whole board", dt.timedelta(days=2))
     snapshot = get_or_fetch(
         "src", lambda: "three players", max_age=dt.timedelta(hours=20),
-        ceiling=dt.timedelta(days=7), validate=lambda p: "yielded 3 players, expected 400",
+        ceiling=dt.timedelta(days=7), validate=lambda p, previous: "yielded 3 players, expected 400",
     )
     assert snapshot.payload == "whole board"
     assert cache_module.last_fetch_outcome["src"] == "rejected"
@@ -293,7 +294,7 @@ def test_a_validator_can_say_what_was_wrong_and_the_reason_is_recorded():
 def test_a_validator_that_raises_does_not_take_down_a_good_source():
     _age_snapshot("src", "whole board", dt.timedelta(days=2))
 
-    def _broken(payload):
+    def _broken(payload, previous):
         raise AttributeError("validator bug")
 
     snapshot = get_or_fetch(
@@ -314,6 +315,6 @@ def test_only_a_literal_true_accepts_the_refresh():
         _age_snapshot("src", "whole board", dt.timedelta(days=2))
         snapshot = get_or_fetch(
             "src", lambda: "new board", max_age=dt.timedelta(hours=20),
-            ceiling=dt.timedelta(days=7), validate=lambda p, v=verdict: v,
+            ceiling=dt.timedelta(days=7), validate=lambda p, previous, v=verdict: v,
         )
         assert snapshot.payload == "whole board", verdict

@@ -291,10 +291,12 @@ def test_lineup_lines_uses_the_leagues_own_slot_order():
 
 
 class _Signal:
-    def __init__(self, name, label, expected_absent=False):
+    def __init__(self, name, label, expected_absent=False, *, family="ktc", fallback=False):
         self.display_name = name
         self.label = label
         self.expected_absent = expected_absent
+        self.family = family
+        self.fallback = fallback
 
 
 class _Health:
@@ -322,7 +324,7 @@ def test_the_banner_wording_tracks_the_health_grade():
     assert gaps.degraded is False and gaps.text.startswith("Signal health: usable, with gaps")
     assert "role trends" in gaps.text
 
-    bad = health_banner(_Report(_Health(True, [_Signal("KTC", "Stale"), _Signal("FF", "Unavailable", True)])))
+    bad = health_banner(_Report(_Health(True, [_Signal("KTC", "Stale"), _Signal("FF", "Unavailable", True, family="ff_dynasty_pass")])))
     assert bad.degraded is True and bad.text.startswith("Signal health: degraded")
     assert "KTC" in bad.text and "FF" not in bad.text  # an expected-absent source is not the reason
 
@@ -353,3 +355,30 @@ def test_a_source_serving_a_validated_snapshot_does_not_shout():
     assert banner.label == "Signals degraded"
     assert "served from a validated cached snapshot" in banner.text
     assert "no recommendation was suppressed" in banner.text
+
+
+def test_the_banner_never_blames_a_source_that_is_optional_by_design():
+    # "FF Dynasty Pass unavailable" was in the banner of every single run,
+    # including the runs where KTC was the thing that actually broke.
+    banner = health_banner(
+        _Report(_Health(True, [
+            _Signal("FF Dynasty Pass", "Unavailable", family="ff_dynasty_pass"),
+            _Signal("KTC dynasty", "Usable", family="ktc", fallback=True),
+        ]))
+    )
+    assert "FF Dynasty Pass" not in banner.text
+    assert "KTC dynasty served from a validated cached snapshot" in banner.text
+
+
+def test_a_fallback_is_named_even_though_its_label_is_usable():
+    # A fallback signal grades Usable, which is not a degraded label, so
+    # keying on the label alone could never name this case.
+    banner = health_banner(_Report(_Health(True, [_Signal("KTC dynasty", "Usable", fallback=True)])))
+    assert "KTC dynasty" in banner.text and "validated cached snapshot" in banner.text
+
+
+def test_the_still_available_list_says_when_it_was_truncated():
+    signals = [_Signal(f"Source {i}", "Fresh", family=f"f{i}") for i in range(7)]
+    signals.append(_Signal("KTC dynasty", "Unavailable"))
+    banner = health_banner(_Report(_Health(True, signals), {"dynasty_values": "requires KTC"}))
+    assert "and 3 more" in banner.text

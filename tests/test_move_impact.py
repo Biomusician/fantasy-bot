@@ -95,7 +95,11 @@ def test_a_boundary_bucket_flip_without_a_real_strength_move_is_not_reported():
     from sleeper_tool.move_impact import MoveImpact, RosterSnapshot
 
     mine, rosters = _league()
-    before, ctx = _before(mine, rosters)
+    base, ctx = _before(mine, rosters)
+    # State the precondition rather than inheriting it: this test is about
+    # which deltas are reported, not about how the status was derived.
+    before = RosterSnapshot(base.lineup, base.weekly_points, base.depth_needs, "contender", 85.0,
+                            base.roster_value, base.avg_starter_age)
     near = RosterSnapshot(before.lineup, before.weekly_points, before.depth_needs, "middling", before.strength_percentile - 3,
                           before.roster_value, before.avg_starter_age)
     assert not any(d.startswith("team status") for d in MoveImpact("x", before, near).material_deltas())

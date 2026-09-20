@@ -213,10 +213,13 @@ def get_or_fetch(
     the same ceiling), and the outcome is "rejected". With no cache to keep,
     the refusal raises like any other failure.
 
-    Return True when the payload is a whole board, or a short string saying
-    what is wrong with it — that string becomes the recorded reason, and
-    "yielded 3 players, fewer than the 400 a whole board carries" is worth
-    considerably more at 9am than "failed validation".
+    `validate(payload, previous)` is given the snapshot it would replace,
+    because the rule that catches most of these is relative: a refresh
+    drastically smaller than what is already cached is a parse failure
+    whatever its absolute size, and for feeds that grow all season no fixed
+    floor is correct. Return True, or a short string saying what is wrong —
+    that string becomes the recorded reason, and "6 rows against 500 in the
+    cached one" is worth considerably more at 9am than "failed validation".
 
     The returned snapshot carries `served_from_fallback` and the outcome is
     recorded in `last_fetch_outcome`, with the reason in `last_fetch_error`.
@@ -257,7 +260,7 @@ def get_or_fetch(
 
     if validate is not None:
         try:
-            verdict = validate(payload)
+            verdict = validate(payload, cached)
         except Exception as exc:  # a broken validator must not take down a good source
             logger.exception("Validator for %s raised; treating the refresh as unusable", source)
             verdict = f"validator raised {type(exc).__name__}: {exc}"

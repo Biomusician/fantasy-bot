@@ -49,7 +49,18 @@ def value_for_currency(pv: PlayerValue, currency: str) -> float | None:
 
 
 def percentile_for_currency(pv: PlayerValue, currency: str) -> float | None:
-    return pv.dynasty_value_percentile if currency == DYNASTY_CURRENCY else pv.redraft_ecr_percentile
+    """Where this player sits in his league's currency, 0-100.
+
+    The dynasty branch falls back to FantasyPros dynasty ECR when the
+    market-value percentile is missing. Both place the same player within
+    half a point of each other in practice, and without the fallback a KTC
+    outage printed "unranked dynasty value" against players FantasyPros
+    ranks perfectly well — a positive claim about the market that is false —
+    and collapsed every roster table's sort order to the input order.
+    """
+    if currency != DYNASTY_CURRENCY:
+        return pv.redraft_ecr_percentile
+    return pv.dynasty_value_percentile if pv.dynasty_value_percentile is not None else pv.dynasty_ecr_percentile
 
 
 def value_label_for_currency(currency: str) -> str:

@@ -46,6 +46,7 @@ import requests
 
 from sleeper_tool.rankings import cache
 from sleeper_tool.rankings.freshness import ceiling_for
+from sleeper_tool.rankings.snapshot_validation import by_row_count
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,10 @@ _WEEK_RE = re.compile(r"\bWeek\s+(\d{1,2})\b", re.I)
 _MIN_SIZE_RE = re.compile(r"\b(\d{1,2})\+\s*Team", re.I)
 # "Add in 2QB Leagues" / "Superflex Leagues" states a FORMAT, not a size.
 _SUPERFLEX_RE = re.compile(r"\b(2\s*QB|Superflex|Super\s*Flex)\b", re.I)
+
+# The combined board ran 85 rows in week 2. A handful of rows is a table
+# that half-parsed, not a short week.
+MIN_BOARD_ROWS = 20
 
 
 class RotoBallerWaiverFetchError(RuntimeError):
@@ -284,7 +289,10 @@ def load_rotoballer_waiver_board(
             if snapshot is None or (ceiling is not None and snapshot.age() > ceiling):
                 return None
         else:
-            snapshot = cache.get_or_fetch(SOURCE, _fetch_payload, max_age=max_age, force=force, ceiling=ceiling)
+            snapshot = cache.get_or_fetch(
+                SOURCE, _fetch_payload, max_age=max_age, force=force, ceiling=ceiling,
+                validate=by_row_count(label="RotoBaller waivers", floor=MIN_BOARD_ROWS),
+            )
         return board_from_snapshot(snapshot)
     except Exception as exc:  # noqa: BLE001 — optional source, absent on any failure
         logger.warning("RotoBaller waiver board unavailable: %s", exc)
