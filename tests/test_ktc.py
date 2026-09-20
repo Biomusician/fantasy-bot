@@ -279,12 +279,14 @@ def test_values_outside_ktcs_own_scale_are_rejected():
 
 
 def test_the_cache_gate_accepts_a_whole_board_and_refuses_anything_less():
+    # True accepts; anything else is the reason it was refused, which is
+    # what gets recorded and read the next morning.
     assert ktc.valid_ktc_payload(board().players) is True
-    assert ktc.valid_ktc_payload(board(rows=3).players) is False
-    assert ktc.valid_ktc_payload([]) is False
-    assert ktc.valid_ktc_payload(None) is False
-    assert ktc.valid_ktc_payload({"players": []}) is False
-    assert ktc.valid_ktc_payload([{"name": "no value blocks"}]) is False
+    assert "fewer than the" in ktc.valid_ktc_payload(board(rows=3).players)
+    assert "yielded 0 players" in ktc.valid_ktc_payload([])
+    assert "NoneType, not a list" in ktc.valid_ktc_payload(None)
+    assert "dict, not a list" in ktc.valid_ktc_payload({"players": []})
+    assert ktc.valid_ktc_payload([{"name": "no value blocks"}]) is not True
 
 
 # -- the production entry point ------------------------------------------------------------------

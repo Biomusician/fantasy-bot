@@ -275,3 +275,45 @@ def test_a_failed_write_leaves_the_previous_cache_intact(monkeypatch):
         save_snapshot("src", "junk")
     monkeypatch.setattr(cache_module.os, "replace", real_replace)
     assert load_snapshot("src").payload == "whole board"
+
+
+def test_a_validator_can_say_what_was_wrong_and_the_reason_is_recorded():
+    # "yielded 3 players, fewer than the 400 a whole board carries" is worth
+    # considerably more at 9am than "failed validation".
+    _age_snapshot("src", "whole board", dt.timedelta(days=2))
+    snapshot = get_or_fetch(
+        "src", lambda: "three players", max_age=dt.timedelta(hours=20),
+        ceiling=dt.timedelta(days=7), validate=lambda p: "yielded 3 players, expected 400",
+    )
+    assert snapshot.payload == "whole board"
+    assert cache_module.last_fetch_outcome["src"] == "rejected"
+    assert cache_module.last_fetch_error["src"] == "yielded 3 players, expected 400"
+
+
+def test_a_validator_that_raises_does_not_take_down_a_good_source():
+    _age_snapshot("src", "whole board", dt.timedelta(days=2))
+
+    def _broken(payload):
+        raise AttributeError("validator bug")
+
+    snapshot = get_or_fetch(
+        "src", lambda: "new board", max_age=dt.timedelta(hours=20),
+        ceiling=dt.timedelta(days=7), validate=_broken,
+    )
+    assert snapshot.payload == "whole board"
+    assert cache_module.last_fetch_outcome["src"] == "rejected"
+    assert "validator raised AttributeError" in cache_module.last_fetch_error["src"]
+    assert load_snapshot("src").payload == "whole board"
+
+
+def test_only_a_literal_true_accepts_the_refresh():
+    # A validator returning a truthy non-True (a reason string, a row count)
+    # must not be read as approval.
+    for verdict in ("looks wrong", 0, None, False, ""):
+        cache_module._parsed_cache.clear()
+        _age_snapshot("src", "whole board", dt.timedelta(days=2))
+        snapshot = get_or_fetch(
+            "src", lambda: "new board", max_age=dt.timedelta(hours=20),
+            ceiling=dt.timedelta(days=7), validate=lambda p, v=verdict: v,
+        )
+        assert snapshot.payload == "whole board", verdict

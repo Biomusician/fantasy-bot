@@ -69,20 +69,23 @@ def _fetch_and_parse() -> list[dict]:
     return parse_ktc_players(fetch_ktc_html())
 
 
-def valid_ktc_payload(payload) -> bool:
-    """Cache-write gate: is this payload a whole board?
+def valid_ktc_payload(payload) -> bool | str:
+    """Cache-write gate: True, or what is wrong with this payload.
 
     `get_or_fetch` calls this before replacing a good snapshot, so a parse
     that slips past the fetch path (a hand-edited cache, a future caller)
     still cannot install a board that downstream would read as "most of the
-    league is worthless".
+    league is worthless". The reason is returned rather than swallowed: it
+    is the line that says whether anyone needs to go and look.
     """
     if not isinstance(payload, list):
-        return False
+        return f"KTC payload is {type(payload).__name__}, not a list of players"
     try:
-        validate_parse(KtcParse(players=payload, strategy="cache", complete=True))
-    except (KTCParseError, KeyError, TypeError):
-        return False
+        validate_parse(KtcParse(players=payload, strategy="refresh", complete=True))
+    except KTCParseError as exc:
+        return str(exc)
+    except (KeyError, TypeError) as exc:
+        return f"KTC payload is not shaped like a board: {type(exc).__name__}: {exc}"
     return True
 
 

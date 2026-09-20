@@ -168,13 +168,18 @@ def get_or_fetch(
     A snapshot exactly AT the ceiling is still served — the ceiling is the
     oldest acceptable age, not the first unacceptable one.
 
-    `validate(payload) -> bool` is the gate on WRITING. A fetch that
-    succeeds and parses to something implausible — three players where a
-    board carries five hundred — is a worse outcome than a fetch that
-    raises, because it replaces a good snapshot and still reports success.
-    A payload that fails validation is refused: the previous cache is kept
-    and served (subject to the same ceiling), and the outcome is "rejected".
-    With no cache to keep, the refusal raises like any other failure.
+    `validate(payload)` is the gate on WRITING. A fetch that succeeds and
+    parses to something implausible — three players where a board carries
+    five hundred — is a worse outcome than a fetch that raises, because it
+    replaces a good snapshot and still reports success. A payload that fails
+    validation is refused: the previous cache is kept and served (subject to
+    the same ceiling), and the outcome is "rejected". With no cache to keep,
+    the refusal raises like any other failure.
+
+    Return True when the payload is a whole board, or a short string saying
+    what is wrong with it — that string becomes the recorded reason, and
+    "yielded 3 players, fewer than the 400 a whole board carries" is worth
+    considerably more at 9am than "failed validation".
 
     The returned snapshot carries `served_from_fallback` and the outcome is
     recorded in `last_fetch_outcome`, with the reason in `last_fetch_error`.
@@ -213,11 +218,17 @@ def get_or_fetch(
             return kept
         raise
 
-    if validate is not None and not validate(payload):
-        reason = f"refreshed payload failed validation for {source}"
-        if (kept := _keep_cached("rejected", reason)) is not None:
-            return kept
-        raise ValueError(reason)
+    if validate is not None:
+        try:
+            verdict = validate(payload)
+        except Exception as exc:  # a broken validator must not take down a good source
+            logger.exception("Validator for %s raised; treating the refresh as unusable", source)
+            verdict = f"validator raised {type(exc).__name__}: {exc}"
+        if verdict is not True:
+            reason = verdict if isinstance(verdict, str) and verdict else f"refreshed payload failed validation for {source}"
+            if (kept := _keep_cached("rejected", reason)) is not None:
+                return kept
+            raise ValueError(reason)
 
     last_fetch_outcome[source] = "fresh"
     last_fetch_error.pop(source, None)
