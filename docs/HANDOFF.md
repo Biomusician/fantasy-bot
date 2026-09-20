@@ -1,4 +1,4 @@
-# Handoff — as of 2026-09-15 (redraft waiver command center)
+# Handoff — as of 2026-09-19 (dynasty source health repair)
 
 To resume cold, start a session with:
 `Read CLAUDE.md and docs/HANDOFF.md, verify the current state, and continue from the
@@ -8,16 +8,37 @@ Regenerate this file with `/handoff`.
 
 ## Status
 
-**Nothing from this tranche has been pushed.** `origin/main` is at `fdf6ad8` (the
-2026-09-04 night build, already published); the commits of this tranche sit on local
-`main` ahead of it, starting at `1f5f67f`. Pushing is Jonathan's decision; the 9am ET
-automated run publishes whatever `origin/main` holds, so treat the push as a deploy.
+**Nothing has been pushed, and that is now the top item.** `origin/main` is at `fdf6ad8`
+(the 2026-09-04 night build); local `main` carries the 2026-09-15 waiver tranche and the
+2026-09-19 source-health repair on top of it.
 
-Tests: **1763 passed, 1 skipped, 7 xfailed in ~12s**, fully synthetic and network-free
-(1140 at the start of this tranche). Report generation is ~8s, the dashboard ~7s — both
-unchanged from before the tranche.
+### Read this first: production is running a broken KTC parser
 
-## What this tranche did
+The dashboard showing `KTC dynasty — UNAVAILABLE` is **not a bug in this repo's current
+code**. KTC moved its player data and now writes
+`var playersArray = JSON.parse(document.getElementById('ktc-players').textContent)`, so a
+parser matching only the old `var playersArray = [...]` literal finds nothing on a
+perfectly healthy page. That was fixed on 2026-09-15 in `1f5f67f` — which has never been
+pushed, and the 9am ET run publishes whatever `origin/main` holds.
+
+Verified against the same live page: the `origin/main` parser matches nothing; the local
+parser returns 500 players. **Pushing is what fixes the production dashboard.** Nothing
+else in this tranche will change what that 9am run does.
+
+Tests: **1809 passed, 1 skipped, 7 xfailed in ~8s**, fully synthetic and network-free.
+`scripts/daily_run.py` is ~34s end to end (9/9 leagues); the report ~8s, the dashboard ~7s.
+
+## Diagnosing a source break
+
+    .venv/Scripts/python.exe scripts/source_health.py --source ktc          # cache only
+    .venv/Scripts/python.exe scripts/source_health.py --source ktc --live   # one request
+
+It reports each stage separately — cache path, what is on disk, whether it loads, age and
+row count, the health layer's label AND state, and under `--live` which parser strategy
+matched, how many rows it yielded and whether that would be cached. It never writes the
+cache, including under `--live`.
+
+## What the 2026-09-15 waiver tranche did
 
 Tuesday and Wednesday now open with a **Waiver Command Center** per redraft/keeper
 league: the exact claims to submit, in order, each with a drop, a FAAB window, a
@@ -51,6 +72,26 @@ A six-persona red team ran against real data. The consequential ones, all fixed:
   without moving the recommendation. See DECISIONS for the other window rules.
 - **Fallback claims were priced at $0** and speculative adds all shared one problem key,
   so only one could ever clear.
+
+## What the 2026-09-19 source-health repair did
+
+- `rankings/ktc_parser.py` (new) holds the page strategies, tried in order and each named
+  in the result: the current embedded JSON, the older `playersArray` literal, and the
+  rendered rows. The rendered rows are marked INCOMPLETE and can never be cached — the
+  page shows 50 of 500 players with one format's value and no TE-premium variants, and a
+  partial board is worse than no board because only one of them is legible as a failure.
+- Validation now sits before the cache write: row count against the shared coverage
+  floor, all four positions, no nameless rows, no mostly-duplicate board, values inside
+  KTC's 0-9999 scale, not all zeroes. A challenge page is recognised as one.
+- `get_or_fetch` takes a `validate` callback and refuses to replace a good snapshot with
+  a payload that fails it — the previous board is kept and served, the outcome is
+  "rejected", and the validator's own reason is recorded. Writes are atomic.
+- Each `SignalHealth` carries a `state` next to its label, and the reason travels with
+  it. FF Dynasty Pass is NOT_CONFIGURED rather than Unavailable.
+- `FEATURE_REQUIREMENTS` carries a mode (all / any / any-two). `source_disagreement` was
+  split by currency, because a redraft league compares FantasyPros against RotoBaller and
+  never reads KTC — one global rule was silencing it in four leagues it has no part in.
+- The banner names the capability lost and what still works.
 
 ## Must QC before pushing
 
