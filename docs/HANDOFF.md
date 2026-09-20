@@ -8,22 +8,27 @@ Regenerate this file with `/handoff`.
 
 ## Status
 
-**Nothing has been pushed, and that is now the top item.** `origin/main` is at `fdf6ad8`
-(the 2026-09-04 night build); local `main` carries the 2026-09-15 waiver tranche and the
-2026-09-19 source-health repair on top of it.
+**Pushed 2026-09-19.** `origin/main` is at `7049f44` — the 2026-09-15 waiver tranche and
+the 2026-09-19 source-health repair, 30 commits, fast-forwarded from `fdf6ad8`. The
+working tree is clean and level with the remote.
 
-### Read this first: production is running a broken KTC parser
+### The dashboard problem was deployment drift, not KTC
 
-The dashboard showing `KTC dynasty — UNAVAILABLE` is **not a bug in this repo's current
-code**. KTC moved its player data and now writes
+KTC moved its player data and now writes
 `var playersArray = JSON.parse(document.getElementById('ktc-players').textContent)`, so a
 parser matching only the old `var playersArray = [...]` literal finds nothing on a
-perfectly healthy page. That was fixed on 2026-09-15 in `1f5f67f` — which has never been
-pushed, and the 9am ET run publishes whatever `origin/main` holds.
+perfectly healthy page. That was fixed on 2026-09-15 in `1f5f67f` and then sat unpushed
+for four days while the 9am ET run kept publishing `origin/main`. Local debugging looked
+healthy the whole time, because locally the fix was already in place — which is exactly
+what made it hard to see.
 
-Verified against the same live page: the `origin/main` parser matches nothing; the local
-parser returns 500 players. **Pushing is what fixes the production dashboard.** Nothing
-else in this tranche will change what that 9am run does.
+Verified against one live fetch: the old parser matched nothing; the shipped parser
+returns 500 rows and validates. **Confirm at the next 9am run that KTC reads Fresh with
+~500 rows and the degradation banner is gone.** If it does not, start with
+`scripts/source_health.py --source ktc --live`.
+
+The lesson worth keeping: a fix that is not deployed is not a fix, and nothing in the
+repo made the gap visible.
 
 Tests: **1809 passed, 1 skipped, 7 xfailed in ~8s**, fully synthetic and network-free.
 `scripts/daily_run.py` is ~34s end to end (9/9 leagues); the report ~8s, the dashboard ~7s.
@@ -92,6 +97,17 @@ A six-persona red team ran against real data. The consequential ones, all fixed:
   split by currency, because a redraft league compares FantasyPros against RotoBaller and
   never reads KTC — one global rule was silencing it in four leagues it has no part in.
 - The banner names the capability lost and what still works.
+
+## Next tasks, in order (Jonathan, 2026-09-19)
+
+1. **KTC-independent dynasty degradation pass.** Make the drop, stash and buyer boards
+   keep working from rank/context when KTC is absent instead of silently disappearing.
+   `roster_assets.py` is the right place — see finding 1 below.
+2. **Audit first-fetch validation across every ranking source.** The cache gate added on
+   2026-09-19 protects data you already have and deliberately does not second-guess a
+   first fetch, which means first-run garbage can still become the baseline unless the
+   source's own parser rejects it. KTC is covered (its parser refuses a short board
+   before the cache is reached); the others are not audited.
 
 ## Open findings from the 2026-09-19 red team (not fixed)
 
