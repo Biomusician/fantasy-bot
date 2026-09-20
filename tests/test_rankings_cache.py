@@ -181,3 +181,97 @@ def test_ktc_index_by_name_is_memoized_per_snapshot():
     assert rebuilt is not first
     assert set(rebuilt) == {"puka nacua"}
     assert set(ktc.index_by_name(snap)) == {"bijan robinson"}
+
+
+# -- a bad refresh must never destroy a good cache -------------------------------------------
+
+
+def _good(payload="whole board"):
+    return lambda p: p == payload
+
+
+def test_a_refresh_that_fails_validation_keeps_and_serves_the_previous_cache():
+    # The failure this prevents: a layout change parses to three players,
+    # nothing raises, and the 500-player cache is overwritten with junk that
+    # downstream reads as "most of the league is worthless".
+    _age_snapshot("src", "whole board", dt.timedelta(days=2))
+    snapshot = get_or_fetch(
+        "src", lambda: "three players", max_age=dt.timedelta(hours=20),
+        ceiling=dt.timedelta(days=7), validate=_good(),
+    )
+    assert snapshot.payload == "whole board"
+    assert snapshot.served_from_fallback is True
+    assert cache_module.last_fetch_outcome["src"] == "rejected"
+    assert "failed validation" in cache_module.last_fetch_error["src"]
+    # The file on disk is untouched, so the next run still has it.
+    assert load_snapshot("src").payload == "whole board"
+
+
+def test_a_refresh_that_passes_validation_does_replace_the_cache():
+    _age_snapshot("src", "old board", dt.timedelta(days=2))
+    snapshot = get_or_fetch(
+        "src", lambda: "whole board", max_age=dt.timedelta(hours=20),
+        ceiling=dt.timedelta(days=7), validate=_good(),
+    )
+    assert snapshot.payload == "whole board"
+    assert snapshot.served_from_fallback is False
+    assert cache_module.last_fetch_outcome["src"] == "fresh"
+    assert "src" not in cache_module.last_fetch_error
+    assert load_snapshot("src").payload == "whole board"
+
+
+def test_a_rejected_refresh_with_no_cache_at_all_raises():
+    with pytest.raises(ValueError, match="failed validation"):
+        get_or_fetch("src", lambda: "junk", max_age=dt.timedelta(hours=20), validate=_good())
+    assert cache_module.last_fetch_outcome["src"] == "failed"
+    assert load_snapshot("src") is None
+
+
+def test_a_rejected_refresh_past_the_ceiling_does_not_serve_the_stale_cache(frozen_age):
+    _age_snapshot("src", "whole board", dt.timedelta(days=30))
+    frozen_age(dt.timedelta(days=30))
+    with pytest.raises(ValueError, match="failed validation"):
+        get_or_fetch(
+            "src", lambda: "junk", max_age=dt.timedelta(hours=20),
+            ceiling=dt.timedelta(days=7), validate=_good(),
+        )
+    assert cache_module.last_fetch_outcome["src"] == "failed"
+    # Even refused, the good snapshot stays on disk: it is the only copy.
+    assert load_snapshot("src").payload == "whole board"
+
+
+def test_no_validator_means_any_payload_is_accepted_as_before():
+    _age_snapshot("src", "old", dt.timedelta(days=2))
+    snapshot = get_or_fetch("src", lambda: [], max_age=dt.timedelta(hours=20), ceiling=dt.timedelta(days=7))
+    assert snapshot.payload == []
+    assert cache_module.last_fetch_outcome["src"] == "fresh"
+
+
+def test_a_fetch_failure_records_why_it_fell_back():
+    _age_snapshot("src", "whole board", dt.timedelta(days=2))
+    snapshot = get_or_fetch("src", _boom, max_age=dt.timedelta(hours=20), ceiling=dt.timedelta(days=7))
+    assert snapshot.payload == "whole board"
+    assert cache_module.last_fetch_outcome["src"] == "fallback"
+    assert cache_module.last_fetch_error["src"] == "RuntimeError: source unreachable"
+
+
+def test_a_snapshot_is_written_atomically_and_leaves_no_temp_file(tmp_path):
+    save_snapshot("src", {"rows": [1, 2, 3]})
+    assert load_snapshot("src").payload == {"rows": [1, 2, 3]}
+    assert [p.name for p in tmp_path.iterdir()] == ["src.json"]
+
+
+def test_a_failed_write_leaves_the_previous_cache_intact(monkeypatch):
+    # A partial write is not harmless: load_snapshot reads an unparseable
+    # file as no cache at all, which is an Unavailable source.
+    save_snapshot("src", "whole board")
+    real_replace = cache_module.os.replace
+
+    def _explode(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(cache_module.os, "replace", _explode)
+    with pytest.raises(OSError):
+        save_snapshot("src", "junk")
+    monkeypatch.setattr(cache_module.os, "replace", real_replace)
+    assert load_snapshot("src").payload == "whole board"

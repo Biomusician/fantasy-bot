@@ -1,28 +1,27 @@
-"""KeepTradeCut dynasty trade value scraper.
+"""KeepTradeCut dynasty trade value fetch and cache.
 
 KTC's dynasty-rankings page embeds the full player dataset in the HTML — no
-headless browser needed, just pull the page and regex out the JSON. Since
-September 2026 it lives in a `<script type="application/json" id="ktc-players">`
-tag (the page's JS then does `playersArray = JSON.parse(...)` on it); before
-that it was an inline `var playersArray = [...]` literal. Both shapes carry
-the same per-player records, so we try the script tag first and fall back to
-the literal in case KTC reverts. Each player carries separate 1QB and Superflex values,
-plus three TE-premium variants (tep/tepp/teppp = +0.5/+1/+1.5 per reception
-to TEs) for each. That's exactly the axis our leagues vary on, so this is
-the primary dynasty valuation source.
+headless browser needed. Each player carries separate 1QB and Superflex
+values plus three TE-premium variants (tep/tepp/teppp = +0.5/+1/+1.5 per
+reception to TEs) for each, which is exactly the axis these leagues vary
+on, so this is the primary dynasty valuation source.
+
+Where the dataset lives in the page has changed twice; `ktc_parser.py` owns
+the strategies and the validation, and this module owns the request, the
+cache and the name index. A parse that does not survive validation never
+reaches the cache, so a layout change degrades to "serving yesterday's
+board" instead of "overwriting it with nothing".
 """
 from __future__ import annotations
 
 import datetime as dt
-import json
-import re
-from dataclasses import asdict, dataclass
 
 import requests
 
 from sleeper_tool.name_matching import build_name_index
 from sleeper_tool.rankings.cache import RankingSnapshot, get_or_fetch
 from sleeper_tool.rankings.freshness import ceiling_for
+from sleeper_tool.rankings.ktc_parser import KTCParseError, KtcParse, parse_ktc, validate_parse
 
 KTC_URL = "https://keeptradecut.com/dynasty-rankings"
 DEFAULT_MAX_AGE = dt.timedelta(hours=20)
@@ -34,70 +33,9 @@ _BROWSER_HEADERS = {
     )
 }
 
-_PLAYERS_SCRIPT_RE = re.compile(
-    r"""<script\b[^>]*\bid=["']ktc-players["'][^>]*>(.*?)</script>""", re.DOTALL | re.IGNORECASE
-)
-_PLAYERS_ARRAY_RE = re.compile(r"var playersArray = (\[.*?\]);", re.DOTALL)
-_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.DOTALL | re.IGNORECASE)
-
 
 class KTCFetchError(RuntimeError):
     pass
-
-
-@dataclass(frozen=True)
-class KTCValue:
-    value: int
-    rank: int
-    positional_rank: int
-
-
-@dataclass(frozen=True)
-class KTCPlayer:
-    name: str
-    position: str
-    team: str | None
-    age: float | None
-    is_rookie: bool
-    one_qb: KTCValue
-    superflex: KTCValue
-    one_qb_tep: KTCValue
-    one_qb_tepp: KTCValue
-    one_qb_teppp: KTCValue
-    superflex_tep: KTCValue
-    superflex_tepp: KTCValue
-    superflex_teppp: KTCValue
-
-
-def _value(block: dict, key: str) -> KTCValue:
-    sub = block.get(key) if key else block
-    return KTCValue(
-        value=sub.get("value", 0),
-        rank=sub.get("rank", 0),
-        positional_rank=sub.get("positionalRank", 0),
-    )
-
-
-def _parse_player(raw: dict) -> KTCPlayer | None:
-    one_qb = raw.get("oneQBValues")
-    sf = raw.get("superflexValues")
-    if not one_qb or not sf:
-        return None
-    return KTCPlayer(
-        name=raw.get("playerName", ""),
-        position=raw.get("position", ""),
-        team=raw.get("team") or None,
-        age=raw.get("age"),
-        is_rookie=bool(raw.get("rookie", False)),
-        one_qb=_value(one_qb, ""),
-        superflex=_value(sf, ""),
-        one_qb_tep=_value(one_qb, "tep"),
-        one_qb_tepp=_value(one_qb, "tepp"),
-        one_qb_teppp=_value(one_qb, "teppp"),
-        superflex_tep=_value(sf, "tep"),
-        superflex_tepp=_value(sf, "tepp"),
-        superflex_teppp=_value(sf, "teppp"),
-    )
 
 
 def fetch_ktc_html() -> str:
@@ -106,51 +44,56 @@ def fetch_ktc_html() -> str:
     return resp.text
 
 
-def _extract_players_json(html: str) -> tuple[str, str]:
-    """(label, raw JSON text) for whichever embedding the page uses."""
-    match = _PLAYERS_SCRIPT_RE.search(html)
-    if match and match.group(1).strip():
-        return "ktc-players script tag", match.group(1)
-    match = _PLAYERS_ARRAY_RE.search(html)
-    if match:
-        return "playersArray literal", match.group(1)
-    # Say what was actually served so a bot wall or a redesign is
-    # distinguishable from the log line alone.
-    title = _TITLE_RE.search(html)
-    title_text = " ".join(title.group(1).split())[:80] if title else "no <title>"
-    raise KTCFetchError(
-        "Could not find player data in KTC page (neither the ktc-players script tag nor "
-        f"var playersArray; served {len(html)} chars, title {title_text!r}) — "
-        "site layout may have changed"
-    )
-
-
 def parse_ktc_players(html: str) -> list[dict]:
-    label, raw_json = _extract_players_json(html)
+    """The validated player list, or KTCFetchError. The single entry point
+    for "turn a KTC page into a board"; `ktc_parser.parse_ktc` is the
+    unvalidated view of the same page, for diagnostics."""
     try:
-        raw_players = json.loads(raw_json)
-    except json.JSONDecodeError as exc:
-        raise KTCFetchError(f"Failed to parse KTC {label} JSON: {exc}") from exc
-    if not isinstance(raw_players, list):
-        raise KTCFetchError(f"KTC {label} is not a JSON array — site layout may have changed")
+        parse = parse_ktc(html)
+        validate_parse(parse)
+    except KTCParseError as exc:
+        raise KTCFetchError(str(exc)) from exc
+    return parse.players
 
-    players = []
-    for raw in raw_players:
-        parsed = _parse_player(raw)
-        if parsed is not None:
-            players.append(asdict(parsed))
-    if not players:
-        raise KTCFetchError("Parsed 0 players from KTC — site layout may have changed")
-    return players
+
+def parse_for_diagnostics(html: str) -> tuple[KtcParse | None, str | None]:
+    """(parse, failure reason). Never raises — the diagnostics command wants
+    to report a bad page, not die on it."""
+    try:
+        return parse_ktc(html), None
+    except KTCParseError as exc:
+        return None, str(exc)
 
 
 def _fetch_and_parse() -> list[dict]:
     return parse_ktc_players(fetch_ktc_html())
 
 
+def valid_ktc_payload(payload) -> bool:
+    """Cache-write gate: is this payload a whole board?
+
+    `get_or_fetch` calls this before replacing a good snapshot, so a parse
+    that slips past the fetch path (a hand-edited cache, a future caller)
+    still cannot install a board that downstream would read as "most of the
+    league is worthless".
+    """
+    if not isinstance(payload, list):
+        return False
+    try:
+        validate_parse(KtcParse(players=payload, strategy="cache", complete=True))
+    except (KTCParseError, KeyError, TypeError):
+        return False
+    return True
+
+
 def get_ktc_rankings(*, force: bool = False, max_age: dt.timedelta = DEFAULT_MAX_AGE) -> RankingSnapshot:
     return get_or_fetch(
-        "ktc_dynasty", _fetch_and_parse, max_age=max_age, force=force, ceiling=ceiling_for("ktc")
+        "ktc_dynasty",
+        _fetch_and_parse,
+        max_age=max_age,
+        force=force,
+        ceiling=ceiling_for("ktc"),
+        validate=valid_ktc_payload,
     )
 
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,14 +18,23 @@ logger = logging.getLogger(__name__)
 CACHE_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "rankings_cache"
 
 # source -> outcome of the most recent get_or_fetch call in this process:
-# "fresh"    the source was re-fetched and the cache rewritten
-# "cached"   the cache was young enough that no fetch was attempted
-# "fallback" the fetch failed and a stale cache was served in its place
-# "failed"   the fetch failed with no usable cache; get_or_fetch raised
+# "fresh"     the source was re-fetched, validated, and the cache rewritten
+# "cached"    the cache was young enough that no fetch was attempted
+# "fallback"  the fetch or parse failed and a cache was served in its place
+# "rejected"  the refresh produced something that failed validation; the
+#             PREVIOUS cache was kept and served rather than overwritten
+# "failed"    no usable cache and nothing to serve; get_or_fetch raised
 # Process-local and deliberately not persisted — it describes THIS run, and
 # signal_health reads it to tell "served from a fallback" apart from "the
 # cache was simply still fresh", which the snapshot alone can't distinguish.
 last_fetch_outcome: dict[str, str] = {}
+
+# source -> the exception text behind a "fallback"/"rejected"/"failed"
+# outcome. Same lifetime and purpose as last_fetch_outcome: a run that
+# serves yesterday's board should be able to say WHY, and "Unavailable"
+# with no reason is what made the last source break take an afternoon to
+# diagnose instead of a minute.
+last_fetch_error: dict[str, str] = {}
 
 
 def _aware(stamp: dt.datetime) -> dt.datetime:
@@ -84,9 +94,22 @@ _SETTLED_NS = 1_000_000_000
 
 
 def save_snapshot(source: str, payload: Any) -> RankingSnapshot:
+    """Write atomically: serialize to a temp file in the same directory and
+    os.replace it into place.
+
+    A partial write is not a harmless one. `load_snapshot` treats an
+    unparseable file as no cache at all, so a process killed mid-write (or
+    a full disk) turns a good snapshot into an Unavailable source and
+    suppresses everything that rested on it.
+    """
     snapshot = RankingSnapshot(source=source, fetched_at=dt.datetime.now(dt.timezone.utc), payload=payload)
     path = _cache_path(source)
-    path.write_text(json.dumps(snapshot.to_json()), encoding="utf-8")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(snapshot.to_json()), encoding="utf-8")
+        os.replace(tmp, path)  # atomic on Windows and POSIX alike
+    finally:
+        tmp.unlink(missing_ok=True)
     _parsed_cache.pop(str(path), None)  # don't lean on mtime for our own writes
     return snapshot
 
@@ -127,6 +150,7 @@ def get_or_fetch(
     max_age: dt.timedelta,
     force: bool = False,
     ceiling: dt.timedelta | None = None,
+    validate=None,
 ) -> RankingSnapshot:
     """Return a cached snapshot if fresh enough, otherwise call fetch_fn() and cache the result.
 
@@ -144,31 +168,57 @@ def get_or_fetch(
     A snapshot exactly AT the ceiling is still served — the ceiling is the
     oldest acceptable age, not the first unacceptable one.
 
+    `validate(payload) -> bool` is the gate on WRITING. A fetch that
+    succeeds and parses to something implausible — three players where a
+    board carries five hundred — is a worse outcome than a fetch that
+    raises, because it replaces a good snapshot and still reports success.
+    A payload that fails validation is refused: the previous cache is kept
+    and served (subject to the same ceiling), and the outcome is "rejected".
+    With no cache to keep, the refusal raises like any other failure.
+
     The returned snapshot carries `served_from_fallback` and the outcome is
-    recorded in the module-level `last_fetch_outcome` registry.
+    recorded in `last_fetch_outcome`, with the reason in `last_fetch_error`.
     """
     cached = load_snapshot(source)
     if not force and cached is not None and cached.age() <= max_age:
         last_fetch_outcome[source] = "cached"
+        last_fetch_error.pop(source, None)
         return cached
 
-    try:
-        payload = fetch_fn()
-    except Exception:
+    def _keep_cached(outcome: str, reason: str) -> RankingSnapshot | None:
+        """Serve the snapshot we already have, if policy still allows it."""
         if cached is not None and (ceiling is None or cached.age() <= ceiling):
-            logger.warning("Live fetch failed for %s; falling back to cached snapshot from %s", source, cached.fetched_at)
+            logger.warning(
+                "Refresh of %s did not produce a usable board (%s); keeping the cached snapshot from %s",
+                source, reason, cached.fetched_at,
+            )
             cached.served_from_fallback = True
-            last_fetch_outcome[source] = "fallback"
+            last_fetch_outcome[source] = outcome
+            last_fetch_error[source] = reason
             return cached
         if cached is not None:
             logger.error(
-                "Live fetch failed for %s and the cached snapshot from %s is past its %s ceiling; "
+                "Refresh of %s failed (%s) and the cached snapshot from %s is past its %s ceiling; "
                 "treating the source as unavailable rather than serving it",
-                source,
-                cached.fetched_at,
-                ceiling,
+                source, reason, cached.fetched_at, ceiling,
             )
         last_fetch_outcome[source] = "failed"
+        last_fetch_error[source] = reason
+        return None
+
+    try:
+        payload = fetch_fn()
+    except Exception as exc:
+        if (kept := _keep_cached("fallback", f"{type(exc).__name__}: {exc}")) is not None:
+            return kept
         raise
+
+    if validate is not None and not validate(payload):
+        reason = f"refreshed payload failed validation for {source}"
+        if (kept := _keep_cached("rejected", reason)) is not None:
+            return kept
+        raise ValueError(reason)
+
     last_fetch_outcome[source] = "fresh"
+    last_fetch_error.pop(source, None)
     return save_snapshot(source, payload)
