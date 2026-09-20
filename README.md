@@ -344,7 +344,8 @@ sleeper_tool/
   name_matching.py          Cross-source player name normalization
   sleeper_positions.py       What position Sleeper means (primary listing vs fantasy eligibility)
   rankings/
-    ktc.py                   KeepTradeCut dynasty value scraper
+    ktc.py                   KeepTradeCut fetch, cache and name index
+    ktc_parser.py             KTC page strategies + the validation that gates the cache
     fantasypros.py            FantasyPros ECR scraper
     rotoballer.py               RotoBaller projections scraper
     rotoballer_waivers.py        RotoBaller's weekly waiver board (an acquisition-priority source)
@@ -417,6 +418,7 @@ sleeper_tool/
   watchlist.py                                                             Persisted near-miss items with deterministic triggers
   signal_health.py                                                          Per-source freshness labels, feature suppression
   rankings/freshness.py                                                      Source-specific fresh / usable / ceiling windows
+  scripts/source_health.py                                                   Per-source diagnostics: fetch, parse strategy, cache, health
   report_data.py                  Shared data layer for both report formats
   report.py                        Markdown renderer
   html_report.py                    HTML dashboard renderer

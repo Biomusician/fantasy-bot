@@ -20,7 +20,7 @@ Individual stages: `scripts/pull_data.py` (sync only), `scripts/generate_report.
 .venv/Scripts/python.exe -m pytest tests/ -q
 ```
 
-1760+ tests, about twelve seconds, fully synthetic — no network. Keep it that way.
+1800+ tests, about twelve seconds, fully synthetic — no network. Keep it that way.
 
 ## Conventions
 
@@ -80,6 +80,14 @@ and `waiver_calibration.py`. `waiver_sources.py` loads the outside boards once a
 `league_depth.py` answers how many standard teams' worth of players are off the wire.
 Dynasty leagues keep `waiver_engine.py` untouched.
 
+External sources are cache-first and fail closed. `rankings/ktc_parser.py` holds the
+page strategies and the validation; a parse that cannot be a whole board is an explicit
+failure, and `get_or_fetch`'s `validate` gate means a failed or implausible refresh keeps
+and serves the previous snapshot rather than overwriting it. `signal_health` grades each
+source with a five-word label AND a machine-readable state (FETCH_FAILED_USING_CACHE,
+PARSE_FAILED_USING_CACHE, NOT_CONFIGURED, …), and `FEATURE_REQUIREMENTS` carries a mode
+(all / any / any-two) so losing one source only suppresses what genuinely needed it.
+
 Two facts about Sleeper that are easy to get wrong, and that cost real defects:
 `settings.reserve_slots` is IR capacity (there is no "IR" entry in `roster_positions`),
 and a player's `position` is his primary NFL listing, not always a fantasy one — use
@@ -106,6 +114,8 @@ and a player's `position` is his primary NFL listing, not always a fantasy one �
 
 - Don't add a network call to the test suite.
 - Don't hammer KeepTradeCut, FantasyPros, or RotoBaller during development — use the cache
-  or fixtures. These are free sources that can rate-limit or block.
+  or fixtures. These are free sources that can rate-limit or block. To see what one source
+  is actually doing, use `scripts/source_health.py --source ktc` (cache only; `--live`
+  makes exactly one request and never writes the cache).
 - Don't regenerate `data/*.sqlite3` or delete the rankings cache to "start clean" without
   asking; a refill costs real scraping.

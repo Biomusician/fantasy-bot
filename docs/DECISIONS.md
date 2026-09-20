@@ -3,6 +3,82 @@
 Consequential choices and why. Newest first. The module docstrings carry the
 mechanics; this file carries the reasoning that isn't obvious from the code.
 
+## 2026-09-19 — Dynasty source health: fail closed, and say which half broke
+
+### The break was a deploy, not the code
+
+KTC moved its player data into `<script id="ktc-players">` and now writes
+`var playersArray = JSON.parse(document.getElementById(...))`. The parser
+that matched only the old `var playersArray = [...]` literal therefore finds
+nothing on a perfectly healthy page. That was fixed locally on 2026-09-15 in
+`1f5f67f` — but never pushed, and the 9am run publishes `origin/main`. So
+production kept running the old parser, kept failing, and eventually aged
+its KTC cache past the ceiling into Unavailable. Verified by running both
+parsers against the same live page: the deployed one matches nothing, the
+local one returns 500 players.
+
+The lesson recorded here is not about KTC. A fix that is not deployed is not
+a fix, and nothing in the repo made that visible: the local dashboard looked
+healthy while production did not.
+
+### An empty parse is a failure, not an empty board
+
+The more dangerous version of this break never raises. A layout change that
+still matches something — three players instead of five hundred — used to
+parse cleanly, overwrite the good cache, and report success. Downstream that
+does not read as an outage; it reads as a league where 450 rostered players
+are suddenly worthless.
+
+So validation is explicit and sits BEFORE the write: row count against the
+shared coverage floor, all four positions present, no nameless rows, no
+mostly-duplicate board, values inside KTC's own 0-9999 scale, not all
+zeroes. `get_or_fetch` takes that validator and refuses to replace a good
+snapshot with one that fails it — the previous board is kept and served, the
+outcome is "rejected", and the reason is recorded. Writes are atomic,
+because `load_snapshot` reads a half-written file as no cache at all.
+
+### The rendered markup is a fallback that must never be cached
+
+KTC's visible rows can be parsed, and doing so is useful: it distinguishes a
+real rankings page from a bot wall. But the page renders 50 of 500 players
+with one format's value and no TE-premium variants, so it is marked
+INCOMPLETE and validation refuses it. A partial board is worse than no board
+because only one of them is legible as a failure.
+
+### The label is the grade; the state is the diagnosis
+
+"Unavailable" was covering a source serving a validated snapshot after a
+failed refresh, a source whose refresh parsed to junk, a paid CSV nobody has
+exported, and a source with nothing at all. Those have different fixes, so
+each signal now carries a state next to its label, and the reason travels
+with it. The Dynasty Pass is NOT_CONFIGURED: it is a manual export of a paid
+product, nothing is ever scraped or bypassed to fill it, and nothing else
+depends on it.
+
+### Degradation is a capability question
+
+`FEATURE_REQUIREMENTS` now carries a mode. Losing KTC suppresses market-VALUE
+arithmetic, because that is what KTC is for — but `dynasty_rank_context`
+survives on either KTC or FantasyPros dynasty ECR.
+
+The real over-suppression was `source_disagreement`. Its computation is split
+by currency: a dynasty league compares KTC against FantasyPros dynasty, a
+redraft league compares FantasyPros redraft against RotoBaller and never
+reads KTC at all. One global requirement meant a KTC outage silenced the
+feature in the four redraft/keeper leagues it has no part in. It is split to
+match the computation — and still suppressed honestly where only one
+comparable source is left, rather than kept alive by comparing a dynasty
+value against a redraft projection.
+
+### The banner names what was lost
+
+"Signals degraded" tells a reader to distrust a page that mostly works. The
+banner now names the capability ("Dynasty market values degraded") and says
+what still works; a source merely serving a validated cached snapshot says
+so and adds that no recommendation was suppressed. Severity still follows
+the health layer's own grade so the banner cannot contradict the section it
+sits above.
+
 ## 2026-09-15 — The Waiver Command Center (redraft and keeper)
 
 The Tuesday report used to answer "here are some interesting free agents".
