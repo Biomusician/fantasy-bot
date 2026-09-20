@@ -473,6 +473,27 @@ def capability_name(feature: str) -> str:
     return _CAPABILITY_NAMES.get(feature, feature.replace("_", " "))
 
 
+NO_TRADES_NOTE = "No trade offers cleared the value-match bar this week."
+
+
+def no_trades_note(suppressed) -> str:
+    """Why there are no trade offers.
+
+    Every trade-side function filters on `asset_value.corroborated`, which
+    needs a number in the league's currency — for a dynasty league that is
+    the KTC market value. With KTC out, no package is ever evaluated, and
+    saying "nothing cleared the bar" asserts a comparison that never
+    happened. The reader deserves to know the difference between "I looked
+    and found nothing" and "I could not look".
+    """
+    if suppressed and "dynasty_values" in suppressed:
+        return (
+            "Dynasty trade values are unavailable this run, so no package was evaluated — "
+            "this is not the same as nothing clearing the bar."
+        )
+    return NO_TRADES_NOTE
+
+
 def health_banner(report) -> HealthBanner | None:
     """One line at the top of both outputs naming what is actually missing.
 

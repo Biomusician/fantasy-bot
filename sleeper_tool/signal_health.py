@@ -130,8 +130,8 @@ ANY_TWO_OF = "any2"  # at least two, for features that COMPARE sources
 FEATURE_REQUIREMENTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "dynasty_values": (ALL_OF, ("ktc",)),
     "dynasty_rank_context": (ANY_OF, ("ktc", "fantasypros")),
-    "source_disagreement_dynasty": (ALL_OF, ("ktc", "fantasypros")),
-    "source_disagreement_redraft": (ALL_OF, ("fantasypros", "rotoballer")),
+    "source_disagreement_dynasty": (ANY_TWO_OF, ("ktc", "fantasypros")),
+    "source_disagreement_redraft": (ANY_TWO_OF, ("fantasypros", "rotoballer")),
     "redraft_currency": (ALL_OF, ("rotoballer", "fantasypros")),
     "replacement_value": (ALL_OF, ("rotoballer", "fantasypros")),
     "lineup_optimizer": (ALL_OF, ("rotoballer", "fantasypros")),

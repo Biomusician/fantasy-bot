@@ -29,6 +29,8 @@ from sleeper_tool.team_status import CONTENDER, MIDDLING, REBUILD
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, describe_format
 from sleeper_tool.report_views import (
     MATRIX_COLUMNS,
+    capability_name,
+    no_trades_note,
     NO_CLAIMS_NOTE,
     claim_view,
     command_center_subtitle,
@@ -986,7 +988,7 @@ def _league_panel(data: LeagueReportData, shared_schedule: str = "", waiver_mode
         <section class="panel-block">
           <h3>Trade offers</h3>
           <div class="trade-grid">
-            {"".join(_trade_card(p, i, data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None, data.ladders.get(i - 1), data.trade_economics[i - 1] if i - 1 < len(data.trade_economics) else None, conflict_for(data.conflicts, TRADE, str(i - 1)), data.provenance.get((TRADE, str(i - 1)))) for i, p in enumerate(data.proposals, start=1)) if data.proposals else '<p class="empty-note">No trade offers cleared the value-match bar this week.</p>'}
+            {"".join(_trade_card(p, i, data.trade_impacts[i - 1] if i - 1 < len(data.trade_impacts) else None, data.ladders.get(i - 1), data.trade_economics[i - 1] if i - 1 < len(data.trade_economics) else None, conflict_for(data.conflicts, TRADE, str(i - 1)), data.provenance.get((TRADE, str(i - 1)))) for i, p in enumerate(data.proposals, start=1)) if data.proposals else f'<p class="empty-note">{esc(no_trades_note(getattr(data, "suppressed", None)))}</p>'}
           </div>
           {_consolidation_block(data.consolidations)}
         </section>
@@ -1306,7 +1308,7 @@ def _signal_health_section(report: WeeklyReportData) -> str:
         )
         title = "Signal health &middot; " + esc(health_state(report))
         items = [f"<li>{esc(n)}</li>" for n in report.health.notes]
-        items += [f"<li>Suppressed this run: {esc(f.replace('_', ' '))} &mdash; {esc(why)}</li>" for f, why in sorted(report.suppressed.items())]
+        items += [f"<li>Suppressed this run: {esc(capability_name(f))} &mdash; {esc(why)}</li>" for f, why in sorted(report.suppressed.items())]
         notes_html = f'<ul class="alert-list">{"".join(items)}</ul>' if items else ""
     extra = []
     if report.usage_note:

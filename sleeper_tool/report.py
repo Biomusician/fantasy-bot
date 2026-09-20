@@ -29,6 +29,7 @@ from sleeper_tool.replacement_value import SCARCE, VERY_SCARCE, ReplacementMarke
 from sleeper_tool.report_data import LeagueReportData, PriorityAction, WeeklyReportData, build_weekly_report_data
 from sleeper_tool.report_views import (
     MATRIX_COLUMNS,
+    capability_name,
     NO_CLAIMS_NOTE,
     claim_view,
     command_center_subtitle,
@@ -48,6 +49,7 @@ from sleeper_tool.report_views import (
     action_view,
     claim,
     confidence_caveat,
+    no_trades_note,
     health_banner,
     lineup_lines,
     lineup_total,
@@ -851,7 +853,7 @@ def render_league_section(data: LeagueReportData, shared_schedule: str = "", wai
             trade_lines.extend(_render_trade_proposal(p, i, impact, data.ladders.get(i - 1), economics, conflict, data.provenance.get((TRADE, str(i - 1)))))
             trade_lines.append("")
     else:
-        trade_lines.append("No trade offers cleared the value-match bar this week.")
+        trade_lines.append(no_trades_note(getattr(data, "suppressed", None)))
         trade_lines.append("")
     if data.consolidations:
         trade_lines.append("**Consolidation (2-for-1) summary** — the 2-for-1 offers above, by lineup gain:")
@@ -943,7 +945,7 @@ def _render_signal_health(report: WeeklyReportData) -> list[str]:
         for note in report.health.notes:
             lines.append(f"- ⚠️ {note}")
         for feature, why in sorted(report.suppressed.items()):
-            lines.append(f"- ⚠️ Suppressed this run: {feature.replace('_', ' ')} — {why}")
+            lines.append(f"- ⚠️ Suppressed this run: {capability_name(feature)} — {why}")
     if report.usage_note:
         lines.append(f"- Player usage: {report.usage_note}.")
     if report.crosswalk_note:

@@ -416,7 +416,10 @@ def test_an_any_of_capability_survives_losing_one_of_its_sources():
 def test_a_comparison_is_suppressed_rather_than_kept_alive_on_one_source():
     only_one = sh.SignalHealthReport(unavailable_families={"ktc"})
     why = sh.suppressed_features(only_one)["source_disagreement_dynasty"]
-    assert "KTC" in why and "unavailable" in why
+    # The mode written for a comparison says why it cannot be made, rather
+    # than naming a requirement.
+    assert "only FantasyPros is available" in why
+    assert "one source cannot disagree with itself" in why
 
 
 # -- rendering -------------------------------------------------------------
