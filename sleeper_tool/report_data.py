@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass, field
 
 from sleeper_tool.action_priority import ALERT, DEFENSIVE_ADD, DROP, STASH, STREAMER, Action, PriorityKey, classify, rank_actions
-from sleeper_tool.asset_value import percentile_for_currency, value_currency
+from sleeper_tool.asset_value import DYNASTY_CURRENCY, percentile_for_currency, value_currency
 from sleeper_tool.buyer_board import BuyerBoard, annotate_sell_high_proposals, build_buyer_boards, sell_high_candidates
 from sleeper_tool.bye_collision import ByeCollision, describe_bye_collision, plan_bye_collisions, positions_covering
 from sleeper_tool.config import LEAGUES, LeagueInfo, MY_USER_ID
@@ -699,9 +699,17 @@ def build_league_report_data(
     )
 
     source_table = build_source_rank_tables(engine.snapshots_for(my_roster.fmt), my_roster.fmt)
+    # Which pair this league's disagreement compares depends on its currency
+    # (source_disagreement.source_view): a dynasty league reads KTC against
+    # FantasyPros dynasty, a redraft league reads FantasyPros redraft against
+    # RotoBaller and never touches KTC. Asking about the wrong one is how a
+    # KTC outage used to silence the feature in leagues it has no part in.
+    disagreement_feature = (
+        "source_disagreement_dynasty" if currency == DYNASTY_CURRENCY else "source_disagreement_redraft"
+    )
     source_views = (
         _build_source_views(source_table, currency, my_roster, proposals, waiver_targets)
-        if "source_disagreement" not in suppressed
+        if disagreement_feature not in suppressed
         else {}
     )
     _annotate_proposals_with_sources(proposals, source_views)

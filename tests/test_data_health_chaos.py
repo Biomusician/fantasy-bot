@@ -362,7 +362,7 @@ def test_fantasypros_absent_keeps_trades_waivers_status_alerts_and_every_lineup_
     and the redraft currency's ECR percentiles — nothing lineup-shaped."""
     built = _absent(lab, "fantasypros")
     ld = built.ld
-    assert {"source_disagreement", "redraft_currency"} <= set(built.report.suppressed)
+    assert {"source_disagreement_dynasty", "source_disagreement_redraft", "redraft_currency"} <= set(built.report.suppressed)
     assert ld.proposals and ld.waiver_targets and ld.time_sensitive
     assert ld.team_status is not None and ld.team_status.status in ("contender", "middling", "rebuild")
     assert ld.lineup is not None and ld.lineup.total_projected_points > 0
@@ -377,7 +377,11 @@ def test_fantasypros_absent_keeps_trades_waivers_status_alerts_and_every_lineup_
 def test_ktc_absent_offers_no_dynasty_trades_but_keeps_waivers_lineup_and_status(lab):
     built = _absent(lab, "ktc")
     ld = built.ld
-    assert {"dynasty_values", "source_disagreement"} <= set(built.report.suppressed)
+    assert {"dynasty_values", "source_disagreement_dynasty"} <= set(built.report.suppressed)
+    # A redraft league compares FantasyPros against RotoBaller and never
+    # reads KTC, so losing KTC must not silence it there.
+    assert "source_disagreement_redraft" not in built.report.suppressed
+    assert "dynasty_rank_context" not in built.report.suppressed
     # Dynasty trades rest on KTC: none are invented from nothing, and the
     # empty state is spoken rather than left blank.
     assert ld.proposals == []
@@ -416,7 +420,7 @@ def test_every_ranking_family_absent_still_yields_a_report_with_waivers_from_tre
     assert ld.error is None
     assert built.health.unavailable_families >= {"ktc", "fantasypros", "rotoballer"}
     assert {"dynasty_values", "lineup_optimizer", "matchup_leverage", "replacement_value", "streamer_planner",
-            "redraft_currency", "source_disagreement"} <= set(built.report.suppressed)
+            "redraft_currency", "source_disagreement_dynasty", "source_disagreement_redraft"} <= set(built.report.suppressed)
     assert is_complete_run(built.report) is False
     # Trending adds come from Sleeper, not a ranking source: still there.
     assert ld.waiver_targets
@@ -557,7 +561,9 @@ def test_a_cache_past_the_ceiling_whose_refetch_raises_makes_ktc_unavailable(lab
     assert built.ld.error is None
     assert built.labels("ktc") == {UNAVAILABLE}
     assert "dynasty_values" in built.report.suppressed
-    assert _note_in_both(built, "KTC unavailable (engine has no KTC snapshot)")
+    # The reason the cache layer recorded travels with the note, so the
+    # reader is not left with a bare "Unavailable" to go and diagnose.
+    assert "KTC down" in _note_in_both(built, "KTC unavailable (engine has no KTC snapshot")
     assert built.ld.proposals == [] and built.ld.waiver_targets and built.ld.lineup is not None
     assert is_complete_run(built.report) is False
 
@@ -568,7 +574,8 @@ def test_a_cache_inside_the_ceiling_whose_refetch_raises_is_served_and_labelled_
     assert built.report.engine_missing == []
     signal = built.health.by_family("ktc")[0]
     assert signal.label == STALE and signal.fallback is True
-    assert _note_in_both(built, "KTC dynasty served from cache after a failed re-fetch")
+    assert _note_in_both(built, "KTC dynasty: refresh failed")
+    assert _note_in_both(built, "serving the validated")
     assert "dynasty_values" not in built.report.suppressed
     assert built.ld.proposals  # yesterday's prices still price a trade...
     assert is_complete_run(built.report) is False  # ...but never become tomorrow's baseline
@@ -680,7 +687,7 @@ def test_a_schedule_past_its_usable_window_is_served_from_cache_and_labelled_sta
     built = _schedule_scenario(lab, "schedule:20d", age=dt.timedelta(days=20))
     signal = built.health.by_family("nflverse_schedule")[0]
     assert signal.label == STALE and signal.fallback is True
-    assert _note_in_both(built, "NFL schedule served from cache after a failed re-fetch")
+    assert _note_in_both(built, "NFL schedule: refresh failed")
     assert "NFL schedule · Stale · 20.0d" in built.md
     assert "schedule_windows" not in built.report.suppressed
     assert built.ld.windows is not None and built.ld.windows.next_weeks == [3, 4, 5]

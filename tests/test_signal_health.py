@@ -198,8 +198,11 @@ def test_a_fallback_snapshot_is_flagged_in_the_detail_and_notes():
 
     assert ktc.fallback is True
     assert ktc.label == sh.USABLE
-    assert "failed re-fetch" in ktc.detail
-    assert any("failed re-fetch" in note for note in report.notes)
+    # The label is the grade; the state is the diagnosis, and the detail
+    # says which snapshot is actually being served.
+    assert ktc.state == sh.STATE_FETCH_FAILED_USING_CACHE
+    assert "refresh failed" in ktc.detail and "serving the validated" in ktc.detail
+    assert any("refresh failed" in note for note in report.notes)
     # A live source being down is a degradation even though the cached
     # numbers it served are young enough to use.
     assert report.degraded is True
@@ -372,9 +375,13 @@ def test_a_missing_ktc_suppresses_only_what_needs_ktc():
     suppressed = sh.suppressed_features(sh.build_health(engine=engine, now=NOW))
 
     assert "dynasty_values" in suppressed
-    assert "source_disagreement" in suppressed
-    assert "redraft_currency" not in suppressed
     assert "KTC" in suppressed["dynasty_values"]
+    # The dynasty comparison needs KTC; the redraft one never reads it, and
+    # FantasyPros dynasty ECR still places a player without it.
+    assert "source_disagreement_dynasty" in suppressed
+    assert "source_disagreement_redraft" not in suppressed
+    assert "dynasty_rank_context" not in suppressed
+    assert "redraft_currency" not in suppressed
 
 
 def test_a_stale_source_does_not_suppress_anything():
@@ -385,10 +392,31 @@ def test_a_stale_source_does_not_suppress_anything():
     assert "dynasty_values" not in sh.suppressed_features(report)
 
 
-def test_every_feature_requirement_names_a_known_family():
+def test_every_feature_requirement_names_a_known_family_and_a_known_mode():
     known = set(SOURCE_WINDOWS)
-    for feature, families in sh.FEATURE_REQUIREMENTS.items():
+    modes = {sh.ALL_OF, sh.ANY_OF, sh.ANY_TWO_OF}
+    for feature, (mode, families) in sh.FEATURE_REQUIREMENTS.items():
+        assert mode in modes, feature
         assert set(families) <= known, feature
+        assert families, feature
+
+
+def test_an_any_of_capability_survives_losing_one_of_its_sources():
+    # Losing the market-value source must not take out the rank context the
+    # other dynasty source still supports.
+    engine = _healthy_engine(ktc_snapshot=_snapshot("ktc_dynasty", dt.timedelta(days=99)))
+    report = sh.build_health(engine=engine, now=NOW)
+    assert "dynasty_rank_context" not in sh.suppressed_features(report)
+
+    both_gone = sh.SignalHealthReport(unavailable_families={"ktc", "fantasypros"})
+    suppressed = sh.suppressed_features(both_gone)
+    assert "none is available" in suppressed["dynasty_rank_context"]
+
+
+def test_a_comparison_is_suppressed_rather_than_kept_alive_on_one_source():
+    only_one = sh.SignalHealthReport(unavailable_families={"ktc"})
+    why = sh.suppressed_features(only_one)["source_disagreement_dynasty"]
+    assert "KTC" in why and "unavailable" in why
 
 
 # -- rendering -------------------------------------------------------------
@@ -495,3 +523,77 @@ def test_a_naive_timestamp_is_read_as_utc_rather_than_crashing_the_run():
 
     assert ktc.cache_age == dt.timedelta(hours=3)
     assert ktc.label == sh.FRESH
+
+
+# -- states: the diagnosis behind the label ---------------------------------------------------
+
+
+def test_a_rejected_refresh_reads_as_a_parse_failure_serving_a_validated_snapshot(monkeypatch):
+    # The label is Usable (the numbers are young and were validated when
+    # they were written); the state says the refresh itself parsed to
+    # something unusable, which is the part that needs a person.
+    monkeypatch.setattr(sh.ranking_cache, "last_fetch_outcome", {"ktc_dynasty": "rejected"})
+    monkeypatch.setattr(
+        sh.ranking_cache, "last_fetch_error", {"ktc_dynasty": "KTC embedded_json_v2 yielded 3 players"}
+    )
+    engine = _healthy_engine(ktc_snapshot=_snapshot("ktc_dynasty", dt.timedelta(hours=6), rows=500))
+    ktc = next(s for s in sh.build_health(engine=engine, now=NOW).signals if s.source == "ktc_dynasty")
+
+    assert ktc.state == sh.STATE_PARSE_FAILED_USING_CACHE
+    assert ktc.label == sh.USABLE
+    assert "refresh parsed to something unusable" in ktc.detail
+    assert "yielded 3 players" in ktc.detail
+
+
+def test_a_healthy_refresh_reads_as_fresh(monkeypatch):
+    monkeypatch.setattr(sh.ranking_cache, "last_fetch_outcome", {"ktc_dynasty": "fresh"})
+    monkeypatch.setattr(sh.ranking_cache, "last_fetch_error", {})
+    engine = _healthy_engine(ktc_snapshot=_snapshot("ktc_dynasty", dt.timedelta(hours=1), rows=500))
+    ktc = next(s for s in sh.build_health(engine=engine, now=NOW).signals if s.source == "ktc_dynasty")
+
+    assert (ktc.state, ktc.label, ktc.reason) == (sh.STATE_FRESH, sh.FRESH, "")
+
+
+def test_a_source_with_nothing_to_serve_carries_the_reason_it_failed(monkeypatch):
+    monkeypatch.setattr(sh.ranking_cache, "last_fetch_error", {"ktc_dynasty": "ConnectionError: refused"})
+    engine = _healthy_engine(ktc_snapshot=None)
+    ktc = next(s for s in sh.build_health(engine=engine, now=NOW).signals if s.source == "ktc_dynasty")
+
+    assert ktc.state == sh.STATE_UNAVAILABLE
+    assert "ConnectionError: refused" in ktc.detail
+
+
+def test_an_unexported_dynasty_pass_is_not_configured_rather_than_broken(monkeypatch):
+    # A paid manual export nobody has run this week is a state, not a fault,
+    # and must not share a word with a scraper that is broken.
+    monkeypatch.setattr(sh, "ff_dynasty_status", lambda: "not provided (optional — export from …)")
+    ff = next(s for s in sh.build_health(engine=_healthy_engine(), now=NOW).signals if s.family == "ff_dynasty_pass")
+
+    assert ff.state == sh.STATE_NOT_CONFIGURED
+    assert ff.label == sh.UNAVAILABLE  # still absent, still suppresses nothing
+    assert "ff_dynasty_pass" in sh.OPTIONAL_FAMILIES
+
+
+def test_an_exported_dynasty_pass_is_fresh(monkeypatch):
+    monkeypatch.setattr(sh, "ff_dynasty_status", lambda: "fresh (2h old)")
+    ff = next(s for s in sh.build_health(engine=_healthy_engine(), now=NOW).signals if s.family == "ff_dynasty_pass")
+    assert (ff.state, ff.label) == (sh.STATE_FRESH, sh.FRESH)
+
+
+def test_the_dynasty_pass_never_makes_the_run_degraded_or_suppresses_a_dynasty_source(monkeypatch):
+    # Whether the CSV has been exported must change nothing about the run's
+    # grade or about what KTC and FantasyPros still support.
+    def health_with(status):
+        monkeypatch.setattr(sh, "ff_dynasty_status", lambda: status)
+        return sh.build_health(engine=_healthy_engine(), now=NOW)
+
+    absent = health_with("not provided (optional)")
+    present = health_with("fresh (2h old)")
+    assert absent.degraded == present.degraded
+    # It is genuinely absent, so it is in the unavailable set — it just
+    # never grades the run, and nothing in FEATURE_REQUIREMENTS names it.
+    assert not any("ff_dynasty_pass" in families for _, families in sh.FEATURE_REQUIREMENTS.values())
+
+    suppressed = sh.suppressed_features(absent)
+    assert "dynasty_values" not in suppressed and "dynasty_rank_context" not in suppressed
+    assert not any(f.startswith("source_disagreement") for f in suppressed)

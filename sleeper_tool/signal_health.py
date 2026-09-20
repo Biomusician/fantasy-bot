@@ -36,6 +36,13 @@ __all__ = [
     "PARTIAL",
     "STALE",
     "UNAVAILABLE",
+    "STATE_FRESH",
+    "STATE_CACHED",
+    "STATE_FETCH_FAILED_USING_CACHE",
+    "STATE_PARSE_FAILED_USING_CACHE",
+    "STATE_NOT_CONFIGURED",
+    "STATE_AUTH_REQUIRED",
+    "STATE_UNAVAILABLE",
     "SOURCE_WINDOWS",
     "MIN_COVERAGE",
     "FEATURE_REQUIREMENTS",
@@ -56,6 +63,30 @@ UNAVAILABLE = "Unavailable"
 # Labels that mean the report should say something about its own inputs.
 DEGRADED_LABELS = (PARTIAL, STALE, UNAVAILABLE)
 
+# The label above is the GRADE — how much to trust this source today, in
+# five words a reader can act on. The state below is the DIAGNOSIS: which of
+# the several very different things that all used to print "Unavailable"
+# actually happened. A source serving a validated snapshot after a failed
+# refresh and a source with nothing at all are not the same situation, and
+# the difference decides whether the fix is "wait" or "go and look".
+STATE_FRESH = "FRESH"
+STATE_CACHED = "CACHED"
+STATE_FETCH_FAILED_USING_CACHE = "FETCH_FAILED_USING_CACHE"
+STATE_PARSE_FAILED_USING_CACHE = "PARSE_FAILED_USING_CACHE"
+STATE_NOT_CONFIGURED = "NOT_CONFIGURED"
+STATE_AUTH_REQUIRED = "AUTH_REQUIRED"
+STATE_UNAVAILABLE = "UNAVAILABLE"
+
+# cache.last_fetch_outcome -> the state it implies for a source that still
+# produced a snapshot. "rejected" is the refresh that parsed to something
+# that failed validation: the previous board was kept rather than replaced.
+_OUTCOME_STATE = {
+    "fresh": STATE_FRESH,
+    "cached": STATE_CACHED,
+    "fallback": STATE_FETCH_FAILED_USING_CACHE,
+    "rejected": STATE_PARSE_FAILED_USING_CACHE,
+}
+
 # Families that are optional by design: nothing in FEATURE_REQUIREMENTS
 # depends on them, so their absence is the normal state, not a fault. They
 # still appear in the source list with their own label — they just never
@@ -72,25 +103,48 @@ SLEEPER_WEEKLY_TABLES = ("matchups", "transactions")
 # returns an empty one, so a MAX across the weekly tables would mask it.
 SLEEPER_TRENDING_TABLES = ("trending",)
 
-# feature -> families it cannot be computed without. A feature is suppressed
-# when ANY required family is Unavailable; a merely Stale family still
-# produces output, flagged with its age.
-FEATURE_REQUIREMENTS: dict[str, tuple[str, ...]] = {
-    "dynasty_values": ("ktc",),
-    "source_disagreement": ("ktc", "fantasypros"),
-    "redraft_currency": ("rotoballer", "fantasypros"),
-    "replacement_value": ("rotoballer", "fantasypros"),
-    "lineup_optimizer": ("rotoballer", "fantasypros"),
-    "matchup_leverage": ("rotoballer", "fantasypros"),
-    "streamer_planner": ("rotoballer", "fantasypros"),
-    "schedule_windows": ("nflverse_schedule",),
-    "waiver_trending": ("sleeper_trending",),
-    "roster_clog": ("sleeper_weekly",),
-    "role_trends": ("nflverse_usage",),
-    "roster_analysis": ("sleeper_league", "sleeper_players"),
-    "team_status": ("sleeper_league", "sleeper_players"),
-    "trade_engine": ("sleeper_league", "sleeper_players"),
-    "waiver_engine": ("sleeper_league", "sleeper_players"),
+# How a feature's requirement is read.
+ALL_OF = "all"      # every family listed
+ANY_OF = "any"      # at least one
+ANY_TWO_OF = "any2"  # at least two, for features that COMPARE sources
+
+# feature -> (mode, families). A feature is suppressed when the mode is not
+# satisfied; a merely Stale family still produces output, flagged with its
+# age.
+#
+# Two rules this table is careful about:
+#
+#  - Losing one dynasty source must not take out what the other one still
+#    supports. KTC is the market-VALUE source, so its absence suppresses
+#    value arithmetic — but FantasyPros dynasty ECR still places a player,
+#    so rank context survives on either one.
+#  - A comparison needs two things to compare, and they have to be
+#    comparable. `source_disagreement` is split by currency because that is
+#    how the computation is split: a dynasty league compares KTC against
+#    FantasyPros dynasty, a redraft league compares FantasyPros redraft
+#    against RotoBaller and never reads KTC at all. One table entry for
+#    both meant losing KTC silently killed the feature in four leagues that
+#    never needed it. Where only one source of a kind is left, the feature
+#    is suppressed honestly rather than kept alive by comparing two things
+#    that answer different questions.
+FEATURE_REQUIREMENTS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "dynasty_values": (ALL_OF, ("ktc",)),
+    "dynasty_rank_context": (ANY_OF, ("ktc", "fantasypros")),
+    "source_disagreement_dynasty": (ALL_OF, ("ktc", "fantasypros")),
+    "source_disagreement_redraft": (ALL_OF, ("fantasypros", "rotoballer")),
+    "redraft_currency": (ALL_OF, ("rotoballer", "fantasypros")),
+    "replacement_value": (ALL_OF, ("rotoballer", "fantasypros")),
+    "lineup_optimizer": (ALL_OF, ("rotoballer", "fantasypros")),
+    "matchup_leverage": (ALL_OF, ("rotoballer", "fantasypros")),
+    "streamer_planner": (ALL_OF, ("rotoballer", "fantasypros")),
+    "schedule_windows": (ALL_OF, ("nflverse_schedule",)),
+    "waiver_trending": (ALL_OF, ("sleeper_trending",)),
+    "roster_clog": (ALL_OF, ("sleeper_weekly",)),
+    "role_trends": (ALL_OF, ("nflverse_usage",)),
+    "roster_analysis": (ALL_OF, ("sleeper_league", "sleeper_players")),
+    "team_status": (ALL_OF, ("sleeper_league", "sleeper_players")),
+    "trade_engine": (ALL_OF, ("sleeper_league", "sleeper_players")),
+    "waiver_engine": (ALL_OF, ("sleeper_league", "sleeper_players")),
 }
 
 _DISPLAY_PREFIXES = {
@@ -161,6 +215,11 @@ class SignalHealth:
     coverage: int | None = None  # rows/players actually loaded
     fallback: bool = False
     label: str = UNAVAILABLE
+    # The precise diagnosis behind the label — see the STATE_* constants.
+    # The label says how much to trust the source; the state says what
+    # happened, which is what decides whether anyone needs to go and look.
+    state: str = STATE_UNAVAILABLE
+    reason: str = ""  # the failure text from the fetch/parse layer, if any
     detail: str = ""
     # True when the source's absence is its normal state right now (the
     # season's usage file before any game is played): still Unavailable,
@@ -226,8 +285,16 @@ def _age(now: dt.datetime, fetched_at: dt.datetime | None) -> dt.timedelta | Non
     return now - fetched_at
 
 
-def _unavailable(source: str, family: str, detail: str) -> SignalHealth:
-    return SignalHealth(source=source, family=family, label=UNAVAILABLE, detail=detail)
+def _unavailable(source: str, family: str, detail: str, *, state: str = STATE_UNAVAILABLE) -> SignalHealth:
+    """A source with nothing to serve. When the cache layer recorded WHY the
+    last attempt failed, that reason is carried through — "Unavailable" with
+    no reason is what made the last source break take an afternoon to
+    diagnose instead of a minute."""
+    reason = ranking_cache.last_fetch_error.get(source, "")
+    return SignalHealth(
+        source=source, family=family, label=UNAVAILABLE, state=state, reason=reason,
+        detail=f"{detail}; {reason}" if reason else detail,
+    )
 
 
 def _snapshot_signal(
@@ -243,9 +310,11 @@ def _snapshot_signal(
     coverage = _payload_size(payload)
     # Read through the module, not a `from ... import` binding: the registry
     # is replaced wholesale in tests and rebound per process.
-    fallback = bool(getattr(snapshot, "served_from_fallback", False)) or (
-        ranking_cache.last_fetch_outcome.get(source) == "fallback"
+    outcome = ranking_cache.last_fetch_outcome.get(source)
+    fallback = bool(getattr(snapshot, "served_from_fallback", False)) or outcome in (
+        "fallback", "rejected"
     )
+    reason = ranking_cache.last_fetch_error.get(source, "")
     # An empty or non-sized payload means the scraper returned something the
     # readers can't index — as bad as no fetch at all, so it fails parse.
     parse_ok = bool(coverage)
@@ -257,13 +326,26 @@ def _snapshot_signal(
         parse_ok=parse_ok,
         fallback=fallback,
     )
+    if label == UNAVAILABLE:
+        state = STATE_UNAVAILABLE
+    else:
+        state = _OUTCOME_STATE.get(outcome or "", STATE_CACHED)
+        if fallback and state not in (STATE_FETCH_FAILED_USING_CACHE, STATE_PARSE_FAILED_USING_CACHE):
+            # The snapshot object says it was a fallback even though this
+            # process did not record the outcome (a snapshot carried over
+            # from an earlier call). Believe the object.
+            state = STATE_FETCH_FAILED_USING_CACHE
     details = []
     if not parse_ok:
         details.append("payload empty or unreadable")
-    if fallback:
-        details.append("served from cache after a failed re-fetch")
+    if state == STATE_PARSE_FAILED_USING_CACHE:
+        details.append(f"refresh parsed to something unusable; serving the validated {_format_age(age)} snapshot")
+    elif state == STATE_FETCH_FAILED_USING_CACHE:
+        details.append(f"refresh failed; serving the validated {_format_age(age)} snapshot")
     if label == PARTIAL:
         details.append(f"{coverage} rows, below the {MIN_COVERAGE.get(family)} floor")
+    if reason and state in (STATE_FETCH_FAILED_USING_CACHE, STATE_PARSE_FAILED_USING_CACHE, STATE_UNAVAILABLE):
+        details.append(reason)
     return SignalHealth(
         source=source,
         family=family,
@@ -273,6 +355,8 @@ def _snapshot_signal(
         coverage=coverage,
         fallback=fallback,
         label=label,
+        state=state,
+        reason=reason,
         detail="; ".join(details),
     )
 
@@ -433,23 +517,28 @@ def _usage_signal(usage_health, now: dt.datetime, current_week: int | None = Non
 
 
 def _ff_signal() -> SignalHealth:
-    """The manual Dynasty Pass CSV. ff_dynasty_status() already encodes the
-    policy (fresh / stale-and-ignored / absent) as prose; this maps that one
-    string onto the shared labels rather than re-deriving the file age."""
+    """The manual Dynasty Pass CSV.
+
+    This source is a paid product exported by hand, so "no file" is not a
+    fault to investigate — it is the state of a source nobody has exported
+    this week, and it says NOT_CONFIGURED rather than sharing a word with a
+    scraper that is broken. Nothing is ever bypassed or scraped to fill it.
+    """
     try:
         status = ff_dynasty_status()
     except OSError as exc:
         return _unavailable("ff_dynasty_pass", "ff_dynasty_pass", f"unreadable: {exc}")
     if status.startswith("fresh"):
-        label = FRESH
+        label, state = FRESH, STATE_FRESH
     elif status.startswith("stale"):
-        label = STALE
+        label, state = STALE, STATE_CACHED
     else:
-        label = UNAVAILABLE
+        label, state = UNAVAILABLE, STATE_NOT_CONFIGURED
     return SignalHealth(
         source="ff_dynasty_pass",
         family="ff_dynasty_pass",
         label=label,
+        state=state,
         parse_ok=label != UNAVAILABLE,
         detail=status,
     )
@@ -504,7 +593,17 @@ def build_health(
         notes.append(f"{_display_name(family)} unavailable ({reason})")
     for signal in signals:
         if signal.fallback:
-            notes.append(f"{signal.display_name} served from cache after a failed re-fetch")
+            # Which half broke decides what to do about it: a failed fetch
+            # is usually waiting, a failed parse is usually a layout change.
+            what = (
+                "refresh parsed to something unusable"
+                if signal.state == STATE_PARSE_FAILED_USING_CACHE else "refresh failed"
+            )
+            reason = f" ({signal.reason})" if signal.reason else ""
+            notes.append(
+                f"{signal.display_name}: {what}{reason}; serving the validated "
+                f"{_format_age(signal.cache_age)} snapshot"
+            )
         elif signal.label == STALE:
             notes.append(f"{signal.display_name} is {_format_age(signal.cache_age)} old")
         elif signal.label == PARTIAL:
@@ -566,7 +665,9 @@ def freshness_by_source(report: SignalHealthReport) -> dict[str, str]:
         if label in (FRESH, USABLE) and not fallback:
             continue
         shown = next(s for s in members if s.label == label)
-        text = f"{shown.display_name} {label}" + (", served from cache after a failed re-fetch" if fallback else "")
+        text = f"{shown.display_name} {label}" + (
+            ", serving a validated snapshot after a failed refresh" if fallback else ""
+        )
         for module in modules:
             out[module] = text
     return out
@@ -576,11 +677,21 @@ def suppressed_features(report: SignalHealthReport) -> dict[str, str]:
     """Features whose required data isn't there, and why. The orchestrator
     decides what to do with this; nothing here hides anything by itself."""
     suppressed: dict[str, str] = {}
-    for feature, required in sorted(FEATURE_REQUIREMENTS.items()):
+    for feature, (mode, required) in sorted(FEATURE_REQUIREMENTS.items()):
         missing = [f for f in required if f in report.unavailable_families]
-        if missing:
+        present = [f for f in required if f not in report.unavailable_families]
+        if mode == ALL_OF and missing:
             names = ", ".join(_display_name(f) for f in missing)
             suppressed[feature] = f"requires {names}, which {'are' if len(missing) > 1 else 'is'} unavailable"
+        elif mode == ANY_OF and not present:
+            names = " or ".join(_display_name(f) for f in required)
+            suppressed[feature] = f"requires {names}, and none is available"
+        elif mode == ANY_TWO_OF and len(present) < 2:
+            names = ", ".join(_display_name(f) for f in required)
+            kept = _display_name(present[0]) if present else "none"
+            suppressed[feature] = (
+                f"compares two of {names}; only {kept} is available, and one source cannot disagree with itself"
+            )
     return suppressed
 
 
