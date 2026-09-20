@@ -330,3 +330,26 @@ def test_the_banner_wording_tracks_the_health_grade():
 def test_fact_of_always_returns_something_hashable():
     assert isinstance(fact_of("anything at all"), tuple)
     assert fact_of("A") == fact_of("a.")
+
+
+def test_the_banner_names_the_capability_lost_not_just_the_word_signals():
+    # "Signals degraded" tells a reader to distrust a page that mostly
+    # works. The label should say which capability actually went.
+    banner = health_banner(
+        _Report(_Health(True, [_Signal("KTC dynasty", "Unavailable"), _Signal("FantasyPros", "Fresh")]),
+                {"dynasty_values": "requires KTC"})
+    )
+    assert banner.label == "Dynasty market values degraded"
+    assert "dynasty market values is limited this run" in banner.text
+    assert "KTC dynasty unavailable" in banner.text
+    # What still works is the half a warning cannot show on its own.
+    assert "still available: FantasyPros" in banner.text
+
+
+def test_a_source_serving_a_validated_snapshot_does_not_shout():
+    # Nothing was suppressed, so no recommendation changed; saying so is the
+    # difference between a useful banner and one the reader learns to skip.
+    banner = health_banner(_Report(_Health(True, [_Signal("KTC dynasty", "Stale")])))
+    assert banner.label == "Signals degraded"
+    assert "served from a validated cached snapshot" in banner.text
+    assert "no recommendation was suppressed" in banner.text

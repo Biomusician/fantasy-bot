@@ -25,7 +25,7 @@ from sleeper_tool.waiver_engine import EARLY_SEASON_CLAUSE
 from sleeper_tool.lineup_optimizer import slot_label
 from sleeper_tool.action_priority import IMMEDIATE, MAJOR, MEANINGFUL, THIS_WEEK, PriorityKey, priority_line  # noqa: F401  (PriorityKey re-exported for renderers)
 from sleeper_tool.recommendation_conflicts import CONFLICTED
-from sleeper_tool.signal_health import DEGRADED_LABELS
+from sleeper_tool.signal_health import DEGRADED_LABELS, FRESH, UNAVAILABLE, USABLE
 from sleeper_tool.trade_rating import player_confidence
 
 # -- one vocabulary for one fact ---------------------------------------------
@@ -445,28 +445,93 @@ def health_state(report) -> str:
     return "all sources fresh or usable"
 
 
+# suppressed feature -> what a reader loses, in their terms. A feature name
+# is an implementation detail; "dynasty market values" is the thing that is
+# missing from the page.
+_CAPABILITY_NAMES = {
+    "dynasty_values": "dynasty market values",
+    "dynasty_rank_context": "dynasty rank context",
+    "source_disagreement_dynasty": "dynasty source disagreement",
+    "source_disagreement_redraft": "redraft source disagreement",
+    "redraft_currency": "redraft player values",
+    "replacement_value": "replacement-level analysis",
+    "lineup_optimizer": "lineup optimisation",
+    "matchup_leverage": "matchup leverage",
+    "streamer_planner": "streaming plans",
+    "schedule_windows": "schedule windows",
+    "waiver_trending": "trending waiver adds",
+    "roster_clog": "roster-clog analysis",
+    "role_trends": "usage and role trends",
+    "roster_analysis": "roster analysis",
+    "team_status": "contender/rebuild status",
+    "trade_engine": "trade proposals",
+    "waiver_engine": "waiver targets",
+}
+
+
+def capability_name(feature: str) -> str:
+    return _CAPABILITY_NAMES.get(feature, feature.replace("_", " "))
+
+
 def health_banner(report) -> HealthBanner | None:
-    """One line naming a degraded or gappy run, for the top of both
-    outputs — a reader must not have to scroll to the health section to
-    learn that a source is missing. Summarises what that section details;
-    the wording tracks `health.degraded` so the banner can never disagree
-    with the section heading below it."""
+    """One line at the top of both outputs naming what is actually missing.
+
+    Severity follows consequence, not noise. A source serving a validated
+    snapshot after a failed refresh has not changed a single recommendation,
+    and shouting about it teaches the reader to scroll past the banner that
+    matters. The loud form is reserved for a run where something is
+    genuinely suppressed; everything else is a note that says which numbers
+    are a few hours old.
+
+    The text names the capability lost and what still works, because "signals
+    degraded" tells a reader to distrust the whole page when the truth is
+    usually that one source of several is out.
+    """
     health = getattr(report, "health", None)
     suppressed = sorted(getattr(report, "suppressed", {}) or {})
     if health is None or (not health.degraded and not suppressed):
         return None
-    bits = []
-    if health.degraded:
-        bad = sorted(s.display_name for s in health.signals if s.label in DEGRADED_LABELS and not s.expected_absent)
-        bits.append(", ".join(bad) + " stale or unavailable" if bad else "one or more sources unusable")
-    if suppressed:
-        bits.append("suppressed this run: " + ", ".join(f.replace("_", " ") for f in suppressed))
-    lead = "Signal health: degraded" if health.degraded else "Signal health: usable, with gaps"
-    return HealthBanner(
-        degraded=health.degraded,
-        label="Signals degraded" if health.degraded else "Signals: gaps",
-        text=f"{lead} — " + "; ".join(bits) + ".",
+
+    stale = sorted(
+        s.display_name for s in health.signals
+        if s.label in DEGRADED_LABELS and not s.expected_absent and s.label != UNAVAILABLE
     )
+    gone = sorted(
+        s.display_name for s in health.signals
+        if s.label == UNAVAILABLE and not s.expected_absent
+    )
+
+    # Severity is the health layer's own grade, never the banner's opinion:
+    # the lead phrase below has to match the Signal health section this sits
+    # above, and an expected-absent source (the season's usage file before
+    # any game) can suppress a feature without the run being degraded.
+    bits: list[str] = []
+    if suppressed:
+        lost = ", ".join(capability_name(f) for f in suppressed)
+        bits.append(f"{lost} {'are' if len(suppressed) > 1 else 'is'} limited this run")
+    if gone:
+        bits.append(f"{', '.join(gone)} unavailable")
+    if stale and not suppressed:
+        bits.append(f"{', '.join(stale)} served from a validated cached snapshot")
+    if not bits:
+        bits.append("one or more sources unusable")
+    if suppressed:
+        # What survived is the half a reader cannot see from a warning, and
+        # it is usually most of the page.
+        working = sorted({s.display_name for s in health.signals if s.label in (FRESH, USABLE)})
+        if working:
+            bits.append(f"still available: {', '.join(working[:4])}")
+    elif health.degraded:
+        bits.append("no recommendation was suppressed")
+
+    lead = "Signal health: degraded" if health.degraded else "Signal health: usable, with gaps"
+    # The label is where a reader learns which capability actually went;
+    # "Signals degraded" told them to distrust a page that mostly works.
+    label = (
+        f"{capability_name(suppressed[0]).capitalize()} degraded" if suppressed
+        else ("Signals degraded" if health.degraded else "Signals: gaps")
+    )
+    return HealthBanner(degraded=health.degraded, label=label, text=f"{lead} — " + "; ".join(bits) + ".")
 
 
 def grouped_picks(assessments):
