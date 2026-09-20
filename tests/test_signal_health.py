@@ -597,3 +597,21 @@ def test_the_dynasty_pass_never_makes_the_run_degraded_or_suppresses_a_dynasty_s
     suppressed = sh.suppressed_features(absent)
     assert "dynasty_values" not in suppressed and "dynasty_rank_context" not in suppressed
     assert not any(f.startswith("source_disagreement") for f in suppressed)
+
+
+def test_a_not_configured_source_says_so_instead_of_unavailable(monkeypatch):
+    # "Unavailable" against a paid CSV nobody has exported reads as a fault
+    # to investigate. It is a setting.
+    monkeypatch.setattr(sh, "ff_dynasty_status", lambda: "not provided (optional)")
+    ff = next(s for s in sh.build_health(engine=_healthy_engine(), now=NOW).signals if s.family == "ff_dynasty_pass")
+    assert ff.label == sh.UNAVAILABLE
+    assert ff.display_label == "Not configured"
+    assert any("Not configured" in line for line in sh.freshness_lines(sh.build_health(engine=_healthy_engine(), now=NOW)))
+
+
+def test_a_genuinely_broken_source_still_says_unavailable():
+    ktc = next(
+        s for s in sh.build_health(engine=_healthy_engine(ktc_snapshot=None), now=NOW).signals
+        if s.source == "ktc_dynasty"
+    )
+    assert ktc.display_label == sh.UNAVAILABLE

@@ -1278,7 +1278,12 @@ def _portfolio_section(portfolio: PortfolioExposure | None, asymmetries=()) -> s
     """
 
 
-_HEALTH_CHIP_KIND = {"Fresh": "positive", "Usable": "neutral", "Partial": "caution", "Stale": "caution", "Unavailable": "negative"}
+_HEALTH_CHIP_KIND = {
+    "Fresh": "positive", "Usable": "neutral", "Partial": "caution", "Stale": "caution",
+    "Unavailable": "negative",
+    # A source that is simply not set up is not a fault to alarm anyone about.
+    "Not configured": "neutral", "Auth required": "neutral",
+}
 
 
 def _signal_health_section(report: WeeklyReportData) -> str:
@@ -1293,7 +1298,8 @@ def _signal_health_section(report: WeeklyReportData) -> str:
         notes_html = ""
     else:
         chips = "".join(
-            f'<span class="freshness-chip">{esc(s.display_name)} {_chip(esc(s.label), _HEALTH_CHIP_KIND.get(s.label, "neutral"))}'
+            f'<span class="freshness-chip">{esc(s.display_name)} '
+            f'{_chip(esc(s.display_label), _HEALTH_CHIP_KIND.get(s.display_label, "neutral"))}'
             f'{" <b>" + esc(_age_text(s.cache_age)) + "</b>" if s.cache_age is not None else ""}'
             f'{" <span class=muted>" + str(s.coverage) + " rows</span>" if s.coverage is not None else ""}</span>'
             for s in report.health.signals

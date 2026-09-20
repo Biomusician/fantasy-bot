@@ -147,6 +147,12 @@ FEATURE_REQUIREMENTS: dict[str, tuple[str, tuple[str, ...]]] = {
     "waiver_engine": (ALL_OF, ("sleeper_league", "sleeper_players")),
 }
 
+# state -> the word shown in place of the grade, where it is more honest.
+_STATE_LABELS = {
+    STATE_NOT_CONFIGURED: "Not configured",
+    STATE_AUTH_REQUIRED: "Auth required",
+}
+
 _DISPLAY_PREFIXES = {
     "ktc_": "KTC ",
     "fantasypros_": "FantasyPros ",
@@ -229,6 +235,16 @@ class SignalHealth:
     @property
     def display_name(self) -> str:
         return _display_name(self.source)
+
+    @property
+    def display_label(self) -> str:
+        """The grade, except where the state says something more useful.
+
+        "Unavailable" against a paid CSV nobody has exported reads as a
+        fault to investigate. It is a setting, and saying so is the
+        difference between a chip a reader acts on and one they ignore.
+        """
+        return _STATE_LABELS.get(self.state, self.label)
 
 
 @dataclass
@@ -700,7 +716,7 @@ def freshness_lines(report: SignalHealthReport) -> list[str]:
     e.g. "KTC dynasty · Fresh · 2.9h · 500 rows"."""
     lines = []
     for signal in report.signals:
-        parts = [signal.display_name, signal.label, _format_age(signal.cache_age)]
+        parts = [signal.display_name, signal.display_label, _format_age(signal.cache_age)]
         if signal.coverage is not None:
             parts.append(f"{signal.coverage} rows")
         lines.append(" · ".join(parts))

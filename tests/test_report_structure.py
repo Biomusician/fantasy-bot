@@ -249,6 +249,9 @@ def test_a_conflicted_best_move_is_labelled_not_led_with():
 class _Signal:
     display_name = "KTC dynasty"
     label = "Stale"
+    display_label = "Stale"
+    state = "CACHED"
+    detail = ""
     expected_absent = False
     cache_age = None
     coverage = None
