@@ -30,6 +30,11 @@ from sleeper_tool.rankings.snapshot_validation import by_row_count, rows_of
 logger = logging.getLogger(__name__)
 
 SCHEDULE_URL = "https://github.com/nflverse/nflverse-data/releases/download/schedules/games.csv"
+# The release asset above is a published copy of this file; while nflverse
+# replaces the asset the release URL can briefly 404, so the source repo is
+# tried second. Same columns, same games.
+SCHEDULE_MIRROR_URL = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
+SCHEDULE_URLS = (SCHEDULE_URL, SCHEDULE_MIRROR_URL)
 SCHEDULE_SOURCE = "nflverse_schedule"
 SCHEDULE_MAX_AGE = dt.timedelta(hours=24)
 REGULAR_SEASON = "REG"
@@ -136,12 +141,19 @@ def schedule_from_rows(rows: list[dict], season: int, fetched_at: dt.datetime | 
 
 
 def fetch_schedule_rows(season: int) -> dict:
-    resp = requests.get(SCHEDULE_URL, headers=_HEADERS, timeout=60)
-    resp.raise_for_status()
-    rows = parse_schedule_csv(resp.text, season)
-    if not rows:
-        raise ValueError(f"nflverse schedule has no rows for season {season}")
-    return {"season": season, "rows": rows}
+    failures: list[str] = []
+    for url in SCHEDULE_URLS:
+        try:
+            resp = requests.get(url, headers=_HEADERS, timeout=60)
+            resp.raise_for_status()
+            rows = parse_schedule_csv(resp.text, season)
+            if not rows:
+                raise ValueError(f"no rows for season {season}")
+        except Exception as exc:  # noqa: BLE001 — try the next copy, report all
+            failures.append(f"{url}: {exc}")
+            continue
+        return {"season": season, "rows": rows}
+    raise RuntimeError("nflverse schedule unavailable from every source: " + "; ".join(failures))
 
 
 # A season is ~285 regular + post games across 32 teams. The team count is
@@ -154,7 +166,7 @@ MIN_SCHEDULE_TEAMS = 30
 
 def _covers_the_league(payload) -> str | None:
     rows = (payload or {}).get("rows") or []
-    teams = {row.get(key) for row in rows for key in ("home_team", "away_team")} - {None, ""}
+    teams = {row.get(key) for row in rows for key in ("home", "away")} - {None, ""}
     if len(teams) < MIN_SCHEDULE_TEAMS:
         return (
             f"NFL schedule refresh covers {len(teams)} teams across {len(rows)} games — "

@@ -58,7 +58,7 @@ STATS_PLAYER_URL = _RELEASE + "/stats_player/stats_player_week_{season}.csv.gz"
 STATS_TEAM_URL = _RELEASE + "/stats_team/stats_team_week_{season}.csv.gz"
 SNAP_COUNTS_URL = _RELEASE + "/snap_counts/snap_counts_{season}.csv.gz"
 NFLVERSE_PLAYERS_URL = _RELEASE + "/players/players.csv.gz"
-DYNASTYPROCESS_PLAYERIDS_URL = "https://github.com/dynastyprocess/data/raw/master/files/db_playerids.csv"
+DYNASTYPROCESS_PLAYERIDS_URL = "https://raw.githubusercontent.com/dynastyprocess/data/master/files/db_playerids.csv"
 
 STATS_PLAYER_SOURCE = "nflverse_stats_player_{season}"
 STATS_TEAM_SOURCE = "nflverse_stats_team_{season}"

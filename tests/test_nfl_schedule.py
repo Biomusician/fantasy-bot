@@ -72,6 +72,70 @@ def test_load_schedule_is_none_when_nothing_is_available(tmp_path, monkeypatch):
     assert load_schedule(2026) is None
 
 
+def _league_csv(teams: int = 32, weeks: int = 7) -> str:
+    codes = [f"T{i:02d}" for i in range(teams)]
+    lines = ["game_id,season,game_type,week,gameday,away_team,home_team"]
+    for week in range(1, weeks + 1):
+        for i in range(teams // 2):
+            away, home = codes[i], codes[teams - 1 - i]
+            lines.append(f"2026_{week:02d}_{away}_{home},2026,REG,{week},2026-09-10,{away},{home}")
+    return "\n".join(lines) + "\n"
+
+
+class _Prev:
+    def __init__(self, payload):
+        self.payload = payload
+
+
+def test_a_whole_league_refresh_replaces_the_cached_schedule():
+    import sleeper_tool.nfl_schedule as mod
+    payload = {"season": 2026, "rows": parse_schedule_csv(_league_csv(), 2026)}
+    assert mod._validate_schedule(payload, _Prev(payload)) is True
+
+
+def test_a_refresh_missing_most_teams_is_refused():
+    import sleeper_tool.nfl_schedule as mod
+    full = {"season": 2026, "rows": parse_schedule_csv(_league_csv(), 2026)}
+    partial = {"season": 2026, "rows": parse_schedule_csv(_league_csv(teams=8, weeks=30), 2026)}
+    verdict = mod._validate_schedule(partial, _Prev(full))
+    assert isinstance(verdict, str) and "8 teams" in verdict
+
+
+class _Resp:
+    def __init__(self, status, text=""):
+        self.status_code, self.text = status, text
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+            raise requests.HTTPError(f"{self.status_code} Client Error")
+
+
+def test_fetch_falls_back_to_the_source_repo_when_the_release_asset_404s(monkeypatch):
+    import sleeper_tool.nfl_schedule as mod
+    asked = []
+
+    def fake_get(url, **kwargs):
+        asked.append(url)
+        return _Resp(404) if url == mod.SCHEDULE_URL else _Resp(200, CSV)
+
+    monkeypatch.setattr(mod.requests, "get", fake_get)
+    payload = mod.fetch_schedule_rows(2026)
+    assert asked == [mod.SCHEDULE_URL, mod.SCHEDULE_MIRROR_URL]
+    assert payload["season"] == 2026 and len(payload["rows"]) == 6
+
+
+def test_fetch_raises_naming_every_source_when_all_fail(monkeypatch):
+    import sleeper_tool.nfl_schedule as mod
+    monkeypatch.setattr(mod.requests, "get", lambda url, **kwargs: _Resp(404))
+    try:
+        mod.fetch_schedule_rows(2026)
+    except RuntimeError as exc:
+        assert mod.SCHEDULE_URL in str(exc) and mod.SCHEDULE_MIRROR_URL in str(exc)
+    else:
+        raise AssertionError("expected every source to fail")
+
+
 def test_stale_cache_survives_a_failed_refetch(tmp_path, monkeypatch):
     monkeypatch.setattr(cache_mod, "CACHE_DIR", tmp_path)
     import sleeper_tool.nfl_schedule as mod
